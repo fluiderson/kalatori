@@ -50,8 +50,9 @@ pub(crate) async fn new(
     let app = Router::new()
         .route(
             "/recipient/:recipient/order/:order/price/:price",
-            get(handler),
+            get(handler_recip),
         )
+        .route("/order/:order/price/:price", get(handler))
         .with_state(database);
 
     let listener = TcpListener::bind(host)
@@ -72,12 +73,35 @@ pub(crate) async fn new(
     })
 }
 
-async fn handler(
+async fn handler_recip(
     State(database): State<Arc<Database>>,
     Path((recipient, order, price)): Path<(String, String, u128)>,
 ) -> Json<Response> {
     let wss = database.rpc().to_string();
     let mul = database.properties().await.decimals;
+
+    match abcd(database, Some(recipient), order, price).await {
+        Ok(re) => Response::Success(re),
+        Err(error) => Response::Error(Error {
+            wss,
+            mul,
+            version: env!("CARGO_PKG_VERSION").into(),
+            error: error.to_string(),
+        }),
+    }
+    .into()
+}
+
+async fn handler(
+    State(database): State<Arc<Database>>,
+    Path((order, price)): Path<(String, u128)>,
+) -> Json<Response> {
+    let wss = database.rpc().to_string();
+    let mul = database.properties().await.decimals;
+    let recipient = database
+        .destination()
+        .as_ref()
+        .map(|d| format!("0x{}", HexDisplay::from(AsRef::<[u8; 32]>::as_ref(&d))));
 
     match abcd(database, recipient, order, price).await {
         Ok(re) => Response::Success(re),
@@ -93,10 +117,12 @@ async fn handler(
 
 async fn abcd(
     database: Arc<Database>,
-    recipient: String,
+    rrecipient: Option<String>,
     order: String,
     price: u128,
 ) -> Result<Success, anyhow::Error> {
+    let recipient = rrecipient.context("destionation address isn't set")?;
+
     let decoded_recip = hex::decode(&recipient[2..])?;
     let recipient_account = Account::try_from(decoded_recip.as_ref())
         .map_err(|()| anyhow::anyhow!("Unknown address length"))?;

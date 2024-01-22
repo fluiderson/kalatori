@@ -111,6 +111,7 @@ pub struct Database {
     properties: Arc<RwLock<ChainProperties>>,
     pair: Pair,
     rpc: String,
+    destination: Option<Account>,
 }
 
 impl Database {
@@ -119,6 +120,7 @@ impl Database {
         override_rpc: bool,
         pair: Pair,
         EndpointProperties { url, chain }: EndpointProperties,
+        destination: Option<Account>,
     ) -> Result<(Arc<Self>, Option<BlockNumber>)> {
         let public = pair.public();
         let public_formatted = public.to_ss58check_with_version(
@@ -233,6 +235,7 @@ impl Database {
                 properties: chain,
                 pair,
                 rpc: given_rpc,
+                destination,
             }),
             last_block,
         ))
@@ -240,6 +243,10 @@ impl Database {
 
     pub fn rpc(&self) -> &str {
         &self.rpc
+    }
+
+    pub fn destination(&self) -> &Option<Account> {
+        &self.destination
     }
 
     pub fn write(&self) -> Result<WriteTransaction<'_>> {
