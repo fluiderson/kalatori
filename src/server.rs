@@ -119,7 +119,7 @@ async fn abcd(
     database: Arc<Database>,
     rrecipient: Option<String>,
     order: String,
-    price: u128,
+    pprice: u128,
 ) -> Result<Success, anyhow::Error> {
     let recipient = rrecipient.context("destionation address isn't set")?;
 
@@ -127,6 +127,7 @@ async fn abcd(
     let recipient_account = Account::try_from(decoded_recip.as_ref())
         .map_err(|()| anyhow::anyhow!("Unknown address length"))?;
     let properties = database.properties().await;
+    let price = pprice * 10u128.pow(properties.decimals.try_into()?);
     let order_encoded = DeriveJunction::hard(&order).unwrap_inner();
     let invoice_account: Account = database
         .pair()
