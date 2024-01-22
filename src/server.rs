@@ -104,7 +104,11 @@ async fn handler(
         .map(|d| format!("0x{}", HexDisplay::from(AsRef::<[u8; 32]>::as_ref(&d))));
 
     match abcd(database, recipient, order, price).await {
-        Ok(re) => Response::Success(re),
+        Ok(mut re) => {
+            re.price /= 10u128.pow(re.mul as u32);
+
+            Response::Success(re)
+        }
         Err(error) => Response::Error(Error {
             wss,
             mul,
