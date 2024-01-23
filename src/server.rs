@@ -33,7 +33,7 @@ pub struct Error {
 #[derive(Serialize)]
 pub struct Success {
     pay_account: String,
-    price: u128,
+    price: f64,
     recipient: String,
     order: String,
     wss: String,
@@ -75,7 +75,7 @@ pub(crate) async fn new(
 
 async fn handler_recip(
     State(database): State<Arc<Database>>,
-    Path((recipient, order, price)): Path<(String, String, u128)>,
+    Path((recipient, order, price)): Path<(String, String, f64)>,
 ) -> Json<Response> {
     let wss = database.rpc().to_string();
     let mul = database.properties().await.decimals;
@@ -94,7 +94,7 @@ async fn handler_recip(
 
 async fn handler(
     State(database): State<Arc<Database>>,
-    Path((order, price)): Path<(String, u128)>,
+    Path((order, price)): Path<(String, f64)>,
 ) -> Json<Response> {
     let wss = database.rpc().to_string();
     let mul = database.properties().await.decimals;
@@ -104,11 +104,7 @@ async fn handler(
         .map(|d| format!("0x{}", HexDisplay::from(AsRef::<[u8; 32]>::as_ref(&d))));
 
     match abcd(database, recipient, order, price).await {
-        Ok(mut re) => {
-            re.price /= 10u128.pow(re.mul as u32);
-
-            Response::Success(re)
-        }
+        Ok(re) => Response::Success(re),
         Err(error) => Response::Error(Error {
             wss,
             mul,
@@ -123,15 +119,15 @@ async fn abcd(
     database: Arc<Database>,
     rrecipient: Option<String>,
     order: String,
-    pprice: u128,
+    pprice: f64,
 ) -> Result<Success, anyhow::Error> {
     let recipient = rrecipient.context("destionation address isn't set")?;
-
     let decoded_recip = hex::decode(&recipient[2..])?;
     let recipient_account = Account::try_from(decoded_recip.as_ref())
         .map_err(|()| anyhow::anyhow!("Unknown address length"))?;
     let properties = database.properties().await;
-    let price = pprice * 10u128.pow(properties.decimals.try_into()?);
+    let mul = 10u128.pow(properties.decimals.try_into()?) as f64;
+    let price = (pprice * mul).round() as u128;
     let order_encoded = DeriveJunction::hard(&order).unwrap_inner();
     let invoice_account: Account = database
         .pair()
@@ -159,8 +155,8 @@ async fn abcd(
         Ok(Success {
             pay_account: format!("0x{}", HexDisplay::from(&invoice_account.as_ref())),
             price: match invoice.status {
-                InvoiceStatus::Unpaid(uprice) => uprice,
-                InvoiceStatus::Paid(uprice) => uprice,
+                InvoiceStatus::Unpaid(uprice) => convert(properties.decimals, uprice)?,
+                InvoiceStatus::Paid(uprice) => convert(properties.decimals, uprice)?,
             },
             wss: database.rpc().to_string(),
             mul: properties.decimals,
@@ -189,7 +185,7 @@ async fn abcd(
 
         Ok(Success {
             pay_account: format!("0x{}", HexDisplay::from(&invoice_account.as_ref())),
-            price,
+            price: pprice,
             wss: database.rpc().to_string(),
             mul: properties.decimals,
             recipient,
@@ -198,4 +194,11 @@ async fn abcd(
             result: "waiting".into(),
         })
     }
+}
+
+fn convert(dec: u64, num: u128) -> Result<f64> {
+    let numfl = num as f64;
+    let mul = 10u128.pow(dec.try_into()?) as f64;
+
+    Ok(numfl / mul)
 }
