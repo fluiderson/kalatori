@@ -40,6 +40,7 @@ pub mod environment_variables {
     pub const OVERRIDE_RPC: &str = "KALATORI_OVERRIDE_RPC";
     pub const IN_MEMORY_DB: &str = "KALATORI_IN_MEMORY_DB";
     pub const DECIMALS: &str = "KALATORI_DECIMALS";
+    pub const DESTINATION: &str = "KALATORI_DESTINATION";
 }
 
 pub const DEFAULT_RPC: &str = "wss://rpc.polkadot.io";
@@ -159,6 +160,15 @@ pub async fn main() -> Result<()> {
         Err(error) => Err(error).context(format!("failed to read `{DECIMALS}`")),
     }?;
 
+    let destination = match env::var(DESTINATION) {
+        Ok(destination) => Ok(Some(
+            AccountId32::try_from(hex::decode(&destination[2..])?.as_ref())
+                .map_err(|()| anyhow::anyhow!("unknown destination address length"))?,
+        )),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error).context(format!("failed to read `{DESTINATION}`")),
+    }?;
+
     log::info!(
         "Kalatori {} by {} is starting...",
         env!("CARGO_PKG_VERSION"),
@@ -173,7 +183,7 @@ pub async fn main() -> Result<()> {
             .context("failed to prepare the node module")?;
 
     let (database, last_saved_block) =
-        Database::initialise(database_path, override_rpc, pair, endpoint_properties)
+        Database::initialise(database_path, override_rpc, pair, endpoint_properties, destination)
             .context("failed to initialise the database module")?;
 
     let processor = Processor::new(
