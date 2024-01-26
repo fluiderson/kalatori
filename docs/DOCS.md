@@ -1,9 +1,16 @@
 # Kalatori docs
 
-## Milestone 1 state
 
 ### Decisions
-1. Amounts передаем флотами, демон конфвертит у себя в u128 
+1. Amounts in tx/rx is f64, daemon stores it as u128
+
+f64 amount is rounded up in frontend; down in backend - to make sure order always passes
+
+Reasoning:
+
+- JSON messes up long integers routinely (no exact implementation is defined)
+- nobody cares about significant figures outside of u64 precision
+- this supports a good natured philosophy of friendly haggling and discounts that's natural for good business
 
 # Daemon API
 
@@ -25,7 +32,7 @@ API for interacting with the daemon.
     }
     ```
 
-### Create or get Account if exists
+### Create or get Account if it already exists
 
 - **Endpoint**: `POST /account`
 - **Description**: Creates a new account, returns account if exists already
@@ -35,10 +42,6 @@ API for interacting with the daemon.
     {
         "order_id": string, 
         "amount": float,
-        "currency": {
-            "type": string,
-            "code": string
-        }
     }
     ```
 
@@ -61,12 +64,6 @@ API for interacting with the daemon.
     }
     ```
     
-### Delete Account
-
-- **Endpoint**: `DELETE /account/{order_id}`
-- **Description**: Deletes account from daemon kv store
-
-- **Response (200 OK)**:
 
 ## Common Responses for Errors
 
