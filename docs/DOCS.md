@@ -29,6 +29,8 @@ API for interacting with the daemon.
     ```json
     {
         "version": string
+        "chain": string,
+        "code": string,
     }
     ```
 
