@@ -1,7 +1,8 @@
 use crate::{
-    database::{Database, Invoice, InvoiceStatus, ReadInvoices, WriteInvoices},
-    unexpected_closure_of_notification_channel, Account, Balance, BlockNumber, Decimals, Hash,
-    Nonce, OnlineClient, RuntimeConfig, DECIMALS, SCANNER_TO_LISTENER_SWITCH_POINT,
+    database::{Invoice, InvoiceStatus, ReadInvoices, State, WriteInvoices},
+    unexpected_closure_of_notification_channel, Account, Asset, Balance, BatchedCallsLimit,
+    BlockNumber, Decimals, Hash, Nonce, OnlineClient, RuntimeConfig, DECIMALS,
+    SCANNER_TO_LISTENER_SWITCH_POINT,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
@@ -34,11 +35,15 @@ use subxt::{
             sr25519::Pair,
         },
     },
-    storage::StorageClient,
+    storage::{Storage, StorageClient},
     tx::{PairSigner, SubmittableExtrinsic, TxClient},
     Config, Metadata,
 };
 use tokio::sync::{watch::Receiver, RwLock};
+use updater::Updater;
+
+mod tx_manager;
+mod updater;
 
 pub const MODULE: &str = module_path!();
 
@@ -50,6 +55,7 @@ const BLOCK_NONCE_ERROR: &str = "failed to fetch an account nonce by the scanner
 const SYSTEM: &str = "System";
 const BALANCES: &str = "Balances";
 const UTILITY: &str = "Utility";
+const ASSETS: &str = "Assets";
 
 async fn fetch_best_block(methods: &LegacyRpcMethods<RuntimeConfig>) -> Result<Hash> {
     methods
@@ -107,59 +113,128 @@ fn fetch_constant<T: DecodeAsType>(
         .with_context(|| format!("failed to decode the constant {constant:?}"))
 }
 
+fn fetch_address_format(
+    finalized_constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
+) -> Result<Ss58AddressFormat> {
+    const ADDRESS_PREFIX: (&str, &str) = (SYSTEM, "SS58Prefix");
+
+    Ok(Ss58AddressFormat::custom(fetch_constant(
+        finalized_constants,
+        ADDRESS_PREFIX,
+    )?))
+}
+
+async fn fetch_finalized_head_number_and_hash(
+    methods: &LegacyRpcMethods<RuntimeConfig>,
+) -> Result<(BlockNumber, Hash)> {
+    let head_hash = methods
+        .chain_get_finalized_head()
+        .await
+        .context("failed to get the finalized head hash")?;
+    let head = methods
+        .chain_get_block(Some(head_hash))
+        .await
+        .context("failed to get the finalized head")?
+        .context("received nothing after requesting the finalized head")?;
+
+    Ok((head.block.header.number, head_hash))
+}
+
+#[derive(Debug)]
+pub struct ApiProperties {
+    pub block_hash_count: BlockNumber,
+    pub batched_calls_limit: BatchedCallsLimit,
+}
+
+impl ApiProperties {
+    fn fetch(
+        constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
+        no_utility: bool,
+    ) -> Result<Self> {
+        const BLOCK_HASH_COUNT: (&str, &str) = (SYSTEM, "BlockHashCount");
+        const BATCHED_CALLS_LIMIT: (&str, &str) = (UTILITY, "BatchedCallsLimit");
+        const NO_UTILITY: BatchedCallsLimit = 1;
+
+        Ok(Self {
+            block_hash_count: fetch_constant(constants, BLOCK_HASH_COUNT)?,
+            batched_calls_limit: if no_utility {
+                NO_UTILITY
+            } else {
+                fetch_constant(constants, BATCHED_CALLS_LIMIT)?
+            },
+        })
+    }
+}
+
 pub struct ChainProperties {
     pub address_format: Ss58AddressFormat,
     pub existential_deposit: Balance,
-    pub decimals: Decimals,
-    pub block_hash_count: BlockNumber,
 }
 
-impl ChainProperties {
-    async fn fetch_only_constants(
-        constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
-        decimals: Decimals,
-    ) -> Result<Self> {
-        const ADDRESS_PREFIX: (&str, &str) = (SYSTEM, "SS58Prefix");
-        const EXISTENTIAL_DEPOSIT: (&str, &str) = (BALANCES, "ExistentialDeposit");
-        const BLOCK_HASH_COUNT: (&str, &str) = (SYSTEM, "BlockHashCount");
+// impl ChainProperties {
+//     fn native(
+//         address_format: Ss58AddressFormat,
+//         best: ChainPropertiesBest,
+//         finalized_constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
+//     ) -> Result<Self> {
+//         const EXISTENTIAL_DEPOSIT: (&str, &str) = (BALANCES, "ExistentialDeposit");
 
-        Ok(Self {
-            address_format: Ss58AddressFormat::custom(fetch_constant(constants, ADDRESS_PREFIX)?),
-            existential_deposit: fetch_constant(constants, EXISTENTIAL_DEPOSIT)?,
-            block_hash_count: fetch_constant(constants, BLOCK_HASH_COUNT)?,
-            decimals,
-        })
-    }
+//         Ok(Self {
+//             best,
+//             finalized: ChainPropertiesFinalized {
+//                 address_format,
+//                 existential_deposit: fetch_constant(finalized_constants, EXISTENTIAL_DEPOSIT)?,
+//             },
+//         })
+//     }
 
-    async fn fetch(
-        constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
-        methods: &LegacyRpcMethods<RuntimeConfig>,
-    ) -> Result<Self> {
-        const DECIMALS_KEY: &str = "tokenDecimals";
+//     async fn asset(
+//         address_format: Ss58AddressFormat,
+//         best: ChainPropertiesBest,
+//         finalized_storage: &Storage<RuntimeConfig, OnlineClient>,
+//         asset: Asset,
+//     ) -> Result<Self> {
+//         const ASSET: &str = "Asset";
+//         const MIN_BALANCE: &str = "min_balance";
 
-        let system_properties = methods
-            .system_properties()
-            .await
-            .context("failed to get the chain system properties")?;
-        let encoded_decimals = system_properties
-            .get(DECIMALS_KEY)
-            .with_context(|| format!(
-                "{DECIMALS_KEY:?} wasn't found in a response of the `system_properties` RPC call, set `{DECIMALS}` to set the decimal places number manually"
-            ))?;
-        let decimals = encoded_decimals
-            .as_u64()
-            .with_context(|| format!(
-                "failed to decode the decimal places number, expected a positive integer, got \"{encoded_decimals}\""
-            ))?;
+//         let asset_properties = finalized_storage
+//             .fetch(&dynamic::storage(ASSETS, ASSET, vec![asset]))
+//             .await
+//             .context("failed to get asset properties")?
+//             .context("asset with the given identifier doesn't exist")?
+//             .to_value()
+//             .context("failed to decode asset properties")?;
+//         let encoded_min_balance = asset_properties
+//             .at(MIN_BALANCE)
+//             .with_context(|| format!("{MIN_BALANCE} field wasn't found in asset properties"))?;
 
-        Self::fetch_only_constants(constants, decimals).await
-    }
-}
+//         Ok(Self {
+//             best,
+//             finalized: ChainPropertiesFinalized {
+//                 address_format,
+//                 existential_deposit: encoded_min_balance
+//                     .as_u128()
+//                     .with_context(|| {
+//                         format!(
+//                             "expected `u128` as the type of the {MIN_BALANCE} field, got {encoded_min_balance}"
+//                         )
+//                     })?,
+//             },
+//         })
+//     }
+// }
 
 pub struct ApiConfig {
     api: Arc<OnlineClient>,
     methods: Arc<LegacyRpcMethods<RuntimeConfig>>,
     backend: Arc<LegacyBackend<RuntimeConfig>>,
+}
+
+pub struct ScannerConfig {
+    api: Arc<OnlineClient>,
+    methods: Arc<LegacyRpcMethods<RuntimeConfig>>,
+    backend: Arc<LegacyBackend<RuntimeConfig>>,
+    api_properties: Arc<RwLock<ApiProperties>>,
 }
 
 pub struct EndpointProperties {
@@ -177,9 +252,10 @@ impl CheckedUrl {
 
 pub async fn prepare(
     url: String,
-    decimals_option: Option<Decimals>,
+    asset: Option<Asset>,
+    no_utility: bool,
     shutdown_notification: Receiver<bool>,
-) -> Result<(ApiConfig, EndpointProperties, Updater)> {
+) -> Result<(ScannerConfig, EndpointProperties, Updater, BlockNumber)> {
     let rpc = RpcClient::from_url(&url)
         .await
         .context("failed to construct the RPC client")?;
@@ -196,21 +272,17 @@ pub async fn prepare(
         .genesis_hash()
         .await
         .context("failed to get the genesis hash")?;
-    let api = Arc::new(
+    let client = Arc::new(
         OnlineClient::from_backend_with(genesis_hash, runtime_version, metadata, backend.clone())
             .context("failed to construct the API client")?,
     );
-    let constants = api.constants();
+    let constants = client.constants();
 
-    let (properties_result, decimals_set) = if let Some(decimals) = decimals_option {
-        (
-            ChainProperties::fetch_only_constants(&constants, decimals).await,
-            true,
-        )
-    } else {
-        (ChainProperties::fetch(&constants, &methods).await, false)
-    };
-    let properties = properties_result?;
+    let api_properties = ApiProperties::fetch(&constants, no_utility)?;
+
+    log::debug!("API client properties: {api_properties:?}.");
+
+    let address_format = fetch_address_format(finalized_constants)
 
     log::info!(
         "Chain properties:\n\
@@ -228,169 +300,26 @@ pub async fn prepare(
     let arc_properties = Arc::new(RwLock::const_new(properties));
 
     Ok((
-        ApiConfig {
-            api: api.clone(),
+        ScannerConfig {
+            api: client.clone(),
             methods: methods.clone(),
             backend: backend.clone(),
         },
         EndpointProperties {
             url: CheckedUrl(url),
-            chain: arc_properties.clone(),
+            chain: todo!(),
         },
         Updater {
+            client,
             methods,
             backend,
-            api,
-            constants,
             shutdown_notification,
-            properties: arc_properties,
-            decimals_set,
+            properties: todo!(),
+            constants,
+            no_utility,
         },
+        fetch_finalized_head_number_and_hash(&methods).await?.0
     ))
-}
-
-pub struct Updater {
-    methods: Arc<LegacyRpcMethods<RuntimeConfig>>,
-    backend: Arc<LegacyBackend<RuntimeConfig>>,
-    api: Arc<OnlineClient>,
-    constants: ConstantsClient<RuntimeConfig, OnlineClient>,
-    shutdown_notification: Receiver<bool>,
-    properties: Arc<RwLock<ChainProperties>>,
-    decimals_set: bool,
-}
-
-impl Updater {
-    pub async fn ignite(mut self) -> Result<&'static str> {
-        loop {
-            let mut updates = self
-                .backend
-                .stream_runtime_version()
-                .await
-                .context("failed to get the runtime updates stream")?;
-
-            if let Some(current_runtime_version_result) = updates.next().await {
-                let current_runtime_version = current_runtime_version_result
-                    .context("failed to decode the current runtime version")?;
-
-                // The updates stream is always returns the current runtime version in the first
-                // item. We don't skip it though because during a connection loss the runtime can be
-                // updated, hence this condition will catch this.
-                if self.api.runtime_version() != current_runtime_version {
-                    self.process_update()
-                        .await
-                        .context("failed to process the first API client update")?;
-                }
-
-                loop {
-                    tokio::select! {
-                        biased;
-                        notification = self.shutdown_notification.changed() => {
-                            return notification
-                                .with_context(||
-                                    unexpected_closure_of_notification_channel("update")
-                                )
-                                .map(|()| "The API client updater is shut down.");
-                        }
-                        runtime_version = updates.next() => {
-                            if runtime_version.is_some() {
-                                self.process_update()
-                                    .await
-                                    .context(
-                                        "failed to process an update for the API client"
-                                    )?;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            log::warn!(
-                "Lost the connection while listening the endpoint for API client runtime updates. Retrying..."
-            );
-        }
-    }
-
-    async fn process_update(&self) -> Result<()> {
-        // We don't use the runtime version from the updates stream because it doesn't provide the
-        // best block hash, so we fetch it ourselves (in `fetch_runtime`) and use it to make sure
-        // that metadata & the runtime version are from the same block.
-        let (metadata, runtime_version) = fetch_runtime(&self.methods, &*self.backend)
-            .await
-            .context("failed to fetch a new runtime for the API client")?;
-
-        self.api.set_metadata(metadata);
-        self.api.set_runtime_version(runtime_version);
-
-        let (mut current_properties, new_properties_result) = if self.decimals_set {
-            let current_properties = self.properties.write().await;
-            let new_properties_result =
-                ChainProperties::fetch_only_constants(&self.constants, current_properties.decimals)
-                    .await;
-
-            (current_properties, new_properties_result)
-        } else {
-            (
-                self.properties.write().await,
-                ChainProperties::fetch(&self.constants, &self.methods).await,
-            )
-        };
-        let new_properties = new_properties_result?;
-
-        let mut changed = String::new();
-        let mut add_change = |message: Arguments<'_>| {
-            changed.write_fmt(message).unwrap();
-        };
-
-        if new_properties.address_format != current_properties.address_format {
-            add_change(format_args!(
-                "\nOld {value}: \"{}\" ({}). New {value}: \"{}\" ({}).",
-                current_properties.address_format,
-                current_properties.address_format.prefix(),
-                new_properties.address_format,
-                new_properties.address_format.prefix(),
-                value = "address format",
-            ));
-        }
-
-        if new_properties.existential_deposit != current_properties.existential_deposit {
-            add_change(format_args!(
-                "\nOld {value}: {}. New {value}: {}.",
-                current_properties.existential_deposit,
-                new_properties.existential_deposit,
-                value = "existential deposit"
-            ));
-        }
-
-        if new_properties.decimals != current_properties.decimals {
-            add_change(format_args!(
-                "\nOld {value}: {}. New {value}: {}.",
-                current_properties.decimals,
-                new_properties.decimals,
-                value = "decimal places number"
-            ));
-        }
-
-        if new_properties.block_hash_count != current_properties.block_hash_count {
-            add_change(format_args!(
-                "\nOld {value}: {}. New {value}: {}.",
-                current_properties.block_hash_count,
-                new_properties.block_hash_count,
-                value = "block hash count"
-            ));
-        }
-
-        if !changed.is_empty() {
-            *current_properties = new_properties;
-
-            log::warn!("The chain properties has been changed:{changed}");
-        }
-
-        log::info!("A runtime update has been found and applied for the API client.");
-
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -407,7 +336,6 @@ impl Display for Shutdown {
 
 struct Api {
     tx: TxClient<RuntimeConfig, OnlineClient>,
-    blocks: BlocksClient<RuntimeConfig, OnlineClient>,
 }
 
 struct Scanner {
@@ -420,7 +348,7 @@ pub struct Processor {
     api: Api,
     scanner: Scanner,
     methods: Arc<LegacyRpcMethods<RuntimeConfig>>,
-    database: Arc<Database>,
+    database: Arc<State>,
     backend: Arc<LegacyBackend<RuntimeConfig>>,
     shutdown_notification: Receiver<bool>,
 }
@@ -432,7 +360,7 @@ impl Processor {
             methods,
             backend,
         }: ApiConfig,
-        database: Arc<Database>,
+        database: Arc<State>,
         shutdown_notification: Receiver<bool>,
     ) -> Result<Self> {
         let scanner = OnlineClient::from_backend_with(
@@ -444,10 +372,7 @@ impl Processor {
         .context("failed to initialize the scanner client")?;
 
         Ok(Processor {
-            api: Api {
-                tx: api.tx(),
-                blocks: api.blocks(),
-            },
+            api: Api { tx: api.tx() },
             scanner: Scanner {
                 blocks: scanner.blocks(),
                 storage: scanner.storage(),
@@ -716,16 +641,16 @@ impl Processor {
         let mut write_invoices = write_tx.invoices()?;
 
         for (invoice, changes) in invoices_changes {
-            match changes.invoice.status {
-                InvoiceStatus::Unpaid(price) => self
-                    .process_unpaid(&block, changes, hash, invoice, price, &mut write_invoices)
-                    .await
-                    .context("failed to process an unpaid invoice")?,
-                InvoiceStatus::Paid(_) => self
-                    .process_paid(invoice, &block, changes, hash)
-                    .await
-                    .context("failed to process a paid invoice")?,
-            }
+            // match changes.invoice.status {
+            //     InvoiceStatus::Unpaid(price) => self
+            //         .process_unpaid(&block, changes, hash, invoice, price, &mut write_invoices)
+            //         .await
+            //         .context("failed to process an unpaid invoice")?,
+            //     InvoiceStatus::Paid(_) => self
+            //         .process_paid(invoice, &block, changes, hash)
+            //         .await
+            //         .context("failed to process a paid invoice")?,
+            // }
         }
 
         drop(write_invoices);
@@ -787,30 +712,34 @@ impl Processor {
             .finalized_head_number_and_hash()
             .await
             .context("failed to get the chain head while constructing a transaction")?;
-        let extensions = (
-            (),
-            (),
-            (),
-            (),
-            CheckMortalityParams::mortal(block_hash_count.into(), number.into(), hash),
-            ChargeTransactionPaymentParams::no_tip(),
-        );
+        // let extensions = (
+        //     (),
+        //     (),
+        //     (),
+        //     (),
+        //     CheckMortalityParams::mortal(block_hash_count.into(), number.into(), hash),
+        //     ChargeTransactionPaymentParams::no_tip(),
+        // );
 
-        self.api
-            .tx
-            .create_signed_with_nonce(&call, signer, nonce, extensions)
-            .context("failed to create a transfer transaction")
+        // self.api
+        //     .tx
+        //     .create_signed_with_nonce(&call, signer, nonce, extensions)
+        //     .context("failed to create a transfer transaction")
+
+        todo!()
     }
 
     async fn current_nonce(&self, account: &Account) -> Result<Nonce> {
-        self.api
-            .blocks
-            .at(fetch_best_block(&self.methods).await?)
-            .await
-            .context("failed to obtain the best block for fetching an account nonce")?
-            .account_nonce(account)
-            .await
-            .context("failed to fetch an account nonce by the API client")
+        // self.api
+        //     .blocks
+        //     .at(fetch_best_block(&self.methods).await?)
+        //     .await
+        //     .context("failed to obtain the best block for fetching an account nonce")?
+        //     .account_nonce(account)
+        //     .await
+        //     .context("failed to fetch an account nonce by the API client")
+
+        todo!()
     }
 
     async fn process_unpaid(
@@ -825,7 +754,7 @@ impl Processor {
         let balance = self.balance(hash, &invoice).await?;
 
         if let Some(remaining) = balance.checked_sub(price) {
-            changes.invoice.status = InvoiceStatus::Paid(price);
+            // changes.invoice.status = InvoiceStatus::Paid(price);
 
             let block_nonce = block
                 .account_nonce(&invoice)
@@ -833,78 +762,78 @@ impl Processor {
                 .context(BLOCK_NONCE_ERROR)?;
             let current_nonce = self.current_nonce(&invoice).await?;
 
-            if current_nonce <= block_nonce {
-                let properties = self.database.properties().await;
-                let block_hash_count = properties.block_hash_count;
-                let signer = changes.invoice.signer(self.database.pair())?;
+            // if current_nonce <= block_nonce {
+            //     let properties = self.database.properties().await;
+            //     let block_hash_count = properties.block_hash_count;
+            //     let signer = changes.invoice.signer(self.database.pair())?;
 
-                let mut transfers = vec![construct_transfer(&changes.invoice.recipient, price)];
-                let mut tx = self
-                    .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
-                    .await?;
-                let mut fee = calculate_estimate_fee(&tx).await?;
+            //     let mut transfers = vec![construct_transfer(&changes.invoice.recipient, price)];
+            //     let mut tx = self
+            //         .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
+            //         .await?;
+            //     let mut fee = calculate_estimate_fee(&tx).await?;
 
-                if let Some(a) = (fee + properties.existential_deposit + price).checked_sub(balance)
-                {
-                    let price_mod = price - a;
+            //     if let Some(a) = (fee + properties.existential_deposit + price).checked_sub(balance)
+            //     {
+            //         let price_mod = price - a;
 
-                    transfers = vec![construct_transfer(&changes.invoice.recipient, price_mod)];
-                    tx = self
-                        .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
-                        .await?;
+            //         transfers = vec![construct_transfer(&changes.invoice.recipient, price_mod)];
+            //         tx = self
+            //             .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
+            //             .await?;
 
-                    self.methods
-                        .author_submit_extrinsic(tx.encoded())
-                        .await
-                        .context("failed to submit an extrinsic")?;
-                } else if let Some((account, amount)) = changes.incoming.into_iter().next() {
-                    let mut temp_transfers = transfers.clone();
+            //         self.methods
+            //             .author_submit_extrinsic(tx.encoded())
+            //             .await
+            //             .context("failed to submit an extrinsic")?;
+            //     } else if let Some((account, amount)) = changes.incoming.into_iter().next() {
+            //         let mut temp_transfers = transfers.clone();
 
-                    temp_transfers.push(construct_transfer(&account, amount));
-                    tx = self
-                        .batch_transfer(
-                            current_nonce,
-                            block_hash_count,
-                            &signer,
-                            temp_transfers.clone(),
-                        )
-                        .await?;
-                    fee = calculate_estimate_fee(&tx).await?;
+            //         temp_transfers.push(construct_transfer(&account, amount));
+            //         tx = self
+            //             .batch_transfer(
+            //                 current_nonce,
+            //                 block_hash_count,
+            //                 &signer,
+            //                 temp_transfers.clone(),
+            //             )
+            //             .await?;
+            //         fee = calculate_estimate_fee(&tx).await?;
 
-                    if let Some(a) =
-                        (fee + properties.existential_deposit + amount).checked_sub(remaining)
-                    {
-                        let amount_mod = amount - a;
+            //         if let Some(a) =
+            //             (fee + properties.existential_deposit + amount).checked_sub(remaining)
+            //         {
+            //             let amount_mod = amount - a;
 
-                        transfers.push(construct_transfer(&account, amount_mod));
-                        tx = self
-                            .batch_transfer(
-                                current_nonce,
-                                block_hash_count,
-                                &signer,
-                                transfers.clone(),
-                            )
-                            .await?;
+            //             transfers.push(construct_transfer(&account, amount_mod));
+            //             tx = self
+            //                 .batch_transfer(
+            //                     current_nonce,
+            //                     block_hash_count,
+            //                     &signer,
+            //                     transfers.clone(),
+            //                 )
+            //                 .await?;
 
-                        self.methods
-                            .author_submit_extrinsic(tx.encoded())
-                            .await
-                            .context("failed to submit an extrinsic")?;
-                    } else {
-                        self.methods
-                            .author_submit_extrinsic(tx.encoded())
-                            .await
-                            .context("failed to submit an extrinsic")?;
-                    }
-                } else {
-                    self.methods
-                        .author_submit_extrinsic(tx.encoded())
-                        .await
-                        .context("failed to submit an extrinsic")?;
-                }
-            }
+            //             self.methods
+            //                 .author_submit_extrinsic(tx.encoded())
+            //                 .await
+            //                 .context("failed to submit an extrinsic")?;
+            //         } else {
+            //             self.methods
+            //                 .author_submit_extrinsic(tx.encoded())
+            //                 .await
+            //                 .context("failed to submit an extrinsic")?;
+            //         }
+            //     } else {
+            //         self.methods
+            //             .author_submit_extrinsic(tx.encoded())
+            //             .await
+            //             .context("failed to submit an extrinsic")?;
+            //     }
+            // }
 
-            invoices.save(&invoice, &changes.invoice)?;
+            // invoices.save(&invoice, &changes.invoice)?;
         }
 
         Ok(())
