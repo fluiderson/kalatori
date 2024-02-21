@@ -929,7 +929,7 @@ fn construct_transfer(to: &Account, amount: Balance) -> Value {
         TRANSFER_ALL,
         vec![
             scale_value::value!(Id(Value::from_bytes(to))),
-            false,
+            false.into(),
         ],
     )
     .into_value()
