@@ -182,9 +182,14 @@ pub async fn main() -> Result<()> {
             .await
             .context("failed to prepare the node module")?;
 
-    let (database, last_saved_block) =
-        Database::initialise(database_path, override_rpc, pair, endpoint_properties, destination)
-            .context("failed to initialise the database module")?;
+    let (database, last_saved_block) = Database::initialise(
+        database_path,
+        override_rpc,
+        pair,
+        endpoint_properties,
+        destination,
+    )
+    .context("failed to initialise the database module")?;
 
     let processor = Processor::new(
         api_config,

@@ -927,10 +927,7 @@ fn construct_transfer(to: &Account, amount: Balance) -> Value {
     dynamic::tx(
         BALANCES,
         TRANSFER_ALL,
-        vec![
-            scale_value::value!(Id(Value::from_bytes(to))),
-            false.into(),
-        ],
+        vec![scale_value::value!(Id(Value::from_bytes(to))), false.into()],
     )
     .into_value()
 }
