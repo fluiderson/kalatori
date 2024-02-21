@@ -824,7 +824,7 @@ impl Processor {
     ) -> Result<()> {
         let balance = self.balance(hash, &invoice).await?;
 
-        if let Some(remaining) = balance.checked_sub(price) {
+        if let Some(_remaining) = balance.checked_sub(price) {
             changes.invoice.status = InvoiceStatus::Paid(price);
 
             let block_nonce = block
@@ -838,70 +838,72 @@ impl Processor {
                 let block_hash_count = properties.block_hash_count;
                 let signer = changes.invoice.signer(self.database.pair())?;
 
-                let mut transfers = vec![construct_transfer(&changes.invoice.recipient, price)];
-                let mut tx = self
+                let transfers = vec![construct_transfer(&changes.invoice.recipient, price)];
+                let tx = self
                     .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
                     .await?;
-                let mut fee = calculate_estimate_fee(&tx).await?;
-
-                if let Some(a) = (fee + properties.existential_deposit + price).checked_sub(balance)
-                {
-                    let price_mod = price - a;
-
-                    transfers = vec![construct_transfer(&changes.invoice.recipient, price_mod)];
-                    tx = self
-                        .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
-                        .await?;
-
-                    self.methods
-                        .author_submit_extrinsic(tx.encoded())
-                        .await
-                        .context("failed to submit an extrinsic")?;
-                } else if let Some((account, amount)) = changes.incoming.into_iter().next() {
-                    let mut temp_transfers = transfers.clone();
-
-                    temp_transfers.push(construct_transfer(&account, amount));
-                    tx = self
-                        .batch_transfer(
-                            current_nonce,
-                            block_hash_count,
-                            &signer,
-                            temp_transfers.clone(),
-                        )
-                        .await?;
-                    fee = calculate_estimate_fee(&tx).await?;
-
-                    if let Some(a) =
-                        (fee + properties.existential_deposit + amount).checked_sub(remaining)
+                //let mut fee = calculate_estimate_fee(&tx).await?;
+                /*
+                    if false //let Some(a) = (fee + properties.existential_deposit + price).checked_sub(balance)
                     {
-                        let amount_mod = amount - a;
+                        let price_mod = price - a;
 
-                        transfers.push(construct_transfer(&account, amount_mod));
+                        transfers = vec![construct_transfer(&changes.invoice.recipient, price_mod)];
                         tx = self
-                            .batch_transfer(
-                                current_nonce,
-                                block_hash_count,
-                                &signer,
-                                transfers.clone(),
-                            )
+                            .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
                             .await?;
 
                         self.methods
                             .author_submit_extrinsic(tx.encoded())
                             .await
                             .context("failed to submit an extrinsic")?;
+                    } else if let Some((account, amount)) = changes.incoming.into_iter().next() {
+                        let mut temp_transfers = transfers.clone();
+
+                        temp_transfers.push(construct_transfer(&account, amount));
+                        tx = self
+                            .batch_transfer(
+                                current_nonce,
+                                block_hash_count,
+                                &signer,
+                                temp_transfers.clone(),
+                            )
+                            .await?;
+                        fee = calculate_estimate_fee(&tx).await?;
+
+                        if let Some(a) =
+                            (fee + properties.existential_deposit + amount).checked_sub(remaining)
+                        {
+                            let amount_mod = amount - a;
+
+                            transfers.push(construct_transfer(&account, amount_mod));
+                            tx = self
+                                .batch_transfer(
+                                    current_nonce,
+                                    block_hash_count,
+                                    &signer,
+                                    transfers.clone(),
+                                )
+                                .await?;
+
+                            self.methods
+                                .author_submit_extrinsic(tx.encoded())
+                                .await
+                                .context("failed to submit an extrinsic")?;
+                        } else {
+                            self.methods
+                                .author_submit_extrinsic(tx.encoded())
+                                .await
+                                .context("failed to submit an extrinsic")?;
+                        }
                     } else {
-                        self.methods
-                            .author_submit_extrinsic(tx.encoded())
-                            .await
-                            .context("failed to submit an extrinsic")?;
-                    }
-                } else {
-                    self.methods
-                        .author_submit_extrinsic(tx.encoded())
-                        .await
-                        .context("failed to submit an extrinsic")?;
-                }
+                */
+                self.methods
+                    .author_submit_extrinsic(tx.encoded())
+                    .await
+                    .context("failed to submit an extrinsic")?;
+
+                //}
             }
 
             invoices.save(&invoice, &changes.invoice)?;
@@ -921,7 +923,7 @@ impl Processor {
     }
 }
 
-fn construct_transfer(to: &Account, amount: Balance) -> Value {
+fn construct_transfer(to: &Account, _amount: Balance) -> Value {
     const TRANSFER_ALL: &str = "transfer_all";
 
     dynamic::tx(
@@ -932,6 +934,7 @@ fn construct_transfer(to: &Account, amount: Balance) -> Value {
     .into_value()
 }
 
+/*
 async fn calculate_estimate_fee(
     extrinsic: &SubmittableExtrinsic<RuntimeConfig, OnlineClient>,
 ) -> Result<Balance> {
@@ -941,6 +944,7 @@ async fn calculate_estimate_fee(
         .map(|f| f * 2)
         .context("failed to obtain a transfer's estimate fee")
 }
+*/
 
 struct InvoiceChanges {
     invoice: Invoice,
