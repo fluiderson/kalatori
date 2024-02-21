@@ -922,14 +922,14 @@ impl Processor {
 }
 
 fn construct_transfer(to: &Account, amount: Balance) -> Value {
-    const TRANSFER_KEEP_ALIVE: &str = "transfer_keep_alive";
+    const TRANSFER_ALL: &str = "transfer_all";
 
     dynamic::tx(
         BALANCES,
-        TRANSFER_KEEP_ALIVE,
+        TRANSFER_ALL,
         vec![
             scale_value::value!(Id(Value::from_bytes(to))),
-            amount.into(),
+            false,
         ],
     )
     .into_value()
