@@ -8,7 +8,14 @@ use redb::{
     backends::InMemoryBackend, AccessGuard, Database, ReadOnlyTable, ReadableTable, RedbKey,
     RedbValue, Table, TableDefinition, TableHandle, TypeName,
 };
-use std::{borrow::Borrow, fmt::Write, sync::Arc};
+use std::{
+    borrow::Borrow,
+    fmt::Write,
+    io::{Cursor, Write as _},
+    mem::MaybeUninit,
+    ptr::{addr_of, addr_of_mut},
+    sync::Arc,
+};
 use subxt::{
     ext::{
         codec::{Compact, Decode, Encode},
@@ -36,7 +43,7 @@ const INVOICES: TableDefinition<'_, &str, Invoice> = TableDefinition::new("invoi
 const LIVE_ACCOUNTS: TableDefinition<'_, &AccountK, &str> = TableDefinition::new("live_accounts");
 const DEAD_ACCOUNTS: TableDefinition<'_, &AccountK, &Derivation> =
     TableDefinition::new("dead_accounts");
-const TRANSACTIONS: TableDefinition<'_, &AccountK, TransferTransaction> =
+const TRANSACTIONS: TableDefinition<'_, (&AccountK, Nonce), Vec<Transfer>> =
     TableDefinition::new("transactions");
 const PENDING_ACTIONS: TableDefinition<'_, BlockNumber, Actions> =
     TableDefinition::new("pending_actions");
@@ -56,7 +63,6 @@ type Derivation = [u8; 32];
 type AccountK = [u8; 32];
 type Actions = KeyedVec<&'static AccountK, Vec<Transfer>>;
 type Transfer = (&'static AccountK, Balance);
-type TransferTransaction = (Nonce, Transfer);
 
 #[derive(Debug, Encode, Decode)]
 #[codec(crate = subxt::ext::codec)]
@@ -126,22 +132,31 @@ struct DaemonInfo {
 pub struct State {
     database: Database,
     chain: Arc<RwLock<ChainProperties>>,
-    rpc: String,
+    rpc_url: String,
     properties: StateConfig,
 }
 
 impl State {
-    pub fn initialise(
+    pub fn initialize(
         db_path_option: Option<String>,
-        EndpointProperties { url, chain }: EndpointProperties,
+        EndpointProperties { rpc_url, chain }: EndpointProperties,
         config: StateConfig,
-        purge_block: BlockNumber,
+        finalized_number: BlockNumber,
+        depth: BlockNumber,
     ) -> Result<(Arc<Self>, Option<BlockNumber>)> {
-        let public = config.pair.public();
-        let public_formatted = public.to_ss58check_with_version(
-            task::block_in_place(|| chain.blocking_read()).address_format,
+        log::info!("Block scan depth: {depth}.");
+        log::info!(
+            "Address format: \"{}\" ({}).",
+            chain.address_format,
+            chain.address_format.prefix()
         );
-        let given_rpc = url.get();
+        log::info!(
+            "Existential deposit: {}.",
+            format_balance_with_decimals(chain.existential_deposit, config.decimals)
+        );
+
+        let public = config.pair.public();
+        let public_formatted = public.to_ss58check_with_version(chain.address_format);
 
         let mut database = if let Some(path) = db_path_option {
             log::info!("Creating/Opening the database at \"{path}\".");
@@ -158,14 +173,14 @@ impl State {
         let tx = begin_write_tx(&database)?;
         let mut root = tx.root()?;
 
-        let last_block = match (
+        let resume_block = match (
             root.get_slot(DB_VERSION_KEY)?,
             root.get_slot(DAEMON_INFO)?,
             root.get_slot(LAST_BLOCK)?,
         ) {
             (None, None, None) => {
                 root.insert_db_version()?;
-                root.insert_daemon_info(given_rpc.clone(), public, config.asset)?;
+                root.insert_daemon_info(rpc_url.clone(), public, config.asset)?;
 
                 None
             }
@@ -203,14 +218,42 @@ impl State {
                     _ => {}
                 }
 
-                if given_rpc != db_rpc {
-                    log::warn!("The saved RPC endpoint ({db_rpc:?}) differs from the given one ({given_rpc:?}) and will be overwritten with it.");
+                if rpc_url != db_rpc {
+                    log::warn!("The saved RPC endpoint ({db_rpc:?}) differs from the given one ({rpc_url:?}) and will be overwritten with it.");
 
-                    root.insert_daemon_info(given_rpc.clone(), public, config.asset)?;
+                    root.insert_daemon_info(rpc_url.clone(), public, config.asset)?;
                 }
 
                 if let Some(encoded_last_block) = last_block_option {
-                    Some(decode_slot::<Compact<BlockNumber>>(encoded_last_block, LAST_BLOCK)?.0)
+                    let purge_block = finalized_number.saturating_sub(depth);
+
+                    log::info!("All data before the {purge_block} block will be purged from the database.");
+
+                    tx.pending_actions()?.purge(purge_block)?;
+
+                    let mut hit_list = tx.hit_list()?;
+                    let mut live_accounts = tx.live_accounts()?;
+                    let mut dead_accounts = tx.dead_accounts()?;
+                    let mut invoices = tx.invoices()?;
+
+                    for account_result in hit_list.purge(purge_block)? {
+                        let guard = account_result?;
+                        let account = guard.value();
+
+                        let invoice_key_guard = live_accounts.remove(account)?;
+                        let invoice_key = invoice_key_guard.value();
+
+                        log::info!(
+                            "Purging the invoice {invoice_key:?} and marking its account {} as dead...",
+                            Account::new(*account).to_ss58check_with_version(chain.address_format)
+                        );
+
+                        let invoice = invoices.remove(invoice_key)?.value();
+
+                        dead_accounts.insert(account, &invoice.derivation)?;
+                    }
+
+                    Some(purge_block.max(decode_slot::<Compact<BlockNumber>>(encoded_last_block, LAST_BLOCK)?.0))
                 } else {
                     None
                 }
@@ -220,24 +263,7 @@ impl State {
             ),
         };
 
-        tx.pending_actions()?.purge(purge_block)?;
-
-        let mut hit_list = tx.hit_list()?;
-        let mut live_accounts = tx.live_accounts()?;
-        let mut dead_accounts = tx.dead_accounts()?;
-        let mut invoices = tx.invoices()?;
-
-        for account_result in hit_list.purge(purge_block)? {
-            let guard = account_result?;
-            let account = guard.value();
-
-            let invoice_key = live_accounts.remove(account)?;
-            let invoice = invoices.remove(invoice_key.value())?.value();
-
-            dead_accounts.insert(account, &invoice.derivation)?;
-        }
-
-        drop((root, hit_list, live_accounts, dead_accounts, invoices));
+        drop(root);
 
         tx.commit()?;
 
@@ -251,7 +277,7 @@ impl State {
             log::debug!("The database doesn't need the compaction.")
         }
 
-        log::info!("Public key from the given seed: \"{public_formatted}\".");
+        log::info!("Public key from the given seed: {public_formatted}.");
         log::info!("Decimals: {}.", config.decimals);
         log::info!(
             "Expected fee maximum: {}.",
@@ -267,16 +293,16 @@ impl State {
         Ok((
             Arc::new(Self {
                 database,
-                chain,
-                rpc: given_rpc,
+                chain: Arc::new(RwLock::const_new(chain)),
+                rpc_url,
                 properties: config,
             }),
-            last_block,
+            resume_block,
         ))
     }
 
     pub fn rpc(&self) -> &str {
-        &self.rpc
+        &self.rpc_url
     }
 
     pub fn destination(&self) -> &Option<Account> {
@@ -428,7 +454,7 @@ impl<'db, 'tx> HitList<'db, 'tx> {
         purge_block: BlockNumber,
     ) -> Result<impl Iterator<Item = Result<AccessGuard<'_, &'static AccountK>>>> {
         self.0
-            .drain(..=purge_block)
+            .drain(..purge_block)
             .context("failed to purge outdated live accounts")
             .map(|drain| {
                 drain.map(|item| {
@@ -449,7 +475,7 @@ pub struct PendingActions<'db, 'tx>(Table<'db, 'tx, BlockNumber, Actions>);
 impl PendingActions<'_, '_> {
     fn purge(&mut self, purge_block: BlockNumber) -> Result<()> {
         self.0
-            .drain(..=purge_block)
+            .drain(..purge_block)
             .map(|_| ())
             .context("failed to purge outdated pending actions")
     }
@@ -512,5 +538,105 @@ fn remove_slot<'a, 'b, K: RedbKey, V: RedbValue>(
 }
 
 fn format_balance_with_decimals(balance: Balance, decimals: Decimals) -> String {
-    todo!()
+    const ZERO_CHARACTER: char = '0';
+
+    let decimals_usize: usize = decimals.into();
+    let mut balance_string = balance.to_string();
+    let balance_string_length = balance_string.len();
+
+    if let Some(preceding_zeros_length_in_fraction) =
+        decimals_usize.checked_sub(balance_string_length)
+    {
+        const ZERO: &str = "0";
+
+        let fraction_wo_preceding_zeros = balance_string.trim_end_matches(ZERO_CHARACTER);
+
+        if fraction_wo_preceding_zeros.is_empty() {
+            ZERO.into()
+        } else {
+            const ZERO_INTEGER: &str = "0.";
+
+            let mut result = String::with_capacity(
+                ZERO_INTEGER
+                    .len()
+                    .saturating_add(preceding_zeros_length_in_fraction)
+                    .saturating_add(fraction_wo_preceding_zeros.len()),
+            );
+
+            result.write_str(ZERO_INTEGER).unwrap();
+
+            for _ in 0..preceding_zeros_length_in_fraction {
+                result.write_str(ZERO).unwrap();
+            }
+
+            result.write_str(fraction_wo_preceding_zeros).unwrap();
+
+            result
+        }
+    } else {
+        // Never equals 0.
+        let decimal_point_position = balance_string_length.saturating_sub(decimals_usize);
+        let mut trimmed_balance_length_with_fraction_option = None;
+
+        for (position, digit) in balance_string.chars().rev().enumerate() {
+            if position == decimals_usize {
+                break;
+            }
+
+            if digit != ZERO_CHARACTER {
+                trimmed_balance_length_with_fraction_option =
+                    Some(balance_string_length.saturating_sub(position));
+
+                break;
+            }
+        }
+
+        if let Some(trimmed_balance_length_with_fraction) =
+            trimmed_balance_length_with_fraction_option
+        {
+            const SEPARATOR: &str = ".";
+
+            let mut result = String::with_capacity(
+                trimmed_balance_length_with_fraction.saturating_add(SEPARATOR.len()),
+            );
+
+            result
+                .write_str(&balance_string[..decimal_point_position])
+                .unwrap();
+            result.write_str(SEPARATOR).unwrap();
+            result
+                .write_str(
+                    &balance_string[decimal_point_position..trimmed_balance_length_with_fraction],
+                )
+                .unwrap();
+
+            result
+        } else {
+            balance_string.truncate(decimal_point_position);
+
+            balance_string
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn check_format_balance_with_decimals() {
+    for decimals in 0..Decimals::MAX {
+        assert_eq!(format_balance_with_decimals(0, decimals), "0");
+    }
+
+    assert_eq!(format_balance_with_decimals(1, 0), "1");
+    assert_eq!(format_balance_with_decimals(1, 1), "0.1");
+    assert_eq!(format_balance_with_decimals(1, 2), "0.01");
+    assert_eq!(format_balance_with_decimals(1, 15), "0.000000000000001");
+
+    assert_eq!(format_balance_with_decimals(10000, 2), "100");
+    assert_eq!(format_balance_with_decimals(1000000000, 7), "100");
+    assert_eq!(format_balance_with_decimals(100000, 7), "0.01");
+
+    assert_eq!(format_balance_with_decimals(15243, 2), "152.43");
+    assert_eq!(format_balance_with_decimals(8924356500, 7), "892.43565");
+    assert_eq!(format_balance_with_decimals(986343, 7), "0.0986343");
+    assert_eq!(format_balance_with_decimals(452356000, 3), "452356000");
 }

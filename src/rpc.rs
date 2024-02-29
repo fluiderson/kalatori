@@ -57,32 +57,37 @@ const BALANCES: &str = "Balances";
 const UTILITY: &str = "Utility";
 const ASSETS: &str = "Assets";
 
-async fn fetch_best_block(methods: &LegacyRpcMethods<RuntimeConfig>) -> Result<Hash> {
+async fn fetch_runtime_version(
+    methods: &LegacyRpcMethods<RuntimeConfig>,
+    at: Hash,
+) -> Result<RuntimeVersion> {
     methods
-        .chain_get_block_hash(None)
+        .state_get_runtime_version(Some(at))
         .await
-        .context("failed to get the best block hash")?
-        .context("received nothing after requesting the best block hash")
+        .map(|runtime_version| RuntimeVersion {
+            spec_version: runtime_version.spec_version,
+            transaction_version: runtime_version.transaction_version,
+        })
+        .map_err(Into::into)
 }
 
-async fn fetch_runtime(
+async fn fetch_best_runtime(
     methods: &LegacyRpcMethods<RuntimeConfig>,
     backend: &impl Backend<RuntimeConfig>,
 ) -> Result<(Metadata, RuntimeVersion)> {
-    let best_block = fetch_best_block(methods).await?;
+    let best_hash = methods
+        .chain_get_block_hash(None)
+        .await
+        .context("failed to get the best head hash")?
+        .context("received nothing after requesting the best head hash")?;
 
     Ok((
-        fetch_metadata(backend, best_block)
+        fetch_metadata(backend, best_hash)
             .await
-            .context("failed to fetch metadata")?,
-        methods
-            .state_get_runtime_version(Some(best_block))
+            .context("failed to fetch metadata from the best head")?,
+        fetch_runtime_version(methods, best_hash)
             .await
-            .map(|runtime_version| RuntimeVersion {
-                spec_version: runtime_version.spec_version,
-                transaction_version: runtime_version.transaction_version,
-            })
-            .context("failed to fetch the runtime version")?,
+            .context("failed to fetch the runtime version from the best head")?,
     ))
 }
 
@@ -114,12 +119,12 @@ fn fetch_constant<T: DecodeAsType>(
 }
 
 fn fetch_address_format(
-    finalized_constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
+    constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
 ) -> Result<Ss58AddressFormat> {
     const ADDRESS_PREFIX: (&str, &str) = (SYSTEM, "SS58Prefix");
 
     Ok(Ss58AddressFormat::custom(fetch_constant(
-        finalized_constants,
+        constants,
         ADDRESS_PREFIX,
     )?))
 }
@@ -152,7 +157,7 @@ impl ApiProperties {
         no_utility: bool,
     ) -> Result<Self> {
         const BLOCK_HASH_COUNT: (&str, &str) = (SYSTEM, "BlockHashCount");
-        const BATCHED_CALLS_LIMIT: (&str, &str) = (UTILITY, "BatchedCallsLimit");
+        const BATCHED_CALLS_LIMIT: (&str, &str) = (UTILITY, "batched_calls_limit");
         const NO_UTILITY: BatchedCallsLimit = 1;
 
         Ok(Self {
@@ -171,58 +176,45 @@ pub struct ChainProperties {
     pub existential_deposit: Balance,
 }
 
-// impl ChainProperties {
-//     fn native(
-//         address_format: Ss58AddressFormat,
-//         best: ChainPropertiesBest,
-//         finalized_constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
-//     ) -> Result<Self> {
-//         const EXISTENTIAL_DEPOSIT: (&str, &str) = (BALANCES, "ExistentialDeposit");
+impl ChainProperties {
+    fn native(constants: &ConstantsClient<RuntimeConfig, OnlineClient>) -> Result<Self> {
+        const EXISTENTIAL_DEPOSIT: (&str, &str) = (BALANCES, "ExistentialDeposit");
 
-//         Ok(Self {
-//             best,
-//             finalized: ChainPropertiesFinalized {
-//                 address_format,
-//                 existential_deposit: fetch_constant(finalized_constants, EXISTENTIAL_DEPOSIT)?,
-//             },
-//         })
-//     }
+        Ok(Self {
+            address_format: fetch_address_format(constants)?,
+            existential_deposit: fetch_constant(constants, EXISTENTIAL_DEPOSIT)?,
+        })
+    }
 
-//     async fn asset(
-//         address_format: Ss58AddressFormat,
-//         best: ChainPropertiesBest,
-//         finalized_storage: &Storage<RuntimeConfig, OnlineClient>,
-//         asset: Asset,
-//     ) -> Result<Self> {
-//         const ASSET: &str = "Asset";
-//         const MIN_BALANCE: &str = "min_balance";
+    async fn asset(
+        address_format: Ss58AddressFormat,
+        storage: &Storage<RuntimeConfig, OnlineClient>,
+        asset: Asset,
+    ) -> Result<Self> {
+        const ASSET: &str = "Asset";
+        const MIN_BALANCE: &str = "min_balance";
 
-//         let asset_properties = finalized_storage
-//             .fetch(&dynamic::storage(ASSETS, ASSET, vec![asset]))
-//             .await
-//             .context("failed to get asset properties")?
-//             .context("asset with the given identifier doesn't exist")?
-//             .to_value()
-//             .context("failed to decode asset properties")?;
-//         let encoded_min_balance = asset_properties
-//             .at(MIN_BALANCE)
-//             .with_context(|| format!("{MIN_BALANCE} field wasn't found in asset properties"))?;
+        let asset_properties = storage
+            .fetch(&dynamic::storage(ASSETS, ASSET, vec![asset]))
+            .await
+            .context("failed to get asset properties")?
+            .with_context(|| format!("asset with the {asset} identifier doesn't exist"))?
+            .to_value()
+            .context("failed to decode asset properties")?;
+        let encoded_min_balance = asset_properties
+            .at(MIN_BALANCE)
+            .with_context(|| format!("{MIN_BALANCE} field wasn't found in asset properties"))?;
 
-//         Ok(Self {
-//             best,
-//             finalized: ChainPropertiesFinalized {
-//                 address_format,
-//                 existential_deposit: encoded_min_balance
-//                     .as_u128()
-//                     .with_context(|| {
-//                         format!(
-//                             "expected `u128` as the type of the {MIN_BALANCE} field, got {encoded_min_balance}"
-//                         )
-//                     })?,
-//             },
-//         })
-//     }
-// }
+        Ok(Self {
+            address_format,
+            existential_deposit: encoded_min_balance.as_u128().with_context(|| {
+                format!(
+                    "expected `u128` as the type of the {MIN_BALANCE} field, got {encoded_min_balance}"
+                )
+            })?,
+        })
+    }
+}
 
 pub struct ApiConfig {
     api: Arc<OnlineClient>,
@@ -230,95 +222,115 @@ pub struct ApiConfig {
     backend: Arc<LegacyBackend<RuntimeConfig>>,
 }
 
-pub struct ScannerConfig {
-    api: Arc<OnlineClient>,
-    methods: Arc<LegacyRpcMethods<RuntimeConfig>>,
+pub struct ProcessorConfig {
+    api: OnlineClient,
+    methods: LegacyRpcMethods<RuntimeConfig>,
     backend: Arc<LegacyBackend<RuntimeConfig>>,
     api_properties: Arc<RwLock<ApiProperties>>,
 }
 
 pub struct EndpointProperties {
-    pub url: CheckedUrl,
-    pub chain: Arc<RwLock<ChainProperties>>,
-}
-
-pub struct CheckedUrl(String);
-
-impl CheckedUrl {
-    pub fn get(self) -> String {
-        self.0
-    }
+    pub rpc_url: String,
+    pub chain: ChainProperties,
 }
 
 pub async fn prepare(
-    url: String,
-    asset: Option<Asset>,
+    rpc_url: String,
+    asset_option: Option<Asset>,
     no_utility: bool,
     shutdown_notification: Receiver<bool>,
-) -> Result<(ScannerConfig, EndpointProperties, Updater, BlockNumber)> {
-    let rpc = RpcClient::from_url(&url)
+) -> Result<(
+    ProcessorConfig,
+    EndpointProperties,
+    Updater,
+    (BlockNumber, Hash),
+)> {
+    let rpc = RpcClient::from_url(&rpc_url)
         .await
         .context("failed to construct the RPC client")?;
 
-    log::info!("Connected to an RPC server at \"{url}\".");
+    log::info!("Connected to an RPC server at \"{rpc_url}\".");
 
-    let methods = Arc::new(LegacyRpcMethods::new(rpc.clone()));
+    let methods = LegacyRpcMethods::new(rpc.clone());
     let backend = Arc::new(LegacyBackend::new(rpc));
 
-    let (metadata, runtime_version) = fetch_runtime(&methods, &*backend)
+    let (api_metadata, runtime_version) = fetch_best_runtime(&methods, &*backend)
         .await
-        .context("failed to fetch the runtime of the API client")?;
+        .context("failed to fetch the API client runtime")?;
+
+    let (finalized_number, finalized_hash) = fetch_finalized_head_number_and_hash(&methods).await?;
+
+    let finalized_metadata = if fetch_runtime_version(&methods, finalized_hash)
+        .await
+        .context("failed to fetch the runtime version from the finalized head")?
+        == runtime_version
+    {
+        api_metadata.clone()
+    } else {
+        fetch_metadata(&*backend, finalized_hash)
+            .await
+            .context("failed to fetch metadata from the finalized head")?
+    };
+
     let genesis_hash = methods
         .genesis_hash()
         .await
         .context("failed to get the genesis hash")?;
-    let client = Arc::new(
-        OnlineClient::from_backend_with(genesis_hash, runtime_version, metadata, backend.clone())
-            .context("failed to construct the API client")?,
-    );
-    let constants = client.constants();
-
-    let api_properties = ApiProperties::fetch(&constants, no_utility)?;
+    let api_client = OnlineClient::from_backend_with(
+        genesis_hash,
+        runtime_version.clone(),
+        api_metadata,
+        backend.clone(),
+    )
+    .context("failed to construct the API client")?;
+    let api_constants = api_client.constants();
+    let api_properties = ApiProperties::fetch(&api_constants, no_utility)
+        .context("failed to fetch API client properties")?;
 
     log::debug!("API client properties: {api_properties:?}.");
 
-    let address_format = fetch_address_format(finalized_constants)
+    let finalized_client = OnlineClient::from_backend_with(
+        genesis_hash,
+        runtime_version,
+        finalized_metadata,
+        backend.clone(),
+    )
+    .context("failed to construct the finalized client")?;
+    let finalized_constants = finalized_client.constants();
+    let finalized_storage = finalized_client.storage().at(finalized_hash);
 
-    log::info!(
-        "Chain properties:\n\
-         Decimal places number: {}.\n\
-         Address format: \"{}\" ({}).\n\
-         Existential deposit: {}.\n\
-         Block hash count: {}.",
-        properties.decimals,
-        properties.address_format,
-        properties.address_format.prefix(),
-        properties.existential_deposit,
-        properties.block_hash_count
-    );
+    let chain_properties = if let Some(asset) = asset_option {
+        let address_format = fetch_address_format(&finalized_constants)?;
 
-    let arc_properties = Arc::new(RwLock::const_new(properties));
+        ChainProperties::asset(address_format, &finalized_storage, asset).await
+    } else {
+        ChainProperties::native(&finalized_constants)
+    }
+    .context("failed to fetch chain properties")?;
+
+    let arc_api_properties = Arc::new(RwLock::const_new(api_properties));
 
     Ok((
-        ScannerConfig {
-            api: client.clone(),
+        ProcessorConfig {
+            api: api_client.clone(),
             methods: methods.clone(),
             backend: backend.clone(),
+            api_properties: arc_api_properties.clone(),
         },
         EndpointProperties {
-            url: CheckedUrl(url),
-            chain: todo!(),
+            rpc_url,
+            chain: chain_properties,
         },
         Updater {
-            client,
+            client: api_client,
             methods,
             backend,
             shutdown_notification,
-            properties: todo!(),
-            constants,
+            properties: arc_api_properties,
+            constants: api_constants,
             no_utility,
         },
-        fetch_finalized_head_number_and_hash(&methods).await?.0
+        (finalized_number, finalized_hash),
     ))
 }
 
@@ -385,20 +397,15 @@ impl Processor {
         })
     }
 
-    pub async fn ignite(self, latest_saved_block: Option<BlockNumber>) -> Result<&'static str> {
-        self.execute(latest_saved_block).await.or_else(|error| {
-            error
-                .downcast()
-                .map(|Shutdown| "The RPC module is shut down.")
-        })
-    }
+    // pub async fn ignite(self, latest_saved_block: Option<BlockNumber>) -> Result<&'static str> {
+    //     self.execute(latest_saved_block).await.or_else(|error| {
+    //         error
+    //             .downcast()
+    //             .map(|Shutdown| "The RPC module is shut down.")
+    //     })
+    // }
 
-    async fn execute(mut self, latest_saved_block: Option<BlockNumber>) -> Result<&'static str> {
-        let (mut head_number, head_hash) = self
-            .finalized_head_number_and_hash()
-            .await
-            .context("failed to get the chain head")?;
-
+    async fn execute(mut self, resume_block: Option<BlockNumber>, (mut head_number, head_hash): (BlockNumber, Hash)) -> Result<&'static str> {
         let mut next_unscanned_number;
         let mut subscription;
 

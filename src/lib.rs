@@ -4,11 +4,12 @@ use env_logger::{Builder, Env};
 use environment_variables::*;
 use log::LevelFilter;
 use rpc::Processor;
+use tokio_util::sync::CancellationToken;
 use std::{
     env::{self, VarError},
     error::Error,
     str::FromStr,
-    sync::Arc, fmt::{Display, Formatter, self},
+    sync::Arc, fmt::{Display, Formatter, self}, panic,
 };
 use subxt::{
     backend::rpc::RpcClient,
@@ -52,9 +53,6 @@ pub const DEFAULT_DATABASE: &str = "database.redb";
 pub const DATABASE_VERSION: Version = 1;
 pub const MIN_SUBSCRIPTIONS: u32 = 3;
 
-// https://github.com/paritytech/jsonrpsee/blob/72939a92312b65352fbb76b588e3aff6cb45615b/client/ws-client/src/lib.rs#L107
-const SCANNER_TO_LISTENER_SWITCH_POINT: BlockNumber = 512;
-
 type OnlineClient = subxt::OnlineClient<RuntimeConfig>;
 type Account = <RuntimeConfig as Config>::AccountId;
 type BlockNumber = <<RuntimeConfig as Config>::Header as Header>::Number;
@@ -71,6 +69,7 @@ type Decimals = u8;
 // https://github.com/paritytech/polkadot-sdk/blob/2fe3145ab9bd26ceb5a26baf2a64105b0035a5a6/substrate/frame/utility/src/lib.rs#L132
 type BatchedCallsLimit = u32;
 
+#[derive(Clone)]
 struct RuntimeConfig;
 
 impl Config for RuntimeConfig {
@@ -97,6 +96,12 @@ fn read_and_parse_env_var<T: FromStr<Err = impl Error + Send + Sync + 'static>>(
 #[doc(hidden)]
 #[tokio::main]
 pub async fn main() -> Result<()> {
+    panic::set_hook(Box::new(|panic_info| {
+        // todo
+
+        println!("This a bug. {panic_info:?}");
+    }));
+
     let mut builder = Builder::new();
 
     if cfg!(debug_assertions) {
@@ -194,9 +199,9 @@ pub async fn main() -> Result<()> {
         env!("CARGO_PKG_AUTHORS")
     );
 
-    let shutdown_notification = Arc::new(Sender::new(false));
+    let shutdown_notification = CancellationToken::new();
 
-    let (api_config, endpoint_properties, updater, finalized_block) = rpc::prepare(
+    let (processor_config, endpoint_properties, updater, finalized_head) = rpc::prepare(
         rpc_url,
         asset,
         no_utility,
@@ -205,7 +210,7 @@ pub async fn main() -> Result<()> {
     .await
     .context("failed to prepare the RPC module")?;
 
-    let (state, last_saved_block) = State::initialise(
+    let (state, resume_block) = State::initialize(
         database_path,
         endpoint_properties,
         StateConfig {
@@ -215,20 +220,21 @@ pub async fn main() -> Result<()> {
             fee,
             decimals,
         },
-        finalized_block.saturating_sub(depth),
+        finalized_head.0,
+        depth,
     )
-    .context("failed to initialise the daemon state")?;
+    .context("failed to initialize the daemon state")?;
 
     // let processor = Processor::new(
     //     api_config,
     //     database.clone(),
     //     shutdown_notification.subscribe(),
     // )
-    // .context("failed to initialise the RPC module")?;
+    // .context("failed to initialize the RPC module")?;
 
     // let server = server::new(shutdown_notification.subscribe(), host, database)
     //     .await
-    //     .context("failed to initialise the server module")?;
+    //     .context("failed to initialize the server module")?;
 
     // let mut join_set = JoinSet::new();
 
@@ -249,7 +255,7 @@ pub async fn main() -> Result<()> {
     //             log::error!("Received a fatal error!\n{error:?}");
 
     //             if !*shutdown_notification.borrow() {
-    //                 log::info!("Initialising the shutdown...");
+    //                 log::info!("Initializing the shutdown...");
 
     //                 shutdown_notification
     //                     .send(true)
@@ -276,7 +282,7 @@ async fn shutdown_listener(
             // Print shutdown log messages on the next line after the Control-C command.
             println!();
 
-            log::info!("Received the shutdown signal. Initialising the shutdown...");
+            log::info!("Received the shutdown signal. initializing the shutdown...");
 
             process_shutdown_notification(shutdown_notification_sender.send(true), "send")
         }

@@ -1,4 +1,4 @@
-use super::{fetch_runtime, ApiProperties};
+use super::{fetch_best_runtime, ApiProperties};
 use crate::{unexpected_closure_of_notification_channel, OnlineClient, RuntimeConfig};
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -12,9 +12,9 @@ use subxt::{
 use tokio::sync::{watch::Receiver, RwLock};
 
 pub struct Updater {
-    pub methods: Arc<LegacyRpcMethods<RuntimeConfig>>,
+    pub methods: LegacyRpcMethods<RuntimeConfig>,
     pub backend: Arc<LegacyBackend<RuntimeConfig>>,
-    pub client: Arc<OnlineClient>,
+    pub client: OnlineClient,
     pub properties: Arc<RwLock<ApiProperties>>,
     pub constants: ConstantsClient<RuntimeConfig, OnlineClient>,
     pub no_utility: bool,
@@ -38,9 +38,7 @@ impl Updater {
                 // item. We don't skip it though because during a connection loss or prolonged
                 // daemon startup the runtime can be updated, hence this condition will catch this.
                 if self.client.runtime_version() != current_runtime_version {
-                    self.process_update()
-                        .await
-                        .context("failed to process the first API client update")?;
+                    self.process_update().await?;
                 }
 
                 loop {
@@ -55,11 +53,7 @@ impl Updater {
                         }
                         runtime_version = updates.next() => {
                             if runtime_version.is_some() {
-                                self.process_update()
-                                    .await
-                                    .context(
-                                        "failed to process an update for the API client"
-                                    )?;
+                                self.process_update().await?;
                             } else {
                                 break;
                             }
@@ -78,7 +72,7 @@ impl Updater {
         // We don't use the runtime version from the updates stream because it doesn't provide the
         // best block hash, so we fetch it ourselves (in `fetch_runtime`) and use it to make sure
         // that metadata & the runtime version are from the same block.
-        let (metadata, runtime_version) = fetch_runtime(&self.methods, &*self.backend)
+        let (metadata, runtime_version) = fetch_best_runtime(&self.methods, &*self.backend)
             .await
             .context("failed to fetch a new runtime for the API client")?;
 
@@ -90,8 +84,7 @@ impl Updater {
         // Do NOT inline `current_properties` here. It's used as a RAII wrapper for `self.client`.
         *current_properties = ApiProperties::fetch(&self.constants, self.no_utility)?;
 
-        log::debug!("Properties from a new API update: {current_properties:?}.");
-        log::info!("A runtime update has been found and applied for the API client.");
+        log::debug!("Properties from an API client update: {current_properties:?}.");
 
         Ok(())
     }
