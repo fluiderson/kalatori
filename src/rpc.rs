@@ -4,6 +4,7 @@ use crate::{
     Nonce, OnlineClient, RuntimeConfig, DECIMALS, SCANNER_TO_LISTENER_SWITCH_POINT,
 };
 use anyhow::{Context, Result};
+use reconnecting_jsonrpsee_ws_client::ClientBuilder;
 use serde::{Deserialize, Deserializer};
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -180,9 +181,12 @@ pub async fn prepare(
     decimals_option: Option<Decimals>,
     shutdown_notification: Receiver<bool>,
 ) -> Result<(ApiConfig, EndpointProperties, Updater)> {
-    let rpc = RpcClient::from_url(&url)
-        .await
-        .context("failed to construct the RPC client")?;
+    let rpc = RpcClient::new(
+        ClientBuilder::new()
+            .build(url.clone())
+            .await
+            .context("failed to construct the RPC client")?,
+    );
 
     log::info!("Connected to an RPC server at \"{url}\".");
 
