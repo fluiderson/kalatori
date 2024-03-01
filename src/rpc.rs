@@ -181,6 +181,10 @@ pub async fn prepare(
     decimals_option: Option<Decimals>,
     shutdown_notification: Receiver<bool>,
 ) -> Result<(ApiConfig, EndpointProperties, Updater)> {
+    // TODO:
+    // The current reconnecting client implementation automatically restores all subscriptions,
+    // including unrecoverable ones, losing all notifications! For now, it shouldn't affect the
+    // daemon, but may in the future, so we should consider creating our own implementation.
     let rpc = RpcClient::new(
         ClientBuilder::new()
             .build(url.clone())
