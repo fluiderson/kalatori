@@ -1,7 +1,7 @@
 use crate::{
     database::{Database, Invoice, InvoiceStatus, ReadInvoices, WriteInvoices},
-    unexpected_closure_of_notification_channel, Account, Balance, BlockNumber, Decimals, Hash,
-    Nonce, OnlineClient, RuntimeConfig, DECIMALS, SCANNER_TO_LISTENER_SWITCH_POINT,
+    Account, Balance, BlockNumber, Decimals, Hash, Nonce, OnlineClient, RuntimeConfig, DECIMALS,
+    SCANNER_TO_LISTENER_SWITCH_POINT,
 };
 use anyhow::{Context, Result};
 use reconnecting_jsonrpsee_ws_client::ClientBuilder;
@@ -39,7 +39,8 @@ use subxt::{
     tx::{PairSigner, SubmittableExtrinsic, TxClient},
     Config, Metadata,
 };
-use tokio::sync::{watch::Receiver, RwLock};
+use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 pub const MODULE: &str = module_path!();
 
@@ -179,7 +180,7 @@ impl CheckedUrl {
 pub async fn prepare(
     url: String,
     decimals_option: Option<Decimals>,
-    shutdown_notification: Receiver<bool>,
+    shutdown_notification: CancellationToken,
 ) -> Result<(ApiConfig, EndpointProperties, Updater)> {
     // TODO:
     // The current reconnecting client implementation automatically restores all subscriptions,
@@ -262,13 +263,13 @@ pub struct Updater {
     backend: Arc<LegacyBackend<RuntimeConfig>>,
     api: Arc<OnlineClient>,
     constants: ConstantsClient<RuntimeConfig, OnlineClient>,
-    shutdown_notification: Receiver<bool>,
+    shutdown_notification: CancellationToken,
     properties: Arc<RwLock<ChainProperties>>,
     decimals_set: bool,
 }
 
 impl Updater {
-    pub async fn ignite(mut self) -> Result<&'static str> {
+    pub async fn ignite(self) -> Result<&'static str> {
         loop {
             let mut updates = self
                 .backend
@@ -292,12 +293,8 @@ impl Updater {
                 loop {
                     tokio::select! {
                         biased;
-                        notification = self.shutdown_notification.changed() => {
-                            return notification
-                                .with_context(||
-                                    unexpected_closure_of_notification_channel("update")
-                                )
-                                .map(|()| "The API client updater is shut down.");
+                        () = self.shutdown_notification.cancelled() => {
+                            return Ok("The API client updater is shut down.");
                         }
                         runtime_version = updates.next() => {
                             if runtime_version.is_some() {
@@ -430,7 +427,7 @@ pub struct Processor {
     methods: Arc<LegacyRpcMethods<RuntimeConfig>>,
     database: Arc<Database>,
     backend: Arc<LegacyBackend<RuntimeConfig>>,
-    shutdown_notification: Receiver<bool>,
+    shutdown_notification: CancellationToken,
 }
 
 impl Processor {
@@ -441,7 +438,7 @@ impl Processor {
             backend,
         }: ApiConfig,
         database: Arc<Database>,
-        shutdown_notification: Receiver<bool>,
+        shutdown_notification: CancellationToken,
     ) -> Result<Self> {
         let scanner = OnlineClient::from_backend_with(
             api.genesis_hash(),
@@ -538,10 +535,8 @@ impl Processor {
             loop {
                 tokio::select! {
                     biased;
-                    notification = self.shutdown_notification.changed() => {
-                        return notification
-                            .with_context(|| unexpected_closure_of_notification_channel("skipping"))
-                            .and_then(|()| Err(Shutdown.into()));
+                    () = self.shutdown_notification.cancelled() => {
+                        return Err(Shutdown.into());
                     }
                     header_result_option = subscription.next() => {
                         if let Some(header_result) = header_result_option {
@@ -619,9 +614,7 @@ impl Processor {
         head: BlockNumber,
     ) -> Result<()> {
         for skipped_number in *next_unscanned..head {
-            if self.shutdown_notification.has_changed().with_context(|| {
-                unexpected_closure_of_notification_channel("skipped blocks processing")
-            })? {
+            if self.shutdown_notification.is_cancelled() {
                 return Err(Shutdown.into());
             }
 
@@ -648,12 +641,8 @@ impl Processor {
         loop {
             tokio::select! {
                 biased;
-                notification = self.shutdown_notification.changed() => {
-                    return notification
-                        .with_context(|| {
-                            unexpected_closure_of_notification_channel("finalized heads processing")
-                        })
-                        .and_then(|()| Err(Shutdown.into()));
+                () = self.shutdown_notification.cancelled() => {
+                    return Err(Shutdown.into());
                 }
                 head_result_option = subscription.next() => {
                     if let Some(head_result) = head_result_option {
