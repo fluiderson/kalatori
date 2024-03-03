@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
 use database::Database;
 use env_logger::{Builder, Env};
 use environment_variables::*;
@@ -6,7 +6,7 @@ use log::LevelFilter;
 use rpc::Processor;
 use std::{
     env::{self, VarError},
-    sync::Arc,
+    future::Future,
 };
 use subxt::{
     config::{
@@ -21,9 +21,9 @@ use subxt::{
 };
 use tokio::{
     signal,
-    sync::watch::{Receiver, Sender},
-    task::JoinSet,
+    sync::mpsc::{self, UnboundedSender},
 };
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 mod database;
 mod rpc;
@@ -43,7 +43,7 @@ pub mod environment_variables {
     pub const DESTINATION: &str = "KALATORI_DESTINATION";
 }
 
-pub const DEFAULT_RPC: &str = "wss://rpc.polkadot.io";
+pub const DEFAULT_RPC: &str = "wss://westend-rpc.polkadot.io";
 pub const DEFAULT_DATABASE: &str = "database.redb";
 pub const DATABASE_VERSION: Version = 0;
 
@@ -175,10 +175,11 @@ pub async fn main() -> Result<()> {
         env!("CARGO_PKG_AUTHORS")
     );
 
-    let shutdown_notification = Arc::new(Sender::new(false));
+    let shutdown_notification = CancellationToken::new();
+    let (error_tx, mut error_rx) = mpsc::unbounded_channel();
 
     let (api_config, endpoint_properties, updater) =
-        rpc::prepare(endpoint, decimals, shutdown_notification.subscribe())
+        rpc::prepare(endpoint, decimals, shutdown_notification.clone())
             .await
             .context("failed to prepare the node module")?;
 
@@ -191,55 +192,46 @@ pub async fn main() -> Result<()> {
     )
     .context("failed to initialise the database module")?;
 
-    let processor = Processor::new(
-        api_config,
-        database.clone(),
-        shutdown_notification.subscribe(),
-    )
-    .context("failed to initialise the RPC module")?;
+    let processor = Processor::new(api_config, database.clone(), shutdown_notification.clone())
+        .context("failed to initialise the RPC module")?;
 
-    let server = server::new(shutdown_notification.subscribe(), host, database)
+    let server = server::new(shutdown_notification.clone(), host, database)
         .await
         .context("failed to initialise the server module")?;
 
-    let mut join_set = JoinSet::new();
+    let task_tracker = TaskTracker::new();
 
-    join_set.spawn(shutdown_listener(
-        shutdown_notification.clone(),
-        shutdown_notification.subscribe(),
+    task_tracker.close();
+
+    task_tracker.spawn(shutdown(
+        shutdown_listener(shutdown_notification.clone()),
+        error_tx.clone(),
     ));
-    join_set.spawn(updater.ignite());
-    join_set.spawn(processor.ignite(last_saved_block));
-    join_set.spawn(server);
+    task_tracker.spawn(shutdown(updater.ignite(), error_tx.clone()));
+    task_tracker.spawn(shutdown(
+        processor.ignite(last_saved_block, task_tracker.clone(), error_tx.clone()),
+        error_tx,
+    ));
+    task_tracker.spawn(server);
 
-    while let Some(task) = join_set.join_next().await {
-        let result = task.context("failed to shutdown a loop")?;
+    while let Some(error) = error_rx.recv().await {
+        log::error!("Received a fatal error!\n{error:?}");
 
-        match result {
-            Ok(shutdown_message) => log::info!("{shutdown_message}"),
-            Err(error) => {
-                log::error!("Received a fatal error!\n{error:?}");
+        if !shutdown_notification.is_cancelled() {
+            log::info!("Initialising the shutdown...");
 
-                if !*shutdown_notification.borrow() {
-                    log::info!("Initialising the shutdown...");
-
-                    shutdown_notification
-                        .send(true)
-                        .with_context(|| unexpected_closure_of_notification_channel("shutdown"))?;
-                }
-            }
+            shutdown_notification.cancel();
         }
     }
+
+    task_tracker.wait().await;
 
     log::info!("Goodbye!");
 
     Ok(())
 }
 
-async fn shutdown_listener(
-    shutdown_notification_sender: Arc<Sender<bool>>,
-    mut shutdown_notification_receiver: Receiver<bool>,
-) -> Result<&'static str> {
+async fn shutdown_listener(shutdown_notification: CancellationToken) -> Result<&'static str> {
     tokio::select! {
         biased;
         signal = signal::ctrl_c() => {
@@ -250,25 +242,22 @@ async fn shutdown_listener(
 
             log::info!("Received the shutdown signal. Initialising the shutdown...");
 
-            process_shutdown_notification(shutdown_notification_sender.send(true), "send")
+            shutdown_notification.cancel();
+
+            Ok("The shutdown signal listener is shut down.")
         }
-        notification = shutdown_notification_receiver.changed() => {
-            process_shutdown_notification(notification, "receive")
+        () = shutdown_notification.cancelled() => {
+            Ok("The shutdown signal listener is shut down.")
         }
     }
 }
 
-fn process_shutdown_notification<E>(
-    result: impl Context<(), E>,
-    kind: &str,
-) -> Result<&'static str> {
-    result
-        .with_context(|| {
-            unexpected_closure_of_notification_channel(&format!("shutdown listener ({kind})"))
-        })
-        .map(|()| "The shutdown signal listener is shut down.")
-}
-
-fn unexpected_closure_of_notification_channel(loop_name: &str) -> String {
-    format!("unexpected closed shutdown notification channel in the {loop_name} loop")
+async fn shutdown(
+    task: impl Future<Output = Result<&'static str>>,
+    error_tx: UnboundedSender<Error>,
+) {
+    match task.await {
+        Ok(shutdown_message) => log::info!("{shutdown_message}"),
+        Err(error) => error_tx.send(error).unwrap(),
+    }
 }
