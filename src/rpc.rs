@@ -1,7 +1,7 @@
 use crate::{
-    database::{Database, Invoice, InvoiceStatus, ReadInvoices, WriteInvoices},
-    Account, Balance, BlockNumber, Decimals, Hash, Nonce, OnlineClient, RuntimeConfig, DECIMALS,
-    SCANNER_TO_LISTENER_SWITCH_POINT,
+    database::{Database, Invoice, InvoiceStatus, ReadInvoices},
+    shutdown, Account, Balance, BlockNumber, Decimals, Hash, Nonce, OnlineClient, RuntimeConfig,
+    DECIMALS, SCANNER_TO_LISTENER_SWITCH_POINT,
 };
 use anyhow::{Context, Result};
 use reconnecting_jsonrpsee_ws_client::ClientBuilder;
@@ -39,8 +39,8 @@ use subxt::{
     tx::{PairSigner, SubmittableExtrinsic, TxClient},
     Config, Metadata,
 };
-use tokio::sync::RwLock;
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{mpsc::UnboundedSender, RwLock};
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub const MODULE: &str = module_path!();
 
@@ -421,6 +421,270 @@ struct Scanner {
     storage: StorageClient<RuntimeConfig, OnlineClient>,
 }
 
+struct ProcessorFinalized {
+    database: Arc<Database>,
+    client: OnlineClient,
+    backend: Arc<LegacyBackend<RuntimeConfig>>,
+    methods: Arc<LegacyRpcMethods<RuntimeConfig>>,
+    shutdown_notification: CancellationToken,
+}
+
+impl ProcessorFinalized {
+    async fn finalized_head_number_and_hash(&self) -> Result<(BlockNumber, Hash)> {
+        let head_hash = self
+            .methods
+            .chain_get_finalized_head()
+            .await
+            .context("failed to get the finalized head hash")?;
+        let head = self
+            .methods
+            .chain_get_block(Some(head_hash))
+            .await
+            .context("failed to get the finalized head")?
+            .context("received nothing after requesting the finalized head")?;
+
+        Ok((head.block.header.number, head_hash))
+    }
+
+    pub async fn ignite(self) -> Result<&'static str> {
+        self.execute().await.or_else(|error| {
+            error
+                .downcast()
+                .map(|Shutdown| "The RPC module is shut down.")
+        })
+    }
+
+    async fn execute(mut self) -> Result<&'static str> {
+        let write_tx = self.database.write()?;
+        let mut write_invoices = write_tx.invoices()?;
+        let (mut finalized_number, finalized_hash) = self.finalized_head_number_and_hash().await?;
+
+        self.set_client_metadata(finalized_hash).await?;
+
+        // TODO:
+        // Design a new DB format to store unpaid accounts in a separate table.
+
+        for invoice_result in self.database.read()?.invoices()?.iter()? {
+            let invoice = invoice_result?;
+
+            match invoice.1.value().status {
+                InvoiceStatus::Unpaid(price) => {
+                    if self
+                        .balance(finalized_hash, &Account::from(*invoice.0.value()))
+                        .await?
+                        >= price
+                    {
+                        let mut changed_invoice = invoice.1.value();
+
+                        changed_invoice.status = InvoiceStatus::Paid(price);
+
+                        log::debug!("background scan {changed_invoice:?}");
+
+                        write_invoices
+                            .save(&Account::from(*invoice.0.value()), &changed_invoice)?;
+                    }
+                }
+                InvoiceStatus::Paid(_) => continue,
+            }
+        }
+
+        drop(write_invoices);
+
+        write_tx.commit()?;
+
+        let mut subscription = self.finalized_heads().await?;
+
+        loop {
+            self.process_finalized_heads(subscription, &mut finalized_number)
+                .await?;
+
+            log::warn!("Lost the connection while processing finalized heads. Retrying...");
+
+            subscription = self
+                .finalized_heads()
+                .await
+                .context("failed to update the subscription while processing finalized heads")?;
+        }
+    }
+
+    async fn process_skipped(
+        &self,
+        next_unscanned: &mut BlockNumber,
+        head: BlockNumber,
+    ) -> Result<()> {
+        for skipped_number in *next_unscanned..head {
+            if self.shutdown_notification.is_cancelled() {
+                return Err(Shutdown.into());
+            }
+
+            let skipped_hash = self
+                .methods
+                .chain_get_block_hash(Some(skipped_number.into()))
+                .await
+                .context("failed to get the hash of a skipped block")?
+                .context("received nothing after requesting the hash of a skipped block")?;
+
+            self.process_block(skipped_number, skipped_hash).await?;
+        }
+
+        *next_unscanned = head;
+
+        Ok(())
+    }
+
+    async fn process_finalized_heads(
+        &mut self,
+        mut subscription: RpcSubscription<<RuntimeConfig as Config>::Header>,
+        next_unscanned: &mut BlockNumber,
+    ) -> Result<()> {
+        loop {
+            tokio::select! {
+                biased;
+                () = self.shutdown_notification.cancelled() => {
+                    return Err(Shutdown.into());
+                }
+                head_result_option = subscription.next() => {
+                    if let Some(head_result) = head_result_option {
+                        let head = head_result.context(
+                            "received an error from the RPC client while processing finalized heads"
+                        )?;
+
+                        self
+                            .process_skipped(next_unscanned, head.number)
+                            .await
+                            .context("failed to process a skipped gap in the listening mode")?;
+                        self.process_block(head.number, head.hash()).await?;
+
+                        *next_unscanned = head.number
+                            .checked_add(1)
+                            .context(MAX_BLOCK_NUMBER_ERROR)?;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn finalized_heads(&self) -> Result<RpcSubscription<<RuntimeConfig as Config>::Header>> {
+        self.methods
+            .chain_subscribe_finalized_heads()
+            .await
+            .context("failed to subscribe to finalized heads")
+    }
+
+    async fn process_block(&self, number: BlockNumber, hash: Hash) -> Result<()> {
+        log::debug!("background block {number}");
+
+        let block = self
+            .client
+            .blocks()
+            .at(hash)
+            .await
+            .context("failed to obtain a block for processing")?;
+        let events = block
+            .events()
+            .await
+            .context("failed to obtain block events")?;
+
+        let read_tx = self.database.read()?;
+        let read_invoices = read_tx.invoices()?;
+
+        let mut update = false;
+        let mut invoices_changes = HashMap::new();
+
+        for event_result in events.iter() {
+            let event = event_result.context("failed to decode an event")?;
+            let metadata = event.event_metadata();
+
+            const UPDATE: &str = "CodeUpdated";
+            const TRANSFER: &str = "Transfer";
+
+            match (metadata.pallet.name(), &*metadata.variant.name) {
+                (SYSTEM, UPDATE) => update = true,
+                (BALANCES, TRANSFER) => Transfer::deserialize(
+                    event
+                        .field_values()
+                        .context("failed to decode event's fields")?,
+                )
+                .context("failed to deserialize a transfer event")?
+                .process(&mut invoices_changes, &read_invoices)?,
+                _ => {}
+            }
+        }
+
+        let write_tx = self.database.write()?;
+        let mut write_invoices = write_tx.invoices()?;
+
+        for (invoice, mut changes) in invoices_changes {
+            if let InvoiceStatus::Unpaid(price) = changes.invoice.status {
+                let balance = self.balance(hash, &invoice).await?;
+
+                if balance >= price {
+                    changes.invoice.status = InvoiceStatus::Paid(price);
+
+                    write_invoices.save(&invoice, &changes.invoice)?;
+                }
+            }
+        }
+
+        drop(write_invoices);
+
+        write_tx.commit()?;
+
+        if update {
+            self.set_client_metadata(hash)
+                .await
+                .context("failed to update metadata in the finalized client")?;
+
+            log::info!("A metadata update has been found and applied for the finalized client.");
+        }
+
+        Ok(())
+    }
+
+    async fn set_client_metadata(&self, at: Hash) -> Result<()> {
+        let metadata = fetch_metadata(&*self.backend, at)
+            .await
+            .context("failed to fetch metadata for the scanner client")?;
+
+        self.client.set_metadata(metadata);
+
+        Ok(())
+    }
+
+    async fn balance(&self, hash: Hash, account: &Account) -> Result<Balance> {
+        const ACCOUNT: &str = "Account";
+        const ACCOUNT_BALANCES: &str = "data";
+        const FREE_BALANCE: &str = "free";
+
+        let account_info = self
+            .client
+            .storage()
+            .at(hash)
+            .fetch_or_default(&dynamic::storage(
+                SYSTEM,
+                ACCOUNT,
+                vec![AsRef::<[u8; 32]>::as_ref(account)],
+            ))
+            .await
+            .context("failed to fetch account info from the chain")?
+            .to_value()
+            .context("failed to decode account info")?;
+        let encoded_balance = account_info
+            .at(ACCOUNT_BALANCES)
+            .with_context(|| format!("{ACCOUNT_BALANCES} field wasn't found in account info"))?
+            .at(FREE_BALANCE)
+            .with_context(|| format!("{FREE_BALANCE} wasn't found in account balance info"))?;
+
+        encoded_balance.as_u128().with_context(|| {
+            format!("expected `u128` as the type of a free balance, got {encoded_balance}")
+        })
+    }
+}
+
 pub struct Processor {
     api: Api,
     scanner: Scanner,
@@ -465,15 +729,39 @@ impl Processor {
         })
     }
 
-    pub async fn ignite(self, latest_saved_block: Option<BlockNumber>) -> Result<&'static str> {
-        self.execute(latest_saved_block).await.or_else(|error| {
-            error
-                .downcast()
-                .map(|Shutdown| "The RPC module is shut down.")
-        })
+    pub async fn ignite(
+        self,
+        latest_saved_block: Option<BlockNumber>,
+        task_tracker: TaskTracker,
+        error_tx: UnboundedSender<anyhow::Error>,
+    ) -> Result<&'static str> {
+        self.execute(latest_saved_block, task_tracker, error_tx)
+            .await
+            .or_else(|error| {
+                error
+                    .downcast()
+                    .map(|Shutdown| "The RPC module is shut down.")
+            })
     }
 
-    async fn execute(mut self, latest_saved_block: Option<BlockNumber>) -> Result<&'static str> {
+    async fn execute(
+        mut self,
+        latest_saved_block: Option<BlockNumber>,
+        task_tracker: TaskTracker,
+        error_tx: UnboundedSender<anyhow::Error>,
+    ) -> Result<&'static str> {
+        task_tracker.spawn(shutdown(
+            ProcessorFinalized {
+                database: self.database.clone(),
+                client: self.scanner.client.clone(),
+                backend: self.backend.clone(),
+                methods: self.methods.clone(),
+                shutdown_notification: self.shutdown_notification.clone(),
+            }
+            .ignite(),
+            error_tx,
+        ));
+
         let (mut head_number, head_hash) = self
             .finalized_head_number_and_hash()
             .await
@@ -709,26 +997,16 @@ impl Processor {
             }
         }
 
-        let write_tx = self.database.write()?;
-        let mut write_invoices = write_tx.invoices()?;
-
         for (invoice, changes) in invoices_changes {
-            match changes.invoice.status {
-                InvoiceStatus::Unpaid(price) => self
-                    .process_unpaid(&block, changes, hash, invoice, price, &mut write_invoices)
-                    .await
-                    .context("failed to process an unpaid invoice")?,
-                InvoiceStatus::Paid(_) => self
-                    .process_paid(invoice, &block, changes, hash)
-                    .await
-                    .context("failed to process a paid invoice")?,
-            }
+            let price = match changes.invoice.status {
+                InvoiceStatus::Unpaid(price) => price,
+                InvoiceStatus::Paid(price) => price,
+            };
+
+            self.process_unpaid(&block, changes, hash, invoice, price)
+                .await
+                .context("failed to process an unpaid invoice")?
         }
-
-        drop(write_invoices);
-
-        write_tx.root()?.save_last_block(number)?;
-        write_tx.commit()?;
 
         if update {
             self.set_scanner_metadata(hash)
@@ -737,6 +1015,11 @@ impl Processor {
 
             log::info!("A metadata update has been found and applied for the scanner client.");
         }
+
+        let write_tx = self.database.write()?;
+
+        write_tx.root()?.save_last_block(number)?;
+        write_tx.commit()?;
 
         Ok(())
     }
@@ -817,7 +1100,6 @@ impl Processor {
         hash: Hash,
         invoice: Account,
         price: Balance,
-        invoices: &mut WriteInvoices<'_, '_>,
     ) -> Result<()> {
         let balance = self.balance(hash, &invoice).await?;
 
@@ -900,8 +1182,6 @@ impl Processor {
                         .context("failed to submit an extrinsic")?;
                 }
             }
-
-            invoices.save(&invoice, &changes.invoice)?;
         }
 
         Ok(())

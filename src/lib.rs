@@ -4,7 +4,10 @@ use env_logger::{Builder, Env};
 use environment_variables::*;
 use log::LevelFilter;
 use rpc::Processor;
-use std::{env::{self, VarError}, future::Future};
+use std::{
+    env::{self, VarError},
+    future::Future,
+};
 use subxt::{
     config::{
         signed_extensions::{
@@ -40,7 +43,7 @@ pub mod environment_variables {
     pub const DESTINATION: &str = "KALATORI_DESTINATION";
 }
 
-pub const DEFAULT_RPC: &str = "wss://rpc.polkadot.io";
+pub const DEFAULT_RPC: &str = "wss://westend-rpc.polkadot.io";
 pub const DEFAULT_DATABASE: &str = "database.redb";
 pub const DATABASE_VERSION: Version = 0;
 
@@ -175,13 +178,10 @@ pub async fn main() -> Result<()> {
     let shutdown_notification = CancellationToken::new();
     let (error_tx, mut error_rx) = mpsc::unbounded_channel();
 
-    let (api_config, endpoint_properties, updater) = rpc::prepare(
-        endpoint,
-        decimals,
-        shutdown_notification.clone(),
-    )
-    .await
-    .context("failed to prepare the node module")?;
+    let (api_config, endpoint_properties, updater) =
+        rpc::prepare(endpoint, decimals, shutdown_notification.clone())
+            .await
+            .context("failed to prepare the node module")?;
 
     let (database, last_saved_block) = Database::initialise(
         database_path,
@@ -192,12 +192,8 @@ pub async fn main() -> Result<()> {
     )
     .context("failed to initialise the database module")?;
 
-    let processor = Processor::new(
-        api_config,
-        database.clone(),
-        shutdown_notification.clone(),
-    )
-    .context("failed to initialise the RPC module")?;
+    let processor = Processor::new(api_config, database.clone(), shutdown_notification.clone())
+        .context("failed to initialise the RPC module")?;
 
     let server = server::new(shutdown_notification.clone(), host, database)
         .await
@@ -207,9 +203,15 @@ pub async fn main() -> Result<()> {
 
     task_tracker.close();
 
-    task_tracker.spawn(shutdown(shutdown_listener(shutdown_notification.clone()), error_tx.clone()));
+    task_tracker.spawn(shutdown(
+        shutdown_listener(shutdown_notification.clone()),
+        error_tx.clone(),
+    ));
     task_tracker.spawn(shutdown(updater.ignite(), error_tx.clone()));
-    task_tracker.spawn(shutdown(processor.ignite(last_saved_block), error_tx));
+    task_tracker.spawn(shutdown(
+        processor.ignite(last_saved_block, task_tracker.clone(), error_tx.clone()),
+        error_tx,
+    ));
     task_tracker.spawn(server);
 
     while let Some(error) = error_rx.recv().await {
@@ -229,9 +231,7 @@ pub async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn shutdown_listener(
-    shutdown_notification: CancellationToken,
-) -> Result<&'static str> {
+async fn shutdown_listener(shutdown_notification: CancellationToken) -> Result<&'static str> {
     tokio::select! {
         biased;
         signal = signal::ctrl_c() => {
@@ -252,7 +252,10 @@ async fn shutdown_listener(
     }
 }
 
-async fn shutdown(task: impl Future<Output = Result<&'static str>>, error_tx: UnboundedSender<Error>) {
+async fn shutdown(
+    task: impl Future<Output = Result<&'static str>>,
+    error_tx: UnboundedSender<Error>,
+) {
     match task.await {
         Ok(shutdown_message) => log::info!("{shutdown_message}"),
         Err(error) => error_tx.send(error).unwrap(),
