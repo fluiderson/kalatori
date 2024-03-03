@@ -291,6 +291,16 @@ impl ReadInvoices<'_> {
             .get(AsRef::<[u8; 32]>::as_ref(account))
             .context("failed to get an invoice from the database")
     }
+
+    pub fn iter(
+        &self,
+    ) -> Result<impl Iterator<Item = Result<(AccessGuard<'_, &[u8; 32]>, AccessGuard<'_, Invoice>)>>>
+    {
+        self.0
+            .iter()
+            .context("failed to get the invoices iterator")
+            .map(|iter| iter.map(|item| item.context("failed to get an invoice from the iterator")))
+    }
 }
 
 pub struct WriteTransaction<'db>(redb::WriteTransaction<'db>);

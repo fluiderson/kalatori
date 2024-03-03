@@ -11,7 +11,8 @@ use axum::{
 use serde::Serialize;
 use std::{future::Future, net::SocketAddr, sync::Arc};
 use subxt::ext::sp_core::{hexdisplay::HexDisplay, DeriveJunction, Pair};
-use tokio::{net::TcpListener, sync::watch::Receiver};
+use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 pub(crate) const MODULE: &str = module_path!();
 
@@ -43,7 +44,7 @@ pub struct Success {
 }
 
 pub(crate) async fn new(
-    mut shutdown_notification: Receiver<bool>,
+    shutdown_notification: CancellationToken,
     host: SocketAddr,
     database: Arc<Database>,
 ) -> Result<impl Future<Output = Result<&'static str>>> {
@@ -63,9 +64,7 @@ pub(crate) async fn new(
 
     Ok(async move {
         axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                drop(shutdown_notification.changed().await);
-            })
+            .with_graceful_shutdown(shutdown_notification.cancelled_owned())
             .await
             .context("failed to fire up the server")?;
 
