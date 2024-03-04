@@ -1,5 +1,5 @@
 [package]
-name = "kalatori"
+name = "kalatori-ah"
 authors = ["Alzymologist Oy <contact@zymologia.fi>"]
 version = "0.1.1"
 edition = "2021"
@@ -9,9 +9,6 @@ repository = "https://github.com/Alzymologist/Kalatori-backend"
 readme = true
 keywords = ["substrate", "blockchain", "finance", "service", "middleware"]
 categories = ["finance"]
-
-[workspace]
-members = ["kalatori-ah"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
