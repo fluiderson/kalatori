@@ -63,11 +63,7 @@ jobs:
                               )" >> $GITHUB_ENV
 
       - name:                 Check which version is greater
-        run:                  echo "GREATER_VER=$(./vergt.sh $VERSION $BEFORE_VERSION)" >> $GITHUB_ENV
-
-      - name:                 Fail if current version is not greater
-        run:                  exit 1
-        if:                   ${{ env.GREATER_VER != 1 }}
+        run:                  ./is_version_greater.sh $VERSION $BEFORE_VERSION
 
   cargo-build:
     name:                     Cargo build
