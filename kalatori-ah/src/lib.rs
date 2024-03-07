@@ -2,23 +2,23 @@ use anyhow::{Context, Error, Result};
 use database::Database;
 use env_logger::{Builder, Env};
 use environment_variables::{
-    DATABASE, DECIMALS, DESTINATION, HOST, IN_MEMORY_DB, LOG, LOG_STYLE, OVERRIDE_RPC, RPC, SEED,
+    DATABASE, DESTINATION, HOST, IN_MEMORY_DB, LOG, LOG_STYLE, OVERRIDE_RPC, RPC, SEED, USD_ASSET,
 };
 use log::LevelFilter;
 use rpc::Processor;
+use serde::Deserialize;
 use std::{
     env::{self, VarError},
     future::Future,
 };
 use subxt::{
-    config::{
-        signed_extensions::{
-            AnyOf, ChargeTransactionPayment, CheckGenesis, CheckMortality, CheckNonce,
-            CheckSpecVersion, CheckTxVersion,
-        },
-        Header,
+    config::{DefaultExtrinsicParams, Header},
+    ext::{
+        codec::{Decode, Encode},
+        scale_decode::DecodeAsType,
+        scale_encode::EncodeAsType,
+        sp_core::{crypto::AccountId32, Pair},
     },
-    ext::sp_core::{crypto::AccountId32, Pair},
     Config, PolkadotConfig,
 };
 use tokio::{
@@ -41,16 +41,34 @@ pub mod environment_variables {
     pub const RPC: &str = "KALATORI_RPC";
     pub const OVERRIDE_RPC: &str = "KALATORI_OVERRIDE_RPC";
     pub const IN_MEMORY_DB: &str = "KALATORI_IN_MEMORY_DB";
-    pub const DECIMALS: &str = "KALATORI_DECIMALS";
     pub const DESTINATION: &str = "KALATORI_DESTINATION";
+    pub const USD_ASSET: &str = "KALATORI_USD_ASSET";
 }
 
-pub const DEFAULT_RPC: &str = "wss://westend-rpc.polkadot.io";
-pub const DEFAULT_DATABASE: &str = "database.redb";
+pub const DEFAULT_RPC: &str = "wss://westend-asset-hub-rpc.polkadot.io";
 pub const DATABASE_VERSION: Version = 0;
+// Expected USD(C/T) fee (0.03)
+pub const EXPECTED_USDX_FEE: Balance = 30000;
 
+const USDT_ID: u32 = 1984;
+const USDC_ID: u32 = 1337;
 // https://github.com/paritytech/polkadot-sdk/blob/7c9fd83805cc446983a7698c7a3281677cf655c8/substrate/client/cli/src/config.rs#L50
 const SCANNER_TO_LISTENER_SWITCH_POINT: BlockNumber = 512;
+
+#[derive(Clone, Copy)]
+enum Usd {
+    T,
+    C,
+}
+
+impl Usd {
+    fn id(self) -> u32 {
+        match self {
+            Usd::T => USDT_ID,
+            Usd::C => USDC_ID,
+        }
+    }
+}
 
 type OnlineClient = subxt::OnlineClient<RuntimeConfig>;
 type Account = <RuntimeConfig as Config>::AccountId;
@@ -74,18 +92,51 @@ impl Config for RuntimeConfig {
     type Signature = <PolkadotConfig as Config>::Signature;
     type Hasher = <PolkadotConfig as Config>::Hasher;
     type Header = <PolkadotConfig as Config>::Header;
-    type ExtrinsicParams = AnyOf<
-        Self,
-        (
-            CheckTxVersion,
-            CheckSpecVersion,
-            CheckNonce,
-            CheckGenesis<Self>,
-            CheckMortality<Self>,
-            ChargeTransactionPayment,
-        ),
-    >;
-    type AssetId = <PolkadotConfig as Config>::AssetId;
+    type ExtrinsicParams = DefaultExtrinsicParams<Self>;
+    type AssetId = u32;
+}
+
+#[derive(EncodeAsType, Encode, Decode, DecodeAsType, Clone, Debug, Deserialize, PartialEq)]
+#[encode_as_type(crate_path = "subxt::ext::scale_encode")]
+#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
+#[codec(crate = subxt::ext::codec)]
+struct MultiLocation {
+    /// The number of parent junctions at the beginning of this `MultiLocation`.
+    parents: u8,
+    /// The interior (i.e. non-parent) junctions that this `MultiLocation` contains.
+    interior: Junctions,
+}
+
+#[derive(EncodeAsType, Encode, Decode, DecodeAsType, Clone, Debug, Deserialize, PartialEq)]
+#[encode_as_type(crate_path = "subxt::ext::scale_encode")]
+#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
+#[codec(crate = subxt::ext::codec)]
+enum Junctions {
+    /// The interpreting consensus system.
+    #[codec(index = 0)]
+    Here,
+    /// A relative path comprising 2 junctions.
+    #[codec(index = 2)]
+    X2(Junction, Junction),
+}
+
+#[derive(EncodeAsType, Encode, Decode, DecodeAsType, Clone, Debug, Deserialize, PartialEq)]
+#[encode_as_type(crate_path = "subxt::ext::scale_encode")]
+#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
+#[codec(crate = subxt::ext::codec)]
+enum Junction {
+    /// An instanced, indexed pallet that forms a constituent part of the context.
+    ///
+    /// Generally used when the context is a Frame-based chain.
+    #[codec(index = 4)]
+    PalletInstance(u8),
+    /// A non-descript index within the context location.
+    ///
+    /// Usage will vary widely owing to its generality.
+    ///
+    /// NOTE: Try to avoid using this and instead use a more specific item.
+    #[codec(index = 5)]
+    GeneralIndex(#[codec(compact)] u128),
 }
 
 #[doc(hidden)]
@@ -112,6 +163,15 @@ pub async fn main() -> Result<()> {
         .parse()
         .with_context(|| format!("failed to convert `{HOST}` to a socket address"))?;
 
+    let usd_asset = match env::var(USD_ASSET)
+        .with_context(|| format!("`{USD_ASSET}` isn't set"))?
+        .as_str()
+    {
+        "USDC" => Usd::C,
+        "USDT" => Usd::T,
+        _ => anyhow::bail!("{USD_ASSET} must equal USDC or USDT"),
+    };
+
     let pair = Pair::from_string(
         &env::var(SEED).with_context(|| format!("`{SEED}` isn't set"))?,
         None,
@@ -135,11 +195,16 @@ pub async fn main() -> Result<()> {
     let database_path = if env::var_os(IN_MEMORY_DB).is_none() {
         Some(env::var(DATABASE).or_else(|error| {
             if error == VarError::NotPresent {
+                let default_v = match usd_asset {
+                    Usd::C => "database-ah-usdc.redb",
+                    Usd::T => "database-ah-usdt.redb",
+                };
+
                 log::debug!(
-                    "`{DATABASE}` isn't present, using the default value instead: \"{DEFAULT_DATABASE}\"."
+                    "`{DATABASE}` isn't present, using the default value instead: \"{default_v}\"."
                 );
 
-                Ok(DEFAULT_DATABASE.into())
+                Ok(default_v.into())
             } else {
                 Err(error).context(format!("failed to read `{DATABASE}`"))
             }
@@ -153,15 +218,6 @@ pub async fn main() -> Result<()> {
 
         None
     };
-
-    let decimals = match env::var(DECIMALS) {
-        Ok(decimals) => decimals
-            .parse()
-            .map(Some)
-            .with_context(|| format!("failed to convert `{DECIMALS}` to a socket address")),
-        Err(VarError::NotPresent) => Ok(None),
-        Err(error) => Err(error).context(format!("failed to read `{DECIMALS}`")),
-    }?;
 
     let destination = match env::var(DESTINATION) {
         Ok(destination) => Ok(Some(
@@ -182,7 +238,7 @@ pub async fn main() -> Result<()> {
     let (error_tx, mut error_rx) = mpsc::unbounded_channel();
 
     let (api_config, endpoint_properties, updater) =
-        rpc::prepare(endpoint, decimals, shutdown_notification.clone())
+        rpc::prepare(endpoint, shutdown_notification.clone(), usd_asset)
             .await
             .context("failed to prepare the node module")?;
 

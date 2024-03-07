@@ -1,7 +1,7 @@
 use crate::{
     database::{Database, Invoice, InvoiceStatus, ReadInvoices},
     shutdown, Account, Balance, BlockNumber, Decimals, Hash, Nonce, OnlineClient, RuntimeConfig,
-    DECIMALS, SCANNER_TO_LISTENER_SWITCH_POINT,
+    Usd, EXPECTED_USDX_FEE, SCANNER_TO_LISTENER_SWITCH_POINT,
 };
 use anyhow::{Context, Result};
 use reconnecting_jsonrpsee_ws_client::ClientBuilder;
@@ -19,10 +19,7 @@ use subxt::{
         Backend, BackendExt, RuntimeVersion,
     },
     blocks::{Block, BlocksClient},
-    config::{
-        signed_extensions::{ChargeTransactionPaymentParams, CheckMortalityParams},
-        Header,
-    },
+    config::{DefaultExtrinsicParamsBuilder, Header},
     constants::ConstantsClient,
     dynamic::{self, Value},
     error::RpcError,
@@ -35,7 +32,7 @@ use subxt::{
             sr25519::Pair,
         },
     },
-    storage::StorageClient,
+    storage::{Storage, StorageClient},
     tx::{PairSigner, SubmittableExtrinsic, TxClient},
     Config, Metadata,
 };
@@ -50,8 +47,8 @@ const BLOCK_NONCE_ERROR: &str = "failed to fetch an account nonce by the scanner
 // Pallets
 
 const SYSTEM: &str = "System";
-const BALANCES: &str = "Balances";
 const UTILITY: &str = "Utility";
+const ASSETS: &str = "Assets";
 
 async fn fetch_best_block(methods: &LegacyRpcMethods<RuntimeConfig>) -> Result<Hash> {
     methods
@@ -82,6 +79,29 @@ async fn fetch_api_runtime(
     ))
 }
 
+async fn fetch_min_balance(
+    storage_finalized: Storage<RuntimeConfig, OnlineClient>,
+    usd_asset: &Usd,
+) -> Result<Balance> {
+    const ASSET: &str = "Asset";
+    const MIN_BALANCE: &str = "min_balance";
+
+    let asset_info = storage_finalized
+        .fetch(&dynamic::storage(ASSETS, ASSET, vec![usd_asset.id()]))
+        .await
+        .context("failed to fetch asset info from the chain")?
+        .context("received nothing after fetching asset info from the chain")?
+        .to_value()
+        .context("failed to decode account info")?;
+    let encoded_min_balance = asset_info
+        .at(MIN_BALANCE)
+        .with_context(|| format!("{MIN_BALANCE} field wasn't found in asset info"))?;
+
+    encoded_min_balance.as_u128().with_context(|| {
+        format!("expected `u128` as the type of the min balance, got {encoded_min_balance}")
+    })
+}
+
 async fn fetch_metadata(backend: &impl Backend<RuntimeConfig>, at: Hash) -> Result<Metadata> {
     const LATEST_SUPPORTED_METADATA_VERSION: u32 = 15;
 
@@ -98,6 +118,32 @@ async fn fetch_metadata(backend: &impl Backend<RuntimeConfig>, at: Hash) -> Resu
         .map_err(Into::into)
 }
 
+async fn fetch_decimals(
+    storage: Storage<RuntimeConfig, OnlineClient>,
+    usd_asset: &Usd,
+) -> Result<Decimals> {
+    const METADATA: &str = "Metadata";
+    const DECIMALS: &str = "decimals";
+
+    let asset_metadata = storage
+        .fetch(&dynamic::storage(ASSETS, METADATA, vec![usd_asset.id()]))
+        .await
+        .context("failed to fetch asset info from the chain")?
+        .context("received nothing after fetching asset info from the chain")?
+        .to_value()
+        .context("failed to decode account info")?;
+    let encoded_decimals = asset_metadata
+        .at(DECIMALS)
+        .with_context(|| format!("{DECIMALS} field wasn't found in asset info"))?;
+
+    encoded_decimals
+        .as_u128()
+        .map(|num| num.try_into().expect("must be less than u64"))
+        .with_context(|| {
+            format!("expected `u128` as the type of the min balance, got {encoded_decimals}")
+        })
+}
+
 fn fetch_constant<T: DecodeAsType>(
     constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
     constant: (&str, &str),
@@ -112,49 +158,28 @@ fn fetch_constant<T: DecodeAsType>(
 pub struct ChainProperties {
     pub address_format: Ss58AddressFormat,
     pub existential_deposit: Balance,
-    pub decimals: Decimals,
     pub block_hash_count: BlockNumber,
+    pub decimals: Decimals,
+    pub usd_asset: Usd,
 }
 
 impl ChainProperties {
     fn fetch_only_constants(
-        constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
+        existential_deposit: Balance,
         decimals: Decimals,
+        constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
+        usd_asset: Usd,
     ) -> Result<Self> {
         const ADDRESS_PREFIX: (&str, &str) = (SYSTEM, "SS58Prefix");
-        const EXISTENTIAL_DEPOSIT: (&str, &str) = (BALANCES, "ExistentialDeposit");
         const BLOCK_HASH_COUNT: (&str, &str) = (SYSTEM, "BlockHashCount");
 
         Ok(Self {
             address_format: Ss58AddressFormat::custom(fetch_constant(constants, ADDRESS_PREFIX)?),
-            existential_deposit: fetch_constant(constants, EXISTENTIAL_DEPOSIT)?,
-            block_hash_count: fetch_constant(constants, BLOCK_HASH_COUNT)?,
+            existential_deposit,
             decimals,
+            block_hash_count: fetch_constant(constants, BLOCK_HASH_COUNT)?,
+            usd_asset,
         })
-    }
-
-    async fn fetch(
-        constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
-        methods: &LegacyRpcMethods<RuntimeConfig>,
-    ) -> Result<Self> {
-        const DECIMALS_KEY: &str = "tokenDecimals";
-
-        let system_properties = methods
-            .system_properties()
-            .await
-            .context("failed to get the chain system properties")?;
-        let encoded_decimals = system_properties
-            .get(DECIMALS_KEY)
-            .with_context(|| format!(
-                "{DECIMALS_KEY:?} wasn't found in a response of the `system_properties` RPC call, set `{DECIMALS}` to set the decimal places number manually"
-            ))?;
-        let decimals = encoded_decimals
-            .as_u64()
-            .with_context(|| format!(
-                "failed to decode the decimal places number, expected a positive integer, got \"{encoded_decimals}\""
-            ))?;
-
-        Self::fetch_only_constants(constants, decimals)
     }
 }
 
@@ -179,8 +204,8 @@ impl CheckedUrl {
 
 pub async fn prepare(
     url: String,
-    decimals_option: Option<Decimals>,
     shutdown_notification: CancellationToken,
+    usd_asset: Usd,
 ) -> Result<(ApiConfig, EndpointProperties, Updater)> {
     // TODO:
     // The current reconnecting client implementation automatically restores all subscriptions,
@@ -211,26 +236,35 @@ pub async fn prepare(
     );
     let constants = api.constants();
 
-    let (properties_result, decimals_set) = if let Some(decimals) = decimals_option {
-        (
-            ChainProperties::fetch_only_constants(&constants, decimals),
-            true,
-        )
-    } else {
-        (ChainProperties::fetch(&constants, &methods).await, false)
-    };
-    let properties = properties_result?;
+    let min_balance = fetch_min_balance(
+        OnlineClient::from_url(url.clone())
+            .await?
+            .storage()
+            .at_latest()
+            .await?,
+        &usd_asset,
+    )
+    .await?;
+    let decimals = fetch_decimals(api.storage().at_latest().await?, &usd_asset).await?;
+    let properties =
+        ChainProperties::fetch_only_constants(min_balance, decimals, &constants, usd_asset)?;
 
     log::info!(
         "Chain properties:\n\
-         Decimal places number: {}.\n\
          Address format: \"{}\" ({}).\n\
+         Decimal places number: {}.\n\
          Existential deposit: {}.\n\
+         USD asset: {} ({}).\n\
          Block hash count: {}.",
-        properties.decimals,
         properties.address_format,
         properties.address_format.prefix(),
+        decimals,
         properties.existential_deposit,
+        match properties.usd_asset {
+            Usd::C => "USDC",
+            Usd::T => "USDT",
+        },
+        properties.usd_asset.id(),
         properties.block_hash_count
     );
 
@@ -253,7 +287,6 @@ pub async fn prepare(
             constants,
             shutdown_notification,
             properties: arc_properties,
-            decimals_set,
         },
     ))
 }
@@ -265,7 +298,6 @@ pub struct Updater {
     constants: ConstantsClient<RuntimeConfig, OnlineClient>,
     shutdown_notification: CancellationToken,
     properties: Arc<RwLock<ChainProperties>>,
-    decimals_set: bool,
 }
 
 impl Updater {
@@ -328,19 +360,13 @@ impl Updater {
         self.api.set_metadata(metadata);
         self.api.set_runtime_version(runtime_version);
 
-        let (mut current_properties, new_properties_result) = if self.decimals_set {
-            let current_properties = self.properties.write().await;
-            let new_properties_result =
-                ChainProperties::fetch_only_constants(&self.constants, current_properties.decimals);
-
-            (current_properties, new_properties_result)
-        } else {
-            (
-                self.properties.write().await,
-                ChainProperties::fetch(&self.constants, &self.methods).await,
-            )
-        };
-        let new_properties = new_properties_result?;
+        let mut current_properties = self.properties.write().await;
+        let new_properties = ChainProperties::fetch_only_constants(
+            current_properties.existential_deposit,
+            current_properties.decimals,
+            &self.constants,
+            current_properties.usd_asset,
+        )?;
 
         let mut changed = String::new();
         let mut add_change = |message: Arguments<'_>| {
@@ -596,20 +622,46 @@ impl ProcessorFinalized {
 
         for event_result in events.iter() {
             const UPDATE: &str = "CodeUpdated";
-            const TRANSFER: &str = "Transfer";
+            const TRANSFERRED: &str = "Transferred";
+            const ASSET_MIN_BALANCE_CHANGED: &str = "AssetMinBalanceChanged";
+            const METADATA_SET: &str = "MetadataSet";
 
             let event = event_result.context("failed to decode an event")?;
             let metadata = event.event_metadata();
 
             match (metadata.pallet.name(), &*metadata.variant.name) {
                 (SYSTEM, UPDATE) => update = true,
-                (BALANCES, TRANSFER) => Transfer::deserialize(
+                (ASSETS, TRANSFERRED) => Transferred::deserialize(
                     event
                         .field_values()
                         .context("failed to decode event's fields")?,
                 )
                 .context("failed to deserialize a transfer event")?
-                .process(&mut invoices_changes, &read_invoices)?,
+                .process(
+                    &mut invoices_changes,
+                    &read_invoices,
+                    self.database.properties().await.usd_asset,
+                )?,
+                (ASSETS, ASSET_MIN_BALANCE_CHANGED) => {
+                    let mut props = self.database.properties_write().await;
+                    let new_min_balance = fetch_min_balance(
+                        self.client.storage().at_latest().await?,
+                        &props.usd_asset,
+                    )
+                    .await?;
+
+                    props.existential_deposit = new_min_balance;
+                }
+                (ASSETS, METADATA_SET) => {
+                    let props = self.database.properties_write().await;
+                    let new_decimals =
+                        fetch_decimals(self.client.storage().at_latest().await?, &props.usd_asset)
+                            .await?;
+
+                    if props.decimals != new_decimals {
+                        anyhow::bail!("decimals have been changed: {new_decimals}");
+                    }
+                }
                 _ => {}
             }
         }
@@ -618,8 +670,11 @@ impl ProcessorFinalized {
         let mut write_invoices = write_tx.invoices()?;
 
         for (invoice, mut changes) in invoices_changes {
+            log::debug!("final loop acc : {invoice}; changes: {changes:?}");
             if let InvoiceStatus::Unpaid(price) = changes.invoice.status {
                 let balance = self.balance(hash, &invoice).await?;
+
+                log::debug!("unpaid acc balance: {balance}; price: {price}");
 
                 if balance >= price {
                     changes.invoice.status = InvoiceStatus::Paid(price);
@@ -656,31 +711,36 @@ impl ProcessorFinalized {
 
     async fn balance(&self, hash: Hash, account: &Account) -> Result<Balance> {
         const ACCOUNT: &str = "Account";
-        const ACCOUNT_BALANCES: &str = "data";
-        const FREE_BALANCE: &str = "free";
+        const BALANCE: &str = "balance";
 
-        let account_info = self
+        if let Some(account_info) = self
             .client
             .storage()
             .at(hash)
-            .fetch_or_default(&dynamic::storage(
-                SYSTEM,
+            .fetch(&dynamic::storage(
+                ASSETS,
                 ACCOUNT,
-                vec![AsRef::<[u8; 32]>::as_ref(account)],
+                vec![
+                    Value::from(self.database.properties().await.usd_asset.id()),
+                    Value::from_bytes(AsRef::<[u8; 32]>::as_ref(account)),
+                ],
             ))
             .await
             .context("failed to fetch account info from the chain")?
-            .to_value()
-            .context("failed to decode account info")?;
-        let encoded_balance = account_info
-            .at(ACCOUNT_BALANCES)
-            .with_context(|| format!("{ACCOUNT_BALANCES} field wasn't found in account info"))?
-            .at(FREE_BALANCE)
-            .with_context(|| format!("{FREE_BALANCE} wasn't found in account balance info"))?;
+        {
+            let decoded_account_info = account_info
+                .to_value()
+                .context("failed to decode account info")?;
+            let encoded_balance = decoded_account_info
+                .at(BALANCE)
+                .with_context(|| format!("{BALANCE} field wasn't found in account info"))?;
 
-        encoded_balance.as_u128().with_context(|| {
-            format!("expected `u128` as the type of a free balance, got {encoded_balance}")
-        })
+            encoded_balance.as_u128().with_context(|| {
+                format!("expected `u128` as the type of a balance, got {encoded_balance}")
+            })
+        } else {
+            Ok(0)
+        }
     }
 }
 
@@ -978,20 +1038,23 @@ impl Processor {
 
         for event_result in events.iter() {
             const UPDATE: &str = "CodeUpdated";
-            const TRANSFER: &str = "Transfer";
-
+            const TRANSFERRED: &str = "Transferred";
             let event = event_result.context("failed to decode an event")?;
             let metadata = event.event_metadata();
 
             match (metadata.pallet.name(), &*metadata.variant.name) {
                 (SYSTEM, UPDATE) => update = true,
-                (BALANCES, TRANSFER) => Transfer::deserialize(
+                (ASSETS, TRANSFERRED) => Transferred::deserialize(
                     event
                         .field_values()
                         .context("failed to decode event's fields")?,
                 )
                 .context("failed to deserialize a transfer event")?
-                .process(&mut invoices_changes, &read_invoices)?,
+                .process(
+                    &mut invoices_changes,
+                    &read_invoices,
+                    self.database.properties().await.usd_asset,
+                )?,
                 _ => {}
             }
         }
@@ -1024,31 +1087,36 @@ impl Processor {
 
     async fn balance(&self, hash: Hash, account: &Account) -> Result<Balance> {
         const ACCOUNT: &str = "Account";
-        const ACCOUNT_BALANCES: &str = "data";
-        const FREE_BALANCE: &str = "free";
+        const BALANCE: &str = "balance";
 
-        let account_info = self
+        if let Some(account_info) = self
             .scanner
             .storage
             .at(hash)
-            .fetch_or_default(&dynamic::storage(
-                SYSTEM,
+            .fetch(&dynamic::storage(
+                ASSETS,
                 ACCOUNT,
-                vec![AsRef::<[u8; 32]>::as_ref(account)],
+                vec![
+                    Value::from(self.database.properties().await.usd_asset.id()),
+                    Value::from_bytes(AsRef::<[u8; 32]>::as_ref(account)),
+                ],
             ))
             .await
             .context("failed to fetch account info from the chain")?
-            .to_value()
-            .context("failed to decode account info")?;
-        let encoded_balance = account_info
-            .at(ACCOUNT_BALANCES)
-            .with_context(|| format!("{ACCOUNT_BALANCES} field wasn't found in account info"))?
-            .at(FREE_BALANCE)
-            .with_context(|| format!("{FREE_BALANCE} wasn't found in account balance info"))?;
+        {
+            let decoded_account_info = account_info
+                .to_value()
+                .context("failed to decode account info")?;
+            let encoded_balance = decoded_account_info
+                .at(BALANCE)
+                .with_context(|| format!("{BALANCE} field wasn't found in account info"))?;
 
-        encoded_balance.as_u128().with_context(|| {
-            format!("expected `u128` as the type of a free balance, got {encoded_balance}")
-        })
+            encoded_balance.as_u128().with_context(|| {
+                format!("expected `u128` as the type of a balance, got {encoded_balance}")
+            })
+        } else {
+            Ok(0)
+        }
     }
 
     async fn batch_transfer(
@@ -1065,18 +1133,13 @@ impl Processor {
             .finalized_head_number_and_hash()
             .await
             .context("failed to get the chain head while constructing a transaction")?;
-        let extensions = (
-            (),
-            (),
-            (),
-            (),
-            CheckMortalityParams::mortal(block_hash_count.into(), number.into(), hash),
-            ChargeTransactionPaymentParams::no_tip(),
-        );
+        let extensions = DefaultExtrinsicParamsBuilder::new()
+            .mortal_unchecked(number.into(), hash, block_hash_count.into())
+            .tip_of(0, self.database.properties().await.usd_asset.id());
 
         self.api
             .tx
-            .create_signed_with_nonce(&call, signer, nonce, extensions)
+            .create_signed_with_nonce(&call, signer, nonce, extensions.build())
             .context("failed to create a transfer transaction")
     }
 
@@ -1115,14 +1178,20 @@ impl Processor {
                 let block_hash_count = properties.block_hash_count;
                 let signer = changes.invoice.signer(self.database.pair())?;
 
-                let transfers = vec![construct_transfer(&changes.invoice.recipient, price)];
+                let transfers = vec![construct_transfer(
+                    &changes.invoice.recipient,
+                    price - EXPECTED_USDX_FEE,
+                    self.database.properties().await.usd_asset,
+                )];
                 let tx = self
                     .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
                     .await?;
+
                 self.methods
                     .author_submit_extrinsic(tx.encoded())
                     .await
-                    .context("failed to submit an extrinsic")?;
+                    .context("failed to submit an extrinsic")
+                    .unwrap();
             }
         }
 
@@ -1130,24 +1199,32 @@ impl Processor {
     }
 }
 
-fn construct_transfer(to: &Account, _amount: Balance) -> Value {
-    const TRANSFER_ALL: &str = "transfer_all";
+fn construct_transfer(to: &Account, amount: Balance, usd_asset: Usd) -> Value {
+    const TRANSFER_KEEP_ALIVE: &str = "transfer";
+
+    dbg!(amount);
 
     dynamic::tx(
-        BALANCES,
-        TRANSFER_ALL,
-        vec![scale_value::value!(Id(Value::from_bytes(to))), false.into()],
+        ASSETS,
+        TRANSFER_KEEP_ALIVE,
+        vec![
+            usd_asset.id().into(),
+            scale_value::value!(Id(Value::from_bytes(to))),
+            amount.into(),
+        ],
     )
     .into_value()
 }
 
+#[derive(Debug)]
 struct InvoiceChanges {
     invoice: Invoice,
     incoming: HashMap<Account, Balance>,
 }
 
-#[derive(Deserialize)]
-struct Transfer {
+#[derive(Deserialize, Debug)]
+struct Transferred {
+    asset_id: u32,
     // The implementation of `Deserialize` for `AccountId32` works only with strings.
     #[serde(deserialize_with = "account_deserializer")]
     from: AccountId32,
@@ -1163,13 +1240,16 @@ where
     <([u8; 32],)>::deserialize(deserializer).map(|address| AccountId32::new(address.0))
 }
 
-impl Transfer {
+impl Transferred {
     fn process(
         self,
         invoices_changes: &mut HashMap<Account, InvoiceChanges>,
         invoices: &ReadInvoices<'_>,
+        usd_asset: Usd,
     ) -> Result<()> {
-        if self.from == self.to || self.amount == 0 {
+        log::debug!("Transferred event: {self:?}");
+
+        if self.from == self.to || self.amount == 0 || self.asset_id != usd_asset.id() {
             return Ok(());
         }
 

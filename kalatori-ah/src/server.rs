@@ -156,10 +156,9 @@ async fn abcd(
         Ok(Success {
             pay_account: format!("0x{}", HexDisplay::from(&invoice_account.as_ref())),
             price: match invoice.status {
-                InvoiceStatus::Unpaid(invoice_price) => {
+                InvoiceStatus::Unpaid(invoice_price) | InvoiceStatus::Paid(invoice_price) => {
                     convert(properties.decimals, invoice_price)?
                 }
-                InvoiceStatus::Paid(invoice_price) => convert(properties.decimals, invoice_price)?,
             },
             wss: database.rpc().to_string(),
             mul: properties.decimals,
