@@ -20,7 +20,7 @@ use subxt::{
     tx::PairSigner,
 };
 use tokio::{
-    sync::{RwLock, RwLockReadGuard},
+    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
     task,
 };
 
@@ -265,6 +265,10 @@ impl Database {
 
     pub async fn properties(&self) -> RwLockReadGuard<'_, ChainProperties> {
         self.properties.read().await
+    }
+
+    pub async fn properties_write(&self) -> RwLockWriteGuard<'_, ChainProperties> {
+        self.properties.write().await
     }
 
     pub fn pair(&self) -> &Pair {
