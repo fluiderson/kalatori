@@ -61,7 +61,7 @@ async fn fetch_best_block(methods: &LegacyRpcMethods<RuntimeConfig>) -> Result<H
         .context("received nothing after requesting the best block hash")
 }
 
-async fn fetch_runtime(
+async fn fetch_api_runtime(
     methods: &LegacyRpcMethods<RuntimeConfig>,
     backend: &impl Backend<RuntimeConfig>,
 ) -> Result<(Metadata, RuntimeVersion)> {
@@ -198,7 +198,7 @@ pub async fn prepare(
     let methods = Arc::new(LegacyRpcMethods::new(rpc.clone()));
     let backend = Arc::new(LegacyBackend::new(rpc));
 
-    let (metadata, runtime_version) = fetch_runtime(&methods, &*backend)
+    let (metadata, runtime_version) = fetch_api_runtime(&methods, &*backend)
         .await
         .context("failed to fetch the runtime of the API client")?;
     let genesis_hash = methods
@@ -319,9 +319,9 @@ impl Updater {
 
     async fn process_update(&self) -> Result<()> {
         // We don't use the runtime version from the updates stream because it doesn't provide the
-        // best block hash, so we fetch it ourselves (in `fetch_runtime`) and use it to make sure
+        // best block hash, so we fetch it ourselves (in `fetch_api_runtime`) and use it to make sure
         // that metadata & the runtime version are from the same block.
-        let (metadata, runtime_version) = fetch_runtime(&self.methods, &*self.backend)
+        let (metadata, runtime_version) = fetch_api_runtime(&self.methods, &*self.backend)
             .await
             .context("failed to fetch a new runtime for the API client")?;
 
@@ -1119,83 +1119,15 @@ impl Processor {
                 let tx = self
                     .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
                     .await?;
-                //let mut fee = calculate_estimate_fee(&tx).await?;
-                /*
-                    if false //let Some(a) = (fee + properties.existential_deposit + price).checked_sub(balance)
-                    {
-                        let price_mod = price - a;
-
-                        transfers = vec![construct_transfer(&changes.invoice.recipient, price_mod)];
-                        tx = self
-                            .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
-                            .await?;
-
-                        self.methods
-                            .author_submit_extrinsic(tx.encoded())
-                            .await
-                            .context("failed to submit an extrinsic")?;
-                    } else if let Some((account, amount)) = changes.incoming.into_iter().next() {
-                        let mut temp_transfers = transfers.clone();
-
-                        temp_transfers.push(construct_transfer(&account, amount));
-                        tx = self
-                            .batch_transfer(
-                                current_nonce,
-                                block_hash_count,
-                                &signer,
-                                temp_transfers.clone(),
-                            )
-                            .await?;
-                        fee = calculate_estimate_fee(&tx).await?;
-
-                        if let Some(a) =
-                            (fee + properties.existential_deposit + amount).checked_sub(remaining)
-                        {
-                            let amount_mod = amount - a;
-
-                            transfers.push(construct_transfer(&account, amount_mod));
-                            tx = self
-                                .batch_transfer(
-                                    current_nonce,
-                                    block_hash_count,
-                                    &signer,
-                                    transfers.clone(),
-                                )
-                                .await?;
-
-                            self.methods
-                                .author_submit_extrinsic(tx.encoded())
-                                .await
-                                .context("failed to submit an extrinsic")?;
-                        } else {
-                            self.methods
-                                .author_submit_extrinsic(tx.encoded())
-                                .await
-                                .context("failed to submit an extrinsic")?;
-                        }
-                    } else {
-                */
                 self.methods
                     .author_submit_extrinsic(tx.encoded())
                     .await
                     .context("failed to submit an extrinsic")?;
-
-                //}
             }
         }
 
         Ok(())
     }
-
-    // async fn _process_paid(
-    //     &self,
-    //     _invoice: Account,
-    //     _block: &Block<RuntimeConfig, OnlineClient>,
-    //     _changes: InvoiceChanges,
-    //     _hash: Hash,
-    // ) -> Result<()> {
-    //     Ok(())
-    // }
 }
 
 fn construct_transfer(to: &Account, _amount: Balance) -> Value {
@@ -1208,18 +1140,6 @@ fn construct_transfer(to: &Account, _amount: Balance) -> Value {
     )
     .into_value()
 }
-
-/*
-async fn calculate_estimate_fee(
-    extrinsic: &SubmittableExtrinsic<RuntimeConfig, OnlineClient>,
-) -> Result<Balance> {
-    extrinsic
-        .partial_fee_estimate()
-        .await
-        .map(|f| f * 2)
-        .context("failed to obtain a transfer's estimate fee")
-}
-*/
 
 struct InvoiceChanges {
     invoice: Invoice,
