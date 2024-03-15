@@ -111,10 +111,10 @@ enum InvoiceStatus {
     Paid,
 }
 
-struct Transfer(TransferKind, Compact<Balance>);
+struct Transfer(TransferKind, #[compact] Balance);
 
 enum TransferKind {
-    Assets,
+    Assets(#[compact] Asset),
     Balances,
 }
 
