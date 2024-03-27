@@ -1,0 +1,31 @@
+recipient = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+account-lifetime = 3600 # 1 hour.
+depth = 86400 # 1 day.
+debug = true
+
+[[chain]]
+name = "westend"
+native-token = "WND"
+decimals = 12
+endpoints = [
+    "wss://westend-rpc.polkadot.io",
+    "wss://westend-rpc.dwellir.com",
+]
+
+[[chain]]
+name = "westmint"
+native-token = "WND AH"
+decimals = 12
+endpoints = [
+    "wss://polkadot-asset-hub-rpc.polkadot.io",
+    "wss://statemint-rpc.dwellir.com",
+]
+multi-location-assets = true
+
+[[chain.asset]]
+name = "JOE"
+id = 8
+
+[[chain.asset]]
+name = "TEST"
+id = 1234

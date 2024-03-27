@@ -1,0 +1,36 @@
+recipient = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+account-lifetime = 86400 # 1 day.
+depth = 604800 # 1 week.
+
+[[chain]]
+name = "polkadot"
+native-token = "DOT"
+decimals = 10
+endpoints = [
+    "wss://rpc.polkadot.io",
+    "wss://1rpc.io/dot",
+]
+
+[[chain]]
+name = "assethub-polkadot"
+endpoints = [
+    "wss://polkadot-asset-hub-rpc.polkadot.io",
+    "wss://statemint-rpc.dwellir.com",
+]
+
+[[chain.asset]]
+name = "USDC"
+id = 1337
+
+[[chain.asset]]
+name = "USDT"
+id = 1984
+
+[[chain]]
+name = "kusama"
+native-token = "KSM"
+decimals = 12
+endpoints = [
+    "wss://kusama-rpc.polkadot.io",
+    "wss://1rpc.io/ksm",
+]

@@ -1,209 +1,382 @@
-use crate::{
-    database::{Database, Invoice, InvoiceStatus},
-    Account,
-};
+use crate::{AssetId, BlockNumber, Decimals, ExtrinsicIndex};
 use anyhow::{Context, Result};
 use axum::{
-    extract::{Path, State},
-    routing::get,
+    extract::{rejection::RawPathParamsRejection, MatchedPath, Query, RawPathParams},
+    http::{header, HeaderName, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
-use std::{future::Future, net::SocketAddr, sync::Arc};
-use subxt::ext::sp_core::{hexdisplay::HexDisplay, DeriveJunction, Pair};
+use serde::{Serialize, Serializer};
+use std::{collections::HashMap, future::Future, net::SocketAddr};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-pub(crate) const MODULE: &str = module_path!();
+pub const MODULE: &str = module_path!();
+
+const AMOUNT: &str = "amount";
+const CURRENCY: &str = "currency";
+const CALLBACK: &str = "callback";
 
 #[derive(Serialize)]
-#[serde(untagged)]
-pub enum Response {
-    Error(Error),
-    Success(Success),
-}
-
-#[derive(Serialize)]
-pub struct Error {
-    error: String,
-    wss: String,
-    mul: u64,
-    version: String,
-}
-
-#[derive(Serialize)]
-pub struct Success {
-    pay_account: String,
-    price: f64,
-    recipient: String,
+struct OrderStatus {
     order: String,
-    wss: String,
-    mul: u64,
-    result: String,
-    version: String,
+    payment_status: PaymentStatus,
+    message: String,
+    recipient: String,
+    server_info: ServerInfo,
+    #[serde(skip_serializing_if = "Option::is_none", flatten)]
+    order_info: Option<OrderInfo>,
 }
 
-pub(crate) async fn new(
+#[derive(Serialize)]
+struct OrderInfo {
+    withdrawal_status: WithdrawalStatus,
+    amount: f64,
+    currency: CurrencyInfo,
+    callback: String,
+    transactions: Vec<TransactionInfo>,
+    payment_account: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum PaymentStatus {
+    Pending,
+    Paid,
+    Unknown,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum WithdrawalStatus {
+    Waiting,
+    Failed,
+    Completed,
+}
+
+#[derive(Serialize)]
+struct ServerStatus {
+    description: ServerInfo,
+    supported_currencies: Vec<CurrencyInfo>,
+}
+
+#[derive(Serialize)]
+struct ServerHealth {
+    description: ServerInfo,
+    connected_rpcs: Vec<RpcInfo>,
+    status: Health,
+}
+
+#[derive(Serialize)]
+struct RpcInfo {
+    rpc_url: String,
+    chain_name: String,
+    status: Health,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Health {
+    Ok,
+    Degraded,
+    Critical,
+}
+
+#[derive(Serialize)]
+struct CurrencyInfo {
+    currency: String,
+    chain_name: String,
+    kind: TokenKind,
+    decimals: Decimals,
+    rpc_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asset_id: Option<AssetId>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum TokenKind {
+    Assets,
+    Balances,
+}
+
+#[derive(Serialize)]
+struct ServerInfo {
+    version: &'static str,
+    instance_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    debug: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kalatori_remark: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TransactionInfo {
+    #[serde(skip_serializing_if = "Option::is_none", flatten)]
+    finalized_tx: Option<FinalizedTx>,
+    transaction_bytes: String,
+    sender: String,
+    recipient: String,
+    #[serde(serialize_with = "amount_serializer")]
+    amount: Amount,
+    currency: CurrencyInfo,
+    status: TxStatus,
+}
+
+#[derive(Serialize)]
+struct FinalizedTx {
+    block_number: BlockNumber,
+    position_in_block: ExtrinsicIndex,
+    timestamp: String,
+}
+
+enum Amount {
+    All,
+    Exact(f64),
+}
+
+fn amount_serializer<S: Serializer>(amount: &Amount, serializer: S) -> Result<S::Ok, S::Error> {
+    match amount {
+        Amount::All => serializer.serialize_str("all"),
+        Amount::Exact(exact) => exact.serialize(serializer),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum TxStatus {
+    Pending,
+    Finalized,
+    Failed,
+}
+
+pub async fn new(
     shutdown_notification: CancellationToken,
     host: SocketAddr,
-    database: Arc<Database>,
-) -> Result<impl Future<Output = Result<&'static str>>> {
-    let app = Router::new()
-        .route(
-            "/recipient/:recipient/order/:order/price/:price",
-            get(handler_recip),
-        )
-        .route("/order/:order/price/:price", get(handler))
-        .with_state(database);
+) -> Result<impl Future<Output = Result<String>>> {
+    let v2 = Router::new()
+        .route("/order/:order_id", post(order))
+        .route("/status", get(status))
+        .route("/health", get(health));
+    let app = Router::new().nest("/v2", v2);
 
     let listener = TcpListener::bind(host)
         .await
-        .context("failed to bind the TCP listener")?;
+        .with_context(|| format!("failed to bind the TCP listener to {host:?}"))?;
 
-    log::info!("The server is listening on {host:?}.");
-
-    Ok(async move {
+    Ok(async {
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_notification.cancelled_owned())
-            .await
-            .context("failed to fire up the server")?;
+            .await?;
 
-        Ok("The server module is shut down.")
+        Ok("The server module is shut down.".into())
     })
 }
 
-async fn handler_recip(
-    State(database): State<Arc<Database>>,
-    Path((recipient, order, price)): Path<(String, String, f64)>,
-) -> Json<Response> {
-    let wss = database.rpc().to_string();
-    let mul = database.properties().await.decimals;
-
-    match abcd(database, Some(recipient), order, price).await {
-        Ok(re) => Response::Success(re),
-        Err(error) => Response::Error(Error {
-            wss,
-            mul,
-            version: env!("CARGO_PKG_VERSION").into(),
-            error: error.to_string(),
-        }),
-    }
-    .into()
+enum OrderSuccess {
+    Created,
+    Found,
 }
 
-async fn handler(
-    State(database): State<Arc<Database>>,
-    Path((order, price)): Path<(String, f64)>,
-) -> Json<Response> {
-    let wss = database.rpc().to_string();
-    let mul = database.properties().await.decimals;
-    let recipient = database
-        .destination()
-        .as_ref()
-        .map(|d| format!("0x{}", HexDisplay::from(AsRef::<[u8; 32]>::as_ref(&d))));
-
-    match abcd(database, recipient, order, price).await {
-        Ok(re) => Response::Success(re),
-        Err(error) => Response::Error(Error {
-            wss,
-            mul,
-            version: env!("CARGO_PKG_VERSION").into(),
-            error: error.to_string(),
-        }),
-    }
-    .into()
+enum OrderError {
+    LessThanExistentialDeposit(f64),
+    UnknownCurrency,
+    MissingParameter(String),
+    InvalidParameter(String),
+    AlreadyProcessed(Box<OrderStatus>),
+    InternalError,
 }
 
-async fn abcd(
-    database: Arc<Database>,
-    recipient_option: Option<String>,
-    order: String,
-    price_f64: f64,
-) -> Result<Success, anyhow::Error> {
-    let recipient = recipient_option.context("destionation address isn't set")?;
-    let decoded_recip = hex::decode(&recipient[2..])?;
-    let recipient_account = Account::try_from(decoded_recip.as_ref())
-        .map_err(|()| anyhow::anyhow!("Unknown address length"))?;
-    let properties = database.properties().await;
-    #[allow(clippy::cast_precision_loss)]
-    let mul = 10u128.pow(properties.decimals.try_into()?) as f64;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let price = (price_f64 * mul).round() as u128;
-    let order_encoded = DeriveJunction::hard(&order).unwrap_inner();
-    let invoice_account: Account = database
-        .pair()
-        .derive(
-            [
-                DeriveJunction::Hard(<[u8; 32]>::from(recipient_account.clone())),
-                DeriveJunction::Hard(order_encoded),
-            ]
-            .into_iter(),
-            None,
-        )?
-        .0
-        .public()
-        .into();
+#[derive(Serialize)]
+struct InvalidParameter {
+    parameter: String,
+    message: String,
+}
 
-    if let Some(encoded_invoice) = database.read()?.invoices()?.get(&invoice_account)? {
-        let invoice = encoded_invoice.value();
+fn process_order(
+    matched_path: &MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+    query: &HashMap<String, String>,
+) -> Result<(OrderStatus, OrderSuccess), OrderError> {
+    const ORDER_ID: &str = "order_id";
 
-        if let InvoiceStatus::Unpaid(saved_price) = invoice.status {
-            if saved_price != price {
-                anyhow::bail!("The invoice was created with different price ({price}).");
-            }
+    let path_parameters =
+        path_result.map_err(|_| OrderError::InvalidParameter(matched_path.as_str().to_owned()))?;
+    let order = path_parameters
+        .iter()
+        .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
+        .ok_or_else(|| OrderError::MissingParameter(ORDER_ID.into()))?
+        .to_owned();
+
+    if query.is_empty() {
+        // TODO: try to query an order from the database.
+
+        Ok((
+            OrderStatus {
+                order,
+                payment_status: PaymentStatus::Unknown,
+                message: String::new(),
+                recipient: String::new(),
+                server_info: ServerInfo {
+                    version: env!("CARGO_PKG_VERSION"),
+                    instance_id: String::new(),
+                    debug: None,
+                    kalatori_remark: None,
+                },
+                order_info: None,
+            },
+            OrderSuccess::Found,
+        ))
+    } else {
+        let get_parameter = |parameter: &str| {
+            query
+                .get(parameter)
+                .ok_or_else(|| OrderError::MissingParameter(parameter.into()))
+        };
+
+        let currency = get_parameter(CURRENCY)?.to_owned();
+        let callback = get_parameter(CALLBACK)?.to_owned();
+        let amount = get_parameter(AMOUNT)?
+            .parse()
+            .map_err(|_| OrderError::InvalidParameter(AMOUNT.into()))?;
+
+        // TODO: try to query & update or create an order in the database.
+
+        if currency == "USDCT" {
+            return Err(OrderError::UnknownCurrency);
         }
 
-        Ok(Success {
-            pay_account: format!("0x{}", HexDisplay::from(&invoice_account.as_ref())),
-            price: match invoice.status {
-                InvoiceStatus::Unpaid(invoice_price) => {
-                    convert(properties.decimals, invoice_price)?
-                }
-                InvoiceStatus::Paid(invoice_price) => convert(properties.decimals, invoice_price)?,
+        if amount < 50.0 {
+            return Err(OrderError::LessThanExistentialDeposit(50.0));
+        }
+
+        Ok((
+            OrderStatus {
+                order,
+                payment_status: PaymentStatus::Pending,
+                message: String::new(),
+                recipient: String::new(),
+                server_info: ServerInfo {
+                    version: env!("CARGO_PKG_VERSION"),
+                    instance_id: String::new(),
+                    debug: None,
+                    kalatori_remark: None,
+                },
+                order_info: Some(OrderInfo {
+                    withdrawal_status: WithdrawalStatus::Waiting,
+                    amount,
+                    currency: CurrencyInfo {
+                        currency,
+                        chain_name: String::new(),
+                        kind: TokenKind::Balances,
+                        decimals: 0,
+                        rpc_url: String::new(),
+                        asset_id: None,
+                    },
+                    callback,
+                    transactions: vec![],
+                    payment_account: String::new(),
+                }),
             },
-            wss: database.rpc().to_string(),
-            mul: properties.decimals,
-            recipient,
-            order,
-            result: match invoice.status {
-                InvoiceStatus::Unpaid(_) => "waiting",
-                InvoiceStatus::Paid(_) => "paid",
-            }
-            .into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        })
-    } else {
-        let tx = database.write()?;
-
-        tx.invoices()?.save(
-            &invoice_account,
-            &Invoice {
-                recipient: recipient_account,
-                order: order_encoded,
-                status: InvoiceStatus::Unpaid(price),
-            },
-        )?;
-
-        tx.commit()?;
-
-        Ok(Success {
-            pay_account: format!("0x{}", HexDisplay::from(&invoice_account.as_ref())),
-            price: price_f64,
-            wss: database.rpc().to_string(),
-            mul: properties.decimals,
-            recipient,
-            order,
-            version: env!("CARGO_PKG_VERSION").into(),
-            result: "waiting".into(),
-        })
+            OrderSuccess::Created,
+        ))
     }
 }
 
-fn convert(dec: u64, num: u128) -> Result<f64> {
-    #[allow(clippy::cast_precision_loss)]
-    let numfl = num as f64;
-    #[allow(clippy::cast_precision_loss)]
-    let mul = 10u128.pow(dec.try_into()?) as f64;
+async fn order(
+    matched_path: MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+    query: Query<HashMap<String, String>>,
+) -> Response {
+    match process_order(&matched_path, path_result, &query) {
+        Ok((order_status, order_success)) => match order_success {
+            OrderSuccess::Created => (StatusCode::CREATED, Json(order_status)),
+            OrderSuccess::Found => (StatusCode::OK, Json(order_status)),
+        }
+        .into_response(),
+        Err(error) => match error {
+            OrderError::LessThanExistentialDeposit(existential_deposit) => (
+                StatusCode::BAD_REQUEST,
+                Json([InvalidParameter {
+                    parameter: AMOUNT.into(),
+                    message: format!("provided amount is less than the currency's existential deposit ({existential_deposit})"),
+                }]),
+            )
+                .into_response(),
+            OrderError::UnknownCurrency => (
+                StatusCode::BAD_REQUEST,
+                Json([InvalidParameter {
+                    parameter: CURRENCY.into(),
+                    message: "provided currency isn't supported".into(),
+                }]),
+            )
+                .into_response(),
+            OrderError::MissingParameter(parameter) => (
+                StatusCode::BAD_REQUEST,
+                Json([InvalidParameter {
+                    parameter,
+                    message: "parameter wasn't found".into(),
+                }]),
+            )
+                .into_response(),
+            OrderError::InvalidParameter(parameter) => (
+                StatusCode::BAD_REQUEST,
+                Json([InvalidParameter {
+                    parameter,
+                    message: "parameter's format is invalid".into(),
+                }]),
+            )
+                .into_response(),
+            OrderError::AlreadyProcessed(order_status) => {
+                (StatusCode::CONFLICT, Json(order_status)).into_response()
+            }
+            OrderError::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+    }
+}
 
-    Ok(numfl / mul)
+async fn status() -> ([(HeaderName, &'static str); 1], Json<ServerStatus>) {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        ServerStatus {
+            description: ServerInfo {
+                version: env!("CARGO_PKG_VERSION"),
+                instance_id: String::new(),
+                debug: None,
+                kalatori_remark: None,
+            },
+            supported_currencies: vec![CurrencyInfo {
+                currency: String::new(),
+                chain_name: String::new(),
+                kind: TokenKind::Balances,
+                decimals: 0,
+                rpc_url: String::new(),
+                asset_id: None,
+            }],
+        }
+        .into(),
+    )
+}
+
+async fn health() -> ([(HeaderName, &'static str); 1], Json<ServerHealth>) {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        ServerHealth {
+            description: ServerInfo {
+                version: env!("CARGO_PKG_VERSION"),
+                instance_id: String::new(),
+                debug: None,
+                kalatori_remark: None,
+            },
+            connected_rpcs: [RpcInfo {
+                rpc_url: String::new(),
+                chain_name: String::new(),
+                status: Health::Critical,
+            }]
+            .into(),
+            status: Health::Degraded,
+        }
+        .into(),
+    )
 }
