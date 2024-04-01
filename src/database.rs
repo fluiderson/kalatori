@@ -1,11 +1,22 @@
-use crate::{rpc::ConnectedChain, AssetId, Balance, BlockNumber, Nonce, Timestamp};
+use crate::{
+    rpc::{ConnectedChain, Currency},
+    AccountId, AssetId, Balance, BlockNumber, Config, Nonce, Timestamp, Version,
+};
 use anyhow::{Context, Result};
-use redb::{Database, ReadableTable, Table, TableDefinition, TableHandle, TypeName, Value};
-use std::{collections::HashMap, sync::Arc};
+use redb::{
+    backends::{FileBackend, InMemoryBackend},
+    Database, ReadableTable, Table, TableDefinition, TableHandle, TypeName, Value,
+};
+use serde::Deserialize;
+use std::{collections::HashMap, fs::File, io::ErrorKind, sync::Arc};
 use subxt::ext::{
     codec::{Compact, Decode, Encode},
-    sp_core::sr25519::{Pair, Public},
+    sp_core::{
+        crypto::Ss58Codec,
+        sr25519::{Pair, Public},
+    },
 };
+use tokio::sync::RwLock;
 
 pub const MODULE: &str = module_path!();
 
@@ -15,8 +26,6 @@ const ROOT: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("root");
 const KEYS: TableDefinition<'_, PublicSlot, U256Slot> = TableDefinition::new("keys");
 const CHAINS: TableDefinition<'_, ChainHash, BlockNumber> = TableDefinition::new("chains");
 const INVOICES: TableDefinition<'_, InvoiceKey, Invoice> = TableDefinition::new("invoices");
-const HIT_LIST: TableDefinition<'_, Timestamp, (ChainHash, AssetId, Account)> =
-    TableDefinition::new("hit_list");
 
 const ACCOUNTS: &str = "accounts";
 
@@ -27,6 +36,11 @@ const TRANSACTIONS: &str = "transactions";
 
 type TRANSACTIONS_KEY = BlockNumber;
 type TRANSACTIONS_VALUE = (Account, Nonce, Transfer);
+
+const HIT_LIST: &str = "hit_list";
+
+type HIT_LIST_KEY = BlockNumber;
+type HIT_LIST_VALUE = (Option<AssetId>, Account);
 
 // `ROOT` keys
 
@@ -84,14 +98,36 @@ struct Invoice {
     price: BalanceSlot,
     callback: String,
     message: String,
-    asset: Option<Compact<AssetId>>,
-    transactions: Vec<TransferTx>,
+    transactions: TransferTxs,
 }
 
 #[derive(Encode, Decode, Debug)]
 #[codec(crate = subxt::ext::codec)]
+enum TransferTxs {
+    Asset {
+        #[codec(compact)]
+        id: AssetId,
+        // transactions: TransferTxsAsset,
+    },
+    Native {
+        recipient: Account,
+        encoded: Vec<u8>,
+        exact_amount: Option<Compact<BalanceSlot>>,
+    },
+}
+
+// #[derive(Encode, Decode, Debug)]
+// #[codec(crate = subxt::ext::codec)]
+// struct TransferTxsAsset<T> {
+//     recipient: Account,
+//     encoded: Vec<u8>,
+//     #[codec(compact)]
+//     amount: BalanceSlot,
+// }
+
+#[derive(Encode, Decode, Debug)]
+#[codec(crate = subxt::ext::codec)]
 struct TransferTx {
-    encoded: Vec<u8>,
     recipient: Account,
     exact_amount: Option<Compact<BalanceSlot>>,
 }
@@ -121,124 +157,95 @@ impl Value for Invoice {
     }
 }
 
+pub struct ConfigWoChains {
+    pub recipient: String,
+    pub debug: Option<bool>,
+    pub remark: Option<String>,
+    pub depth: Option<BlockNumber>,
+    pub account_lifetime: BlockNumber,
+    pub rpc: String,
+}
+
 pub struct State {
-    db: Database,
-    // properties: Arc<RwLock<ChainProperties>>,
-    // pair: Pair,
-    // rpc: String,
-    // destination: Option<Account>,
+    pub currencies: HashMap<String, Currency>,
+    pub recipient: AccountId,
+    pub pair: Pair,
+    pub depth: Option<Timestamp>,
+    pub account_lifetime: Timestamp,
+    pub debug: Option<bool>,
+    pub remark: Option<String>,
+
+    pub invoices: RwLock<HashMap<String, Invoicee>>,
+    pub rpc: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Invoicee {
+    pub callback: String,
+    pub amount: Balance,
+    pub paid: bool,
+    pub paym_acc: AccountId,
 }
 
 impl State {
     pub fn initialise(
         path_option: Option<String>,
+        currencies: HashMap<String, Currency>,
         current_pair: (Pair, Public),
         old_pairs: HashMap<String, (Pair, Public)>,
-        connected_chains: HashMap<String, ConnectedChain>,
+        ConfigWoChains {
+            recipient,
+            debug,
+            remark,
+            depth,
+            account_lifetime,
+            rpc,
+        }: ConfigWoChains,
     ) -> Result<Arc<Self>> {
-        // let mut database = Database::create(path_option.unwrap()).unwrap();
+        let builder = Database::builder();
+        let is_new;
 
-        // let tx = database
-        //     .begin_write()
-        //     .context("failed to begin a write transaction")?;
-        // let mut table = tx
-        //     .open_table(ROOT)
-        //     .with_context(|| format!("failed to open the `{}` table", ROOT.name()))?;
-        // drop(
-        //     tx.open_table(INVOICES)
-        //         .with_context(|| format!("failed to open the `{}` table", INVOICES.name()))?,
-        // );
+        let database = if let Some(path) = path_option {
+            tracing::info!("Creating/Opening the database at {path:?}.");
 
-        //         let last_block = match (
-        //             get_slot(&table, DB_VERSION_KEY)?,
-        //             get_slot(&table, DAEMON_INFO)?,
-        //             get_slot(&table, LAST_BLOCK)?,
-        //         ) {
-        //             (None, None, None) => {
-        //                 table
-        //                     .insert(
-        //                         DB_VERSION_KEY,
-        //                         Compact(DATABASE_VERSION).encode(),
-        //                     )
-        //                     .context("failed to insert the database version")?;
-        //                 insert_daemon_info(&mut table, given_rpc.clone(), public)?;
+            match File::create_new(&path) {
+                Ok(file) => {
+                    is_new = true;
 
-        //                 None
-        //             }
-        //             (Some(encoded_db_version), Some(daemon_info), last_block_option) => {
-        //                 let Compact::<Version>(db_version) =
-        //                     decode_slot(&encoded_db_version, DB_VERSION_KEY)?;
-        //                 let DaemonInfo { rpc: db_rpc, key } = decode_slot(&daemon_info, DAEMON_INFO)?;
+                    FileBackend::new(file).and_then(|backend| builder.create_with_backend(backend))
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    is_new = false;
 
-        //                 if db_version != DATABASE_VERSION {
-        //                     anyhow::bail!(
-        //                         "database contains an unsupported database version (\"{db_version}\"), expected \"{DATABASE_VERSION}\""
-        //                     );
-        //                 }
+                    builder.create(path)
+                }
+                Err(error) => Err(error.into())
+            }
+        } else {
+            tracing::warn!(
+                "The in-memory backend for the database is selected. All saved data will be deleted after the shutdown!"
+            );
 
-        //                 if public != key {
-        //                     anyhow::bail!(
-        //                         "public key from `{SEED}` doesn't equal the one from the database (\"{public_formatted}\")"
-        //                     );
-        //                 }
+            is_new = true;
 
-        //                 if given_rpc != db_rpc {
-        //                     if override_rpc {
-        //                         log::warn!(
-        //                             "The saved RPC endpoint ({db_rpc:?}) differs from the given one ({given_rpc:?}) and will be overwritten by it because `{OVERRIDE_RPC}` is set."
-        //                         );
+            builder.create_with_backend(InMemoryBackend::new())
+        }.context("failed to create/open the database")?;
 
-        //                         insert_daemon_info(&mut table, given_rpc.clone(), public)?;
-        //                     } else {
-        //                         anyhow::bail!(
-        //                             "database contains a different RPC endpoint address ({db_rpc:?}), expected {given_rpc:?}"
-        //                         );
-        //                     }
-        //                 } else if override_rpc {
-        //                     log::warn!(
-        //                         "`{OVERRIDE_RPC}` is set but the saved RPC endpoint ({db_rpc:?}) equals to the given one."
-        //                     );
-        //                 }
+        //
 
-        //                 if let Some(encoded_last_block) = last_block_option {
-        //                     Some(decode_slot::<Compact<BlockNumber>>(&encoded_last_block, LAST_BLOCK)?.0)
-        //                 } else {
-        //                     None
-        //                 }
-        //             }
-        //             _ => anyhow::bail!(
-        //                 "database was found but it doesn't contain `{DB_VERSION_KEY:?}` and/or `{DAEMON_INFO:?}`, maybe it was created by another program"
-        //             ),
-        //         };
+        Ok(Arc::new(Self {
+            currencies,
+            recipient: AccountId::from_string(&recipient)
+                .context("failed to convert \"recipient\" from the config to an account address")?,
+            pair: current_pair.0,
+            depth,
+            account_lifetime,
+            debug,
+            remark,
 
-        //         drop(table);
-
-        //         tx.commit().context("failed to commit a transaction")?;
-
-        //         let compacted = database
-        //             .compact()
-        //             .context("failed to compact the database")?;
-
-        //         if compacted {
-        //             log::debug!("The database was successfully compacted.");
-        //         } else {
-        //             log::debug!("The database doesn't need the compaction.");
-        //         }
-
-        //         log::info!("Public key from the given seed: \"{public_formatted}\".");
-
-        // Ok((
-        //     Arc::new(Self {
-        //         db: database,
-        //         properties: chain,
-        //         pair,
-        //         rpc: given_rpc,
-        //         destination,
-        //     }),
-        //     last_block,
-        // ))
-
-        todo!()
+            invoices: RwLock::new(HashMap::new()),
+            rpc,
+        }))
     }
 
     //     pub fn rpc(&self) -> &str {

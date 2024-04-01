@@ -1,6 +1,6 @@
 recipient = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
-account-lifetime = 3600 # 1 hour.
-depth = 86400 # 1 day.
+account-lifetime = 86400000 # 1 day.
+depth = 3600000 # 1 hour.
 debug = true
 
 [[chain]]
@@ -17,10 +17,9 @@ name = "westmint"
 native-token = "WND AH"
 decimals = 12
 endpoints = [
-    "wss://polkadot-asset-hub-rpc.polkadot.io",
-    "wss://statemint-rpc.dwellir.com",
+    "wss://westend-asset-hub-rpc.polkadot.io",
+    "wss://westmint-rpc.dwellir.com",
 ]
-multi-location-assets = true
 
 [[chain.asset]]
 name = "JOE"
@@ -29,3 +28,28 @@ id = 8
 [[chain.asset]]
 name = "TEST"
 id = 1234
+
+[[chain]]
+name = "rococo"
+native-token = "ROC"
+decimals = 12
+endpoints = [
+    "wss://rococo-rpc.polkadot.io",
+]
+
+[[chain]]
+name = "assethub-rococo"
+native-token = "ROC AH"
+decimals = 12
+endpoints = [
+    "wss://rococo-asset-hub-rpc.polkadot.io",
+    "wss://rococo-asset-hub-rpc.dwellir.com",
+]
+
+[[chain.asset]]
+name = "USDT"
+id = 1984
+
+[[chain.asset]]
+name = "TUSDT"
+id = 7777

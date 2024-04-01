@@ -1,6 +1,6 @@
 recipient = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
-account-lifetime = 86400 # 1 day.
-depth = 604800 # 1 week.
+account-lifetime = 604800000 # 1 week.
+depth = 86400000 # 1 day.
 
 [[chain]]
 name = "polkadot"
@@ -34,3 +34,14 @@ endpoints = [
     "wss://kusama-rpc.polkadot.io",
     "wss://1rpc.io/ksm",
 ]
+
+[[chain]]
+name = "assethub-kusama"
+endpoints = [
+    "wss://kusama-asset-hub-rpc.polkadot.io",
+    "wss://statemine-rpc.dwellir.com",
+]
+
+[[chain.asset]]
+name = "RMRK"
+id = 8

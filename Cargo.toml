@@ -11,23 +11,23 @@ keywords = ["substrate", "blockchain", "finance", "service", "middleware"]
 categories = ["finance"]
 
 [dependencies]
-env_logger = { version = "0.11", default-features = false, features = ["humantime", "auto-color"] }
 toml_edit = { version = "0.22", default-features = false, features = ["parse", "serde"] }
 axum = { version = "0.7", default-features = false, features = ["tokio", "http1", "query", "json", "matched-path"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["smallvec", "ansi", "env-filter", "time"] }
+ureq = { version = "2", default-features = false, features = ["json"] }
+
+names = { version = "0.14", default-features = false }
 
 subxt = { version = "=0.35", features = ["substrate-compat", "unstable-reconnecting-rpc-client"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio = { version = "1", features = ["signal"] }
 
-ureq = { version = "2", default-features = false }
-names = { version = "0.14", default-features = false }
-
 hex-simd = "0.8"
 serde = "1"
 anyhow = "1"
-log = "0.4"
 redb = "2"
-humantime = "2"
+tracing = "0.1"
+scale-info = "2"
 
 [profile.release]
 strip = true
