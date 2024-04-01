@@ -1,4 +1,3 @@
 target
-database.redb
-database-ah-usdc.redb
-database-ah-usdt.redb
+*.redb
+*.env
