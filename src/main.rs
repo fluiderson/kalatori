@@ -39,16 +39,15 @@ use asset::Asset;
 use database::{ConfigWoChains, State};
 use rpc::Processor;
 
-const CONFIG: &str = "KALATORI_CONFIG";
 const LOG: &str = "KALATORI_LOG";
 const SEED: &str = "KALATORI_SEED";
 const OLD_SEED: &str = "KALATORI_OLD_SEED_";
 
 const DB_VERSION: Version = 0;
 
-const DEFAULT_CONFIG: &str = "kalatori.toml";
+const DEFAULT_CONFIG: &str = "polkadot.toml";
 const DEFAULT_SOCKET: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 16726);
-const DEFAULT_DATABASE: &str = "kalatori.xlsx";
+const DEFAULT_DATABASE: &str = "kalatori.db";
 
 type AssetId = u32;
 type Decimals = u8;
@@ -74,6 +73,44 @@ impl subxt::Config for RuntimeConfig {
     type Header = SubstrateHeader<BlockNumber, Self::Hasher>;
     type ExtrinsicParams = PolkadotExtrinsicParams<Self>;
     type AssetId = Asset;
+}
+
+// Reading config_path from CLI parameters, supporting both `--config=path` and `--config path`; `.toml` extension is optional
+fn get_config_path() -> std::path::PathBuf {
+    let mut config_path = None;
+
+    let mut args = env::args();
+
+    while let Some(arg) = args.next() {
+        if arg.starts_with("--config") {
+            let path_arg = if arg.contains('=') {
+                // Handle `--config=./local.toml`
+                arg.split('=').nth(1).expect("We've just checked that it contains at least one '='").to_owned()
+            } else if arg.contains(' ') {
+                // Handle `--config ./local.toml` as a single argument, in rare ocassions of non-shell parsed arguments
+                arg.split(' ').nth(1).expect("We've just checked that it contains at least one space").to_owned()
+            } else {
+                // Handle `--config ./local.toml`
+                args.next().unwrap_or(DEFAULT_CONFIG.to_owned())
+            };
+
+            // Make the `.toml` extension optional
+            let mut path = std::path::PathBuf::new();
+            path.push(path_arg);
+
+            if (!path.exists())&&(None == path.extension()) {
+                path.set_extension("toml");
+            }
+
+            config_path = Some(path);
+            break;
+        }
+    }
+
+    match config_path {
+        Some(path) => path,
+        None => DEFAULT_CONFIG.into()
+    }
 }
 
 #[tokio::main]
@@ -134,16 +171,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    let config_path = env::var(CONFIG).or_else(|error| match error {
-        VarError::NotUnicode(_) => Err(error).with_context(|| format!("failed to read `{CONFIG}`")),
-        VarError::NotPresent => {
-            tracing::debug!(
-                "`{CONFIG}` isn't present, using the default value instead: {DEFAULT_CONFIG:?}."
-            );
 
-            Ok(DEFAULT_CONFIG.into())
-        }
-    })?;
+    let config_path = get_config_path();
+
     let unparsed_config = fs::read_to_string(&config_path)
         .with_context(|| format!("failed to read a config file at {config_path:?}"))?;
     let config: Config = de::from_str(&unparsed_config)
@@ -156,6 +186,8 @@ async fn main() -> Result<()> {
     } else {
         DEFAULT_SOCKET
     };
+
+    tracing::info!("Listening on {host}");
 
     let debug = config.debug.unwrap_or_default();
 
@@ -219,11 +251,14 @@ async fn main() -> Result<()> {
         shutdown_listener(shutdown_notification.clone()),
     );
 
+    let rpc = config.chain.get(0).expect("Configuration must list at least one chain").endpoints.get(0).expect("The chain must have at least one endpoint").to_owned();
+
     let (chains, currencies) = rpc::prepare(config.chain, config.account_lifetime, config.depth)
         .await
         .context("failed while preparing the RPC module")?;
 
-    let rpc = env::var("KALATORI_RPC").unwrap();
+    let withdrawal_account = env::var("KALATORI_WITHDRAWAL_ADDRESS").expect("KALATORI_WITHDRAWAL_ADDRESS must be set; daemon needs an address to withdraw the funds into");
+
 
     let state = State::initialise(
         database_path,
@@ -231,7 +266,7 @@ async fn main() -> Result<()> {
         (pair, pair_public),
         old_seeds,
         ConfigWoChains {
-            recipient: config.recipient,
+            recipient: withdrawal_account,
             debug: config.debug,
             remark: config.remark,
             depth: config.depth,
@@ -395,7 +430,6 @@ async fn shutdown_listener(shutdown_notification: CancellationToken) -> Result<C
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct Config {
-    recipient: String,
     account_lifetime: Timestamp,
     depth: Option<Timestamp>,
     host: Option<String>,

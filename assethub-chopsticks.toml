@@ -1,0 +1,18 @@
+account-lifetime = 604800000 # 1 week.
+depth = 86400000 # 1 day.
+debug = true
+
+
+[[chain]]
+name = "assethub-polkadot"
+endpoints = [
+    "ws://localhost:8000",
+]
+
+[[chain.asset]]
+name = "USDC"
+id = 1337
+
+[[chain.asset]]
+name = "USDT"
+id = 1984
