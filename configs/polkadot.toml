@@ -1,8 +1,5 @@
-recipient = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
 account-lifetime = 604800000 # 1 week.
 depth = 86400000 # 1 day.
-remark = "34t5786437845t"
-debug = true
 
 [[chain]]
 name = "polkadot"
@@ -27,23 +24,3 @@ id = 1337
 [[chain.asset]]
 name = "USDT"
 id = 1984
-
-[[chain]]
-name = "kusama"
-native-token = "KSM"
-decimals = 12
-endpoints = [
-    "wss://kusama-rpc.polkadot.io",
-    "wss://1rpc.io/ksm",
-]
-
-[[chain]]
-name = "assethub-kusama"
-endpoints = [
-    "wss://kusama-asset-hub-rpc.polkadot.io",
-    "wss://statemine-rpc.dwellir.com",
-]
-
-[[chain.asset]]
-name = "RMRK"
-id = 8

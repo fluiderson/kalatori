@@ -943,37 +943,18 @@ impl Processor {
 
                         if !invoic.1.callback.is_empty() {
                             tracing::info!("{:?}", invoic.1.callback);
-                            let req = ureq::post(&invoic.1.callback);
 
-                            let d = req
-                                .send_json(OrderStatus {
-                                    order: invoic.0.clone(),
-                                    payment_status: PaymentStatus::Paid,
-                                    message: "".into(),
-                                    recipient: self.state.recipient.to_ss58check(),
-                                    server_info: ServerInfo {
-                                        version: env!("CARGO_PKG_VERSION"),
-                                        instance_id: String::new(),
-                                        debug: self.state.debug,
-                                        kalatori_remark: self.state.remark.clone(),
-                                    },
-                                    order_info: Some(OrderInfo {
-                                        withdrawal_status: WithdrawalStatus::Waiting,
-                                        amount: invoic.1.amount.format(6),
-                                        currency: CurrencyInfo {
-                                            currency: "USDC".into(),
-                                            chain_name: "assethub-polkadot".into(),
-                                            kind: TokenKind::Assets,
-                                            decimals: 6,
-                                            rpc_url: self.state.rpc.clone(),
-                                            asset_id: Some(1337),
-                                        },
-                                        callback: invoic.1.callback.clone(),
-                                        transactions: vec![],
-                                        payment_account: invoic.1.paym_acc.to_ss58check(),
-                                    }),
-                                })
-                                .unwrap();
+                            crate::callback::callback(
+                                invoic.1.callback.clone(),
+                                invoic.0.to_string(),
+                                self.state.recipient.clone(),
+                                self.state.debug,
+                                self.state.remark.clone(),
+                                invoic.1.amount,
+                                self.state.rpc.clone(),
+                                invoic.1.paym_acc.clone(),
+                            )
+                            .await;
                         }
 
                         invoices.insert(

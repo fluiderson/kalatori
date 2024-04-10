@@ -191,8 +191,8 @@ impl State {
     pub fn initialise(
         path_option: Option<String>,
         currencies: HashMap<String, Currency>,
-        current_pair: (Pair, Public),
-        old_pairs: HashMap<String, (Pair, Public)>,
+        current_pair: Pair,
+        old_pairs: HashMap<String, Pair>,
         ConfigWoChains {
             recipient,
             debug,
@@ -237,7 +237,7 @@ impl State {
             currencies,
             recipient: AccountId::from_string(&recipient)
                 .context("failed to convert \"recipient\" from the config to an account address")?,
-            pair: current_pair.0,
+            pair: current_pair,
             depth,
             account_lifetime,
             debug,

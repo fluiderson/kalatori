@@ -1,7 +1,7 @@
-recipient = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
 account-lifetime = 86400000 # 1 day.
 depth = 3600000 # 1 hour.
 debug = true
+in-memory-db = true
 
 [[chain]]
 name = "westend"

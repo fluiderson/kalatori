@@ -99,7 +99,7 @@ pub struct CurrencyInfo {
 #[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TokenKind {
-    Assets,
+    Asset,
     Balances,
 }
 
@@ -241,7 +241,7 @@ async fn process_order(
                         currency: CurrencyInfo {
                             currency: "USDC".into(),
                             chain_name: "assethub-polkadot".into(),
-                            kind: TokenKind::Assets,
+                            kind: TokenKind::Asset,
                             decimals: 6,
                             rpc_url: state.rpc.clone(),
                             asset_id: Some(1337),
@@ -332,7 +332,7 @@ async fn process_order(
                     currency: CurrencyInfo {
                         currency: "USDC".into(),
                         chain_name: "assethub-polkadot".into(),
-                        kind: TokenKind::Assets,
+                        kind: TokenKind::Asset,
                         decimals: 6,
                         rpc_url: state.rpc.clone(),
                         asset_id: Some(1337),
@@ -415,7 +415,7 @@ async fn status(
             supported_currencies: vec![CurrencyInfo {
                 currency: "USDC".into(),
                 chain_name: "assethub-polkadot".into(),
-                kind: TokenKind::Assets,
+                kind: TokenKind::Asset,
                 decimals: 6,
                 rpc_url: state.rpc.clone(),
                 asset_id: Some(1337),
