@@ -133,9 +133,10 @@ async fn main() -> Result<()> {
     };
 
     tracing::info!(
-        "Kalatori {} by {} is starting...",
+        "Kalatori {} by {} is starting on {}...",
         env!("CARGO_PKG_VERSION"),
-        env!("CARGO_PKG_AUTHORS")
+        env!("CARGO_PKG_AUTHORS"),
+        host,
     );
 
     let (task_tracker, error_rx) = TaskTracker::new();
@@ -495,6 +496,7 @@ fn decimal_exponent_product(decimals: Decimals) -> f64 {
     clippy::unreadable_literal,
     clippy::float_cmp
 )]
+
 fn balance_insufficient_precision() {
     const DECIMALS: Decimals = 10;
 
