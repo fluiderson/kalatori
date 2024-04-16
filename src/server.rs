@@ -27,8 +27,8 @@ pub struct OrderStatus {
     pub message: String,
     pub recipient: String,
     pub server_info: ServerInfo,
-    #[serde(skip_serializing_if = "Option::is_none", flatten)]
-    pub order_info: Option<OrderInfo>,
+    #[serde(flatten)]
+    pub order_info: OrderInfo,
 }
 
 #[derive(Serialize)]
@@ -235,7 +235,7 @@ async fn process_order(
                         debug: state.0.debug,
                         kalatori_remark: state.remark.clone(),
                     },
-                    order_info: Some(OrderInfo {
+                    order_info: OrderInfo {
                         withdrawal_status: WithdrawalStatus::Waiting,
                         amount: invoice.amount.format(6),
                         currency: CurrencyInfo {
@@ -249,7 +249,7 @@ async fn process_order(
                         callback: invoice.callback.clone(),
                         transactions: vec![],
                         payment_account: invoice.paym_acc.to_ss58check(),
-                    }),
+                    },
                 },
                 OrderSuccess::Found,
             ))
@@ -266,7 +266,21 @@ async fn process_order(
                         debug: state.0.debug,
                         kalatori_remark: state.remark.clone(),
                     },
-                    order_info: None,
+                    order_info: OrderInfo {
+                        withdrawal_status: WithdrawalStatus::Waiting,
+                        amount: 0f64,
+                        currency: CurrencyInfo {
+                            currency: "USDC".into(),
+                            chain_name: "assethub-polkadot".into(),
+                            kind: TokenKind::Asset,
+                            decimals: 6,
+                            rpc_url: state.rpc.clone(),
+                            asset_id: Some(1337),
+                        },
+                        callback: String::new(),
+                        transactions: vec![],
+                        payment_account: String::new(),
+                    },
                 },
                 OrderSuccess::Found,
             ))
@@ -326,7 +340,7 @@ async fn process_order(
                     debug: state.0.debug,
                     kalatori_remark: state.0.remark.clone(),
                 },
-                order_info: Some(OrderInfo {
+                order_info: OrderInfo {
                     withdrawal_status: WithdrawalStatus::Waiting,
                     amount,
                     currency: CurrencyInfo {
@@ -340,7 +354,7 @@ async fn process_order(
                     callback,
                     transactions: vec![],
                     payment_account: pay_acc.to_ss58check(),
-                }),
+                },
             },
             OrderSuccess::Created,
         ))

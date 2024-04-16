@@ -35,7 +35,7 @@ pub async fn callback(
                     debug,
                     kalatori_remark: remark,
                 },
-                order_info: Some(OrderInfo {
+                order_info: OrderInfo {
                     withdrawal_status: WithdrawalStatus::Waiting,
                     amount: amount.format(6),
                     currency: CurrencyInfo {
@@ -49,7 +49,7 @@ pub async fn callback(
                     callback: path,
                     transactions: vec![],
                     payment_account: paym_acc.to_ss58check(),
-                }),
+                },
             })
             .unwrap();
     })
