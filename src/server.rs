@@ -225,7 +225,7 @@ async fn process_order(
                     payment_status: if invoice.paid {
                         PaymentStatus::Paid
                     } else {
-                        PaymentStatus::Unknown
+                        PaymentStatus::Pending
                     },
                     message: String::new(),
                     recipient: state.0.recipient.to_ss58check(),
