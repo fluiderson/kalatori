@@ -229,12 +229,7 @@ async fn process_order(
                     },
                     message: String::new(),
                     recipient: state.0.recipient.to_ss58check(),
-                    server_info: ServerInfo {
-                        version: env!("CARGO_PKG_VERSION"),
-                        instance_id: String::new(),
-                        debug: state.0.debug,
-                        kalatori_remark: state.remark.clone(),
-                    },
+                    server_info: state.server_info(),
                     order_info: OrderInfo {
                         withdrawal_status: WithdrawalStatus::Waiting,
                         amount: invoice.amount.format(6),
@@ -260,12 +255,7 @@ async fn process_order(
                     payment_status: PaymentStatus::Unknown,
                     message: String::new(),
                     recipient: state.0.recipient.to_ss58check(),
-                    server_info: ServerInfo {
-                        version: env!("CARGO_PKG_VERSION"),
-                        instance_id: String::new(),
-                        debug: state.0.debug,
-                        kalatori_remark: state.remark.clone(),
-                    },
+                    server_info: state.server_info(),
                     order_info: OrderInfo {
                         withdrawal_status: WithdrawalStatus::Waiting,
                         amount: 0f64,
@@ -334,12 +324,7 @@ async fn process_order(
                 payment_status: PaymentStatus::Pending,
                 message: String::new(),
                 recipient: state.0.recipient.to_ss58check(),
-                server_info: ServerInfo {
-                    version: env!("CARGO_PKG_VERSION"),
-                    instance_id: String::new(),
-                    debug: state.0.debug,
-                    kalatori_remark: state.0.remark.clone(),
-                },
+                server_info: state.server_info(),
                 order_info: OrderInfo {
                     withdrawal_status: WithdrawalStatus::Waiting,
                     amount,
@@ -420,12 +405,7 @@ async fn status(
     (
         [(header::CACHE_CONTROL, "no-store")],
         ServerStatus {
-            description: ServerInfo {
-                version: env!("CARGO_PKG_VERSION"),
-                instance_id: String::new(),
-                debug: state.0.debug,
-                kalatori_remark: state.0.remark.clone(),
-            },
+            description: state.server_info(),
             supported_currencies: vec![CurrencyInfo {
                 currency: "USDC".into(),
                 chain_name: "assethub-polkadot".into(),

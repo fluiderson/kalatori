@@ -1,5 +1,6 @@
 use crate::{
     rpc::{ConnectedChain, Currency},
+    server::ServerInfo,
     AccountId, AssetId, Balance, BlockNumber, Config, Nonce, Timestamp, Version,
 };
 use anyhow::{Context, Result};
@@ -248,6 +249,14 @@ impl State {
         }))
     }
 
+    pub fn server_info(&self) -> ServerInfo {
+        ServerInfo {
+            version: env!("CARGO_PKG_VERSION"),
+            instance_id: String::new(),
+            debug: self.debug,
+            kalatori_remark: self.remark.clone(),
+        }
+    }
     //     pub fn rpc(&self) -> &str {
     //         &self.rpc
     //     }
