@@ -1,7 +1,7 @@
 use crate::{
     database::{Invoicee, State},
     rpc::Currency,
-    AccountId, AssetId, Balance, BlockNumber, Decimals, ExtrinsicIndex
+    AccountId, AssetId, Balance, BlockNumber, Decimals, ExtrinsicIndex,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -222,8 +222,6 @@ async fn process_order(
         .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
         .ok_or_else(|| OrderError::MissingParameter(ORDER_ID.into()))?
         .to_owned();
-
-    
 
     if query.is_empty() {
         // TODO: try to query an order from the database.

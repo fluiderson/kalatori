@@ -2,8 +2,8 @@ use crate::{
     asset::Asset,
     database::{Invoicee, State},
     server::{
-        CurrencyInfo, CurrencyProperties, OrderInfo, OrderStatus, PaymentStatus, ServerInfo, TokenKind,
-        WithdrawalStatus,
+        CurrencyInfo, CurrencyProperties, OrderInfo, OrderStatus, PaymentStatus, ServerInfo,
+        TokenKind, WithdrawalStatus,
     },
     AccountId, AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
     Nonce, OnlineClient, PalletIndex, RuntimeConfig, TaskTracker, Timestamp,
@@ -74,7 +74,10 @@ type ConnectedChainsChannel = (
     (String, ConnectedChain),
 );
 
-type CurrenciesChannel = (Sender<Option<(String, CurrencyProperties)>>, (String, CurrencyProperties));
+type CurrenciesChannel = (
+    Sender<Option<(String, CurrencyProperties)>>,
+    (String, CurrencyProperties),
+);
 
 struct AssetsInfoFetcher<'a> {
     assets: (AssetInfo, Vec<AssetInfo>),
@@ -195,8 +198,8 @@ impl ChainProperties {
             let (tx, rx) = oneshot::channel();
 
             currencies
-                .send((tx, (name, CurrencyProperties { 
-                    chain_name: chain.to_owned(), 
+                .send((tx, (name, CurrencyProperties {
+                    chain_name: chain.to_owned(),
                     kind: ,
                     decimals: ,
                     rpc_url: ,
@@ -251,13 +254,7 @@ impl ChainProperties {
             }
 
             //try_add_currency.clone()(last_asset_info.name, Some(last_asset_info.id)).await?;
-            try_add_asset(
-                &mut assets,
-                last_asset_info.id,
-                chain,
-                storage,
-            )
-            .await?;
+            try_add_asset(&mut assets, last_asset_info.id, chain, storage).await?;
 
             Some(AssetsPallet {
                 assets,
@@ -274,16 +271,18 @@ impl ChainProperties {
 
         let existential_deposit = if let Some(native_token) = native_token_option {
             Some(fetch_constant(constants, EXISTENTIAL_DEPOSIT).map(Balance)?)
-        } else { None };
+        } else {
+            None
+        };
 
         let chain = Self {
-                    address_format,
-                    existential_deposit: existential_deposit,
-                    assets_pallet,
-                    block_hash_count,
-                    account_lifetime,
-                    depth,
-                };
+            address_format,
+            existential_deposit,
+            assets_pallet,
+            block_hash_count,
+            account_lifetime,
+            depth,
+        };
 
         Ok(chain)
     }
@@ -368,7 +367,10 @@ pub async fn prepare(
     chains: Vec<Chain>,
     account_lifetime: Timestamp,
     depth: Option<Timestamp>,
-) -> Result<(HashMap<String, ConnectedChain>, HashMap<String, CurrencyProperties>)> {
+) -> Result<(
+    HashMap<String, ConnectedChain>,
+    HashMap<String, CurrencyProperties>,
+)> {
     let mut connected_chains = HashMap::with_capacity(chains.len());
     let mut currencies = HashMap::with_capacity(
         chains
@@ -627,40 +629,42 @@ async fn prepare_chain(
             Some(metadata.pallet_by_name_err(ASSETS)?.index())
         };
         Some(AssetsInfoFetcher {
-                assets,
-                storage: &storage,
-                pallet_index,
-            })
-
+            assets,
+            storage: &storage,
+            pallet_index,
+        })
     } else {
         None
     };
 
-    let storage = if assets_info_fetcher.is_some() { Some(storage_client) } else { None };
+    let storage = if assets_info_fetcher.is_some() {
+        Some(storage_client)
+    } else {
+        None
+    };
 
     let properties = ChainProperties::fetch(
-            &chain_name,
-            currencies,
-            &constants,
-            chain.native_token,
-            assets_info_fetcher,
-            account_lifetime_in_blocks,
-            depth_in_blocks,
-        )
-        .await?;
+        &chain_name,
+        currencies,
+        &constants,
+        chain.native_token,
+        assets_info_fetcher,
+        account_lifetime_in_blocks,
+        depth_in_blocks,
+    )
+    .await?;
 
     let connected_chain = ConnectedChain {
-            methods,
-            genesis,
-            rpc,
-            client,
-            storage,
-            properties,
-            constants,
-            runtime_api,
-            backend,
-        };
-
+        methods,
+        genesis,
+        rpc,
+        client,
+        storage,
+        properties,
+        constants,
+        runtime_api,
+        backend,
+    };
 
     let (tx, rx) = oneshot::channel();
 

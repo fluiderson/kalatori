@@ -256,16 +256,16 @@ impl State {
             kalatori_remark: self.remark.clone(),
         }
     }
-/*
-    pub fn currency(&self, currency_name: &str) -> Option<Currency> {
-        if let Some(currency) = self.currencies.get(currency_name) {
-            Some(Currency {
-                chain: currency.chain_name.clone(),
-                asset: currency.asset_id,
-            })
-        } else { None }
-    }
-*/
+    /*
+        pub fn currency(&self, currency_name: &str) -> Option<Currency> {
+            if let Some(currency) = self.currencies.get(currency_name) {
+                Some(Currency {
+                    chain: currency.chain_name.clone(),
+                    asset: currency.asset_id,
+                })
+            } else { None }
+        }
+    */
     //     pub fn rpc(&self) -> &str {
     //         &self.rpc
     //     }
