@@ -2,7 +2,7 @@ use crate::{
     asset::Asset,
     database::{Invoicee, State},
     server::{
-        CurrencyInfo, OrderInfo, OrderStatus, PaymentStatus, ServerInfo, TokenKind,
+        CurrencyInfo, CurrencyProperties, OrderInfo, OrderStatus, PaymentStatus, ServerInfo, TokenKind,
         WithdrawalStatus,
     },
     AccountId, AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
@@ -70,10 +70,11 @@ const BABE: &str = "Babe";
 const AURA: &str = "AuraApi";
 
 type ConnectedChainsChannel = (
-    Sender<Option<(Arc<str>, ConnectedChain)>>,
-    (Arc<str>, ConnectedChain),
+    Sender<Option<(String, ConnectedChain)>>,
+    (String, ConnectedChain),
 );
-type CurrenciesChannel = (Sender<Option<(String, Currency)>>, (String, Currency));
+
+type CurrenciesChannel = (Sender<Option<(String, CurrencyProperties)>>, (String, CurrencyProperties));
 
 struct AssetsInfoFetcher<'a> {
     assets: (AssetInfo, Vec<AssetInfo>),
@@ -177,25 +178,30 @@ impl AssetProperties {
 
 impl ChainProperties {
     async fn fetch(
-        chain: Arc<str>,
+        chain: &str,
         currencies: UnboundedSender<CurrenciesChannel>,
         constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
         native_token_option: Option<NativeToken>,
         assets_fetcher: Option<AssetsInfoFetcher<'_>>,
         account_lifetime: BlockNumber,
         depth: Option<NonZeroU64>,
-    ) -> Result<(Self, Option<Decimals>)> {
+    ) -> Result<Self> {
         const ADDRESS_PREFIX: (&str, &str) = (SYSTEM, "SS58Prefix");
         const EXISTENTIAL_DEPOSIT: (&str, &str) = (BALANCES, "ExistentialDeposit");
         const BLOCK_HASH_COUNT: (&str, &str) = (SYSTEM, "BlockHashCount");
 
-        let chain_clone = chain.clone();
-
+        /* wtf is this?
         let try_add_currency = |name, asset| async move {
             let (tx, rx) = oneshot::channel();
 
             currencies
-                .send((tx, (name, Currency { chain, asset })))
+                .send((tx, (name, CurrencyProperties { 
+                    chain_name: chain.to_owned(), 
+                    kind: ,
+                    decimals: ,
+                    rpc_url: ,
+                    asset_if: ,
+                })))
                 .unwrap();
 
             if let Some((
@@ -211,7 +217,7 @@ impl ChainProperties {
             } else {
                 Ok(())
             }
-        };
+        };*/
 
         let assets_pallet = if let Some(AssetsInfoFetcher {
             assets: (last_asset_info, assets_info),
@@ -222,7 +228,7 @@ impl ChainProperties {
             async fn try_add_asset(
                 assets: &mut HashMap<AssetId, AssetProperties>,
                 id: AssetId,
-                chain: Arc<str>,
+                chain: &str,
                 storage: &Storage<RuntimeConfig, OnlineClient>,
             ) -> Result<()> {
                 match assets.entry(id) {
@@ -240,15 +246,15 @@ impl ChainProperties {
             let mut assets = HashMap::with_capacity(assets_info.len().saturating_add(1));
 
             for asset_info in assets_info {
-                try_add_currency.clone()(asset_info.name, Some(asset_info.id)).await?;
-                try_add_asset(&mut assets, asset_info.id, chain_clone.clone(), storage).await?;
+                //try_add_currency.clone()(asset_info.name, Some(asset_info.id)).await?;
+                try_add_asset(&mut assets, asset_info.id, chain, storage).await?;
             }
 
-            try_add_currency.clone()(last_asset_info.name, Some(last_asset_info.id)).await?;
+            //try_add_currency.clone()(last_asset_info.name, Some(last_asset_info.id)).await?;
             try_add_asset(
                 &mut assets,
                 last_asset_info.id,
-                chain_clone.clone(),
+                chain,
                 storage,
             )
             .await?;
@@ -264,35 +270,22 @@ impl ChainProperties {
         let address_format = Ss58AddressFormat::custom(fetch_constant(constants, ADDRESS_PREFIX)?);
         let block_hash_count = fetch_constant(constants, BLOCK_HASH_COUNT)?;
 
-        Ok(if let Some(native_token) = native_token_option {
-            try_add_currency(native_token.native_token, None).await?;
+        //Some(native_token.decimals),
 
-            (
-                Self {
+        let existential_deposit = if let Some(native_token) = native_token_option {
+            Some(fetch_constant(constants, EXISTENTIAL_DEPOSIT).map(Balance)?)
+        } else { None };
+
+        let chain = Self {
                     address_format,
-                    existential_deposit: Some(
-                        fetch_constant(constants, EXISTENTIAL_DEPOSIT).map(Balance)?,
-                    ),
+                    existential_deposit: existential_deposit,
                     assets_pallet,
                     block_hash_count,
                     account_lifetime,
                     depth,
-                },
-                Some(native_token.decimals),
-            )
-        } else {
-            (
-                Self {
-                    address_format,
-                    existential_deposit: None,
-                    assets_pallet,
-                    block_hash_count,
-                    account_lifetime,
-                    depth,
-                },
-                None,
-            )
-        })
+                };
+
+        Ok(chain)
     }
 }
 
@@ -375,7 +368,7 @@ pub async fn prepare(
     chains: Vec<Chain>,
     account_lifetime: Timestamp,
     depth: Option<Timestamp>,
-) -> Result<(HashMap<Arc<str>, ConnectedChain>, HashMap<String, Currency>)> {
+) -> Result<(HashMap<String, ConnectedChain>, HashMap<String, CurrencyProperties>)> {
     let mut connected_chains = HashMap::with_capacity(chains.len());
     let mut currencies = HashMap::with_capacity(
         chains
@@ -419,7 +412,7 @@ pub async fn prepare(
                 Entry::Occupied(entry) => Some(entry.remove_entry()),
                 Entry::Vacant(entry) => {
                     tracing::info!(
-                        %currency.chain, ?currency.asset,
+                        %currency.chain_name, ?currency.asset_id,
                         "Registered the currency {:?}.",
                         entry.key(),
                     );
@@ -465,8 +458,7 @@ async fn prepare_chain(
     account_lifetime: Timestamp,
     depth_option: Option<Timestamp>,
 ) -> Result<Cow<'static, str>> {
-    let chain_name: Arc<str> = chain.name.into();
-    let chain_name_clone = chain_name.clone();
+    let chain_name = chain.name;
     let endpoint = chain
         .endpoints
         .first()
@@ -548,15 +540,15 @@ async fn prepare_chain(
 
     let rpc = endpoint.into();
 
-    let connected_chain = if let Some(assets) = chain
+    let storage_client = client.storage();
+    let storage = storage_client.at(finalized_hash);
+
+    let assets_info_fetcher = if let Some(assets) = chain
         .asset
         .and_then(|mut assets| assets.pop().map(|latest| (latest, assets)))
     {
         const ASSET_ID: &str = "asset_id";
         const SOME: &str = "Some";
-
-        let storage_client = client.storage();
-        let storage = storage_client.at(finalized_hash);
 
         let extension = metadata
             .extrinsic()
@@ -634,64 +626,46 @@ async fn prepare_chain(
         } else {
             Some(metadata.pallet_by_name_err(ASSETS)?.index())
         };
-
-        let (properties, decimals) = ChainProperties::fetch(
-            chain_name,
-            currencies,
-            &constants,
-            chain.native_token,
-            Some(AssetsInfoFetcher {
+        Some(AssetsInfoFetcher {
                 assets,
                 storage: &storage,
                 pallet_index,
-            }),
-            account_lifetime_in_blocks,
-            depth_in_blocks,
-        )
-        .await?;
+            })
 
-        ConnectedChain {
-            methods,
-            genesis,
-            rpc,
-            client,
-            storage: Some(storage_client),
-            properties,
-            constants,
-            decimals,
-            runtime_api,
-            backend,
-        }
     } else {
-        let (properties, decimals) = ChainProperties::fetch(
-            chain_name,
+        None
+    };
+
+    let storage = if assets_info_fetcher.is_some() { Some(storage_client) } else { None };
+
+    let properties = ChainProperties::fetch(
+            &chain_name,
             currencies,
             &constants,
             chain.native_token,
-            None,
+            assets_info_fetcher,
             account_lifetime_in_blocks,
             depth_in_blocks,
         )
         .await?;
 
-        ConnectedChain {
+    let connected_chain = ConnectedChain {
             methods,
             genesis,
             rpc,
             client,
-            storage: None,
+            storage,
             properties,
             constants,
-            decimals,
             runtime_api,
             backend,
-        }
-    };
+        };
+
 
     let (tx, rx) = oneshot::channel();
 
     connected_chains
-        .send((tx, (chain_name_clone, connected_chain)))
+        .send((tx, (chain_name, connected_chain)))
         .unwrap();
 
     if let Some((name, _)) = rx.await.unwrap() {
@@ -705,7 +679,7 @@ async fn prepare_chain(
 
 #[derive(Debug)]
 pub struct Currency {
-    chain: Arc<str>,
+    chain: String,
     asset: Option<AssetId>,
 }
 
@@ -719,7 +693,6 @@ pub struct ConnectedChain {
     constants: ConstantsClient<RuntimeConfig, OnlineClient>,
     storage: Option<StorageClient<RuntimeConfig, OnlineClient>>,
     runtime_api: Option<RuntimeApiClient<RuntimeConfig, OnlineClient>>,
-    decimals: Option<Decimals>,
 }
 
 impl Debug for ConnectedChain {
@@ -728,7 +701,6 @@ impl Debug for ConnectedChain {
             .field("rpc", &self.rpc)
             .field("genesis", &self.genesis)
             .field("properties", &self.properties)
-            .field("decimals", &self.decimals)
             .finish_non_exhaustive()
     }
 }

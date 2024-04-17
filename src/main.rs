@@ -89,8 +89,7 @@ async fn main() -> Result<()> {
     let recipient = env::var(RECIPIENT).with_context(|| format!("failed to read {RECIPIENT}"))?;
 
     let remark = match env::var(REMARK) {
-        Ok(remark) => Some(remark),
-        Err(VarError::NotPresent) => None,
+        Ok(remark) => remark,
         Err(error) => Err(error).with_context(|| format!("failed to read {REMARK}"))?,
     };
 
@@ -104,7 +103,7 @@ async fn main() -> Result<()> {
         DEFAULT_SOCKET
     };
 
-    let debug = config.debug.unwrap_or_default();
+    let debug = config.debug;
 
     let database_path = 'database: {
         if debug {
@@ -408,7 +407,7 @@ struct Config {
     depth: Option<Timestamp>,
     host: Option<String>,
     database: Option<String>,
-    debug: Option<bool>,
+    debug: bool,
     in_memory_db: Option<bool>,
     chain: Vec<Chain>,
 }

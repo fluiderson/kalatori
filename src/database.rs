@@ -1,6 +1,6 @@
 use crate::{
     rpc::{ConnectedChain, Currency},
-    server::ServerInfo,
+    server::{CurrencyProperties, ServerInfo},
     AccountId, AssetId, Balance, BlockNumber, Config, Nonce, Timestamp, Version,
 };
 use anyhow::{Context, Result};
@@ -160,22 +160,21 @@ impl Value for Invoice {
 
 pub struct ConfigWoChains {
     pub recipient: String,
-    pub debug: Option<bool>,
-    pub remark: Option<String>,
+    pub debug: bool,
+    pub remark: String,
     pub depth: Option<BlockNumber>,
     pub account_lifetime: BlockNumber,
     pub rpc: String,
 }
 
 pub struct State {
-    pub currencies: HashMap<String, Currency>,
+    pub currencies: HashMap<String, CurrencyProperties>,
     pub recipient: AccountId,
     pub pair: Pair,
     pub depth: Option<Timestamp>,
     pub account_lifetime: Timestamp,
-    pub debug: Option<bool>,
-    pub remark: Option<String>,
-
+    pub debug: bool,
+    pub remark: String,
     pub invoices: RwLock<HashMap<String, Invoicee>>,
     pub rpc: String,
 }
@@ -191,7 +190,7 @@ pub struct Invoicee {
 impl State {
     pub fn initialise(
         path_option: Option<String>,
-        currencies: HashMap<String, Currency>,
+        currencies: HashMap<String, CurrencyProperties>,
         current_pair: Pair,
         old_pairs: HashMap<String, Pair>,
         ConfigWoChains {
@@ -257,6 +256,16 @@ impl State {
             kalatori_remark: self.remark.clone(),
         }
     }
+/*
+    pub fn currency(&self, currency_name: &str) -> Option<Currency> {
+        if let Some(currency) = self.currencies.get(currency_name) {
+            Some(Currency {
+                chain: currency.chain_name.clone(),
+                asset: currency.asset_id,
+            })
+        } else { None }
+    }
+*/
     //     pub fn rpc(&self) -> &str {
     //         &self.rpc
     //     }

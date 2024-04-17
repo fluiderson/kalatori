@@ -1,5 +1,7 @@
 use crate::{
-    database::{Invoicee, State}, AccountId, AssetId, Balance, BlockNumber, Decimals, ExtrinsicIndex
+    database::{Invoicee, State},
+    rpc::Currency,
+    AccountId, AssetId, Balance, BlockNumber, Decimals, ExtrinsicIndex
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -60,7 +62,7 @@ pub enum WithdrawalStatus {
 #[derive(Serialize)]
 struct ServerStatus {
     description: ServerInfo,
-    supported_currencies: Vec<CurrencyInfo>,
+    supported_currencies: HashMap<std::string::String, CurrencyProperties>,
 }
 
 #[derive(Serialize)]
@@ -96,7 +98,17 @@ pub struct CurrencyInfo {
     pub asset_id: Option<AssetId>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
+pub struct CurrencyProperties {
+    pub chain_name: String,
+    pub kind: TokenKind,
+    pub decimals: Decimals,
+    pub rpc_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<AssetId>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TokenKind {
     Asset,
@@ -107,10 +119,8 @@ pub enum TokenKind {
 pub struct ServerInfo {
     pub version: &'static str,
     pub instance_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub debug: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kalatori_remark: Option<String>,
+    pub debug: bool,
+    pub kalatori_remark: String,
 }
 
 #[derive(Serialize)]
@@ -212,6 +222,8 @@ async fn process_order(
         .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
         .ok_or_else(|| OrderError::MissingParameter(ORDER_ID.into()))?
         .to_owned();
+
+    
 
     if query.is_empty() {
         // TODO: try to query an order from the database.
@@ -406,14 +418,7 @@ async fn status(
         [(header::CACHE_CONTROL, "no-store")],
         ServerStatus {
             description: state.server_info(),
-            supported_currencies: vec![CurrencyInfo {
-                currency: "USDC".into(),
-                chain_name: "assethub-polkadot".into(),
-                kind: TokenKind::Asset,
-                decimals: 6,
-                rpc_url: state.rpc.clone(),
-                asset_id: Some(1337),
-            }],
+            supported_currencies: state.currencies.clone(),
         }
         .into(),
     )
