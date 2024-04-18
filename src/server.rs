@@ -108,7 +108,7 @@ pub struct CurrencyProperties {
     pub asset_id: Option<AssetId>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TokenKind {
     Asset,

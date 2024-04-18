@@ -1,12 +1,12 @@
 use crate::{
     rpc::{ConnectedChain, Currency},
-    server::{CurrencyProperties, ServerInfo},
+    server::{CurrencyInfo, CurrencyProperties, ServerInfo},
     AccountId, AssetId, Balance, BlockNumber, Config, Nonce, Timestamp, Version,
 };
 use anyhow::{Context, Result};
 use redb::{
     backends::{FileBackend, InMemoryBackend},
-    Database, ReadableTable, Table, TableDefinition, TableHandle, TypeName, Value,
+    Database, ReadableTable, ReadOnlyTable, Table, TableDefinition, TableHandle, TypeName, Value,
 };
 use serde::Deserialize;
 use std::{collections::HashMap, fs::File, io::ErrorKind, sync::Arc};
@@ -20,6 +20,11 @@ use subxt::ext::{
 use tokio::sync::RwLock;
 
 pub const MODULE: &str = module_path!();
+
+#[derive(Debug)]
+pub enum DbError {
+    CurrencyKeyNotFound,
+}
 
 // Tables
 
@@ -256,16 +261,25 @@ impl State {
             kalatori_remark: self.remark.clone(),
         }
     }
-    /*
-        pub fn currency(&self, currency_name: &str) -> Option<Currency> {
-            if let Some(currency) = self.currencies.get(currency_name) {
-                Some(Currency {
-                    chain: currency.chain_name.clone(),
-                    asset: currency.asset_id,
-                })
-            } else { None }
-        }
-    */
+
+    pub fn currency_properties(&self, currency_name: &str) -> Result<&CurrencyProperties, DbError> {
+        self.currencies
+            .get(currency_name)
+            .ok_or(DbError::CurrencyKeyNotFound)
+    }
+
+    pub fn currency_info(&self, currency_name: &str) -> Result<CurrencyInfo, DbError> {
+        let currency = self.currency_properties(currency_name)?;
+        Ok(CurrencyInfo {
+            currency: currency_name.to_string(),
+            chain_name: currency.chain_name.clone(),
+            kind: currency.kind,
+            decimals: currency.decimals,
+            rpc_url: currency.rpc_url.clone(),
+            asset_id: currency.asset_id,
+        })
+    }
+
     //     pub fn rpc(&self) -> &str {
     //         &self.rpc
     //     }
@@ -297,26 +311,27 @@ impl State {
     //     }
 }
 
-// pub struct ReadTransaction<'db>(redb::ReadTransaction<'db>);
+/*
+pub struct ReadTransaction(redb::ReadTransaction);
 
-// impl ReadTransaction<'_> {
-//     pub fn invoices(&self) -> Result<ReadInvoices<'_>> {
-//         self.0
-//             .open_table(INVOICES)
-//             .map(ReadInvoices)
-//             .with_context(|| format!("failed to open the `{}` table", INVOICES.name()))
-//     }
-// }
+impl ReadTransaction {
+    pub fn invoices(&self) -> Result<ReadInvoices> {
+        self.0
+            .open_table(INVOICES)
+            .map(ReadInvoices)
+            .with_context(|| format!("failed to open the `{}` table", INVOICES.name()))
+    }
+}
 
-// pub struct ReadInvoices<'tx>(ReadOnlyTable<'tx, &'static [u8; 32], Invoice>);
+pub struct ReadInvoices<'a>(ReadOnlyTable<&'a [u8], Invoice>);
 
-// impl ReadInvoices<'_> {
-//     pub fn get(&self, account: &Account) -> Result<Option<AccessGuard<'_, Invoice>>> {
-//         self.0
-//             .get(AsRef::<[u8; 32]>::as_ref(account))
-//             .context("failed to get an invoice from the database")
-//     }
-
+impl <'a> ReadInvoices<'a> {
+    pub fn get(&self, account: &Account) -> Result<Option<AccessGuard<'_, Invoice>>> {
+        self.0
+            .get(&*account)
+            .context("failed to get an invoice from the database")
+    }
+*/
 //     pub fn try_iter(
 //         &self,
 //     ) -> Result<impl Iterator<Item = Result<(AccessGuard<'_, &[u8; 32]>, AccessGuard<'_, Invoice>)>>>
