@@ -67,8 +67,8 @@ pub enum WithdrawalStatus {
 
 #[derive(Serialize)]
 pub struct ServerStatus {
-    description: ServerInfo,
-    supported_currencies: HashMap<std::string::String, CurrencyProperties>,
+    pub description: ServerInfo,
+    pub supported_currencies: HashMap<std::string::String, CurrencyProperties>,
 }
 
 #[derive(Serialize)]

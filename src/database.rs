@@ -1,5 +1,5 @@
 use crate::{
-    server::{CurrencyProperties, OrderQuery, OrderStatus, ServerStatus},
+    server::{CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
     AccountId, AssetId, Balance, BlockNumber, Nonce, Timestamp,
 };
 use anyhow::{Context, Result};
@@ -308,22 +308,22 @@ pub struct Invoicee {
 impl State {
     pub fn initialise(
         path_option: Option<String>,
-        _currencies: HashMap<String, CurrencyProperties>,
-        _current_pair: Pair,
-        _old_pairs: HashMap<String, Pair>,
+        currencies: HashMap<String, CurrencyProperties>,
+        current_pair: Pair,
+        old_pairs: HashMap<String, Pair>,
         ConfigWoChains {
-            recipient: _,
-            debug: _,
-            remark: _,
-            depth: _,
-            account_lifetime: _,
-            rpc: _,
+            recipient,
+            debug,
+            remark,
+            depth,
+            account_lifetime,
+            rpc,
         }: ConfigWoChains,
     ) -> Result<Self> {
         let builder = Database::builder();
         let is_new;
 
-        let _database = if let Some(path) = path_option {
+        let database = if let Some(path) = path_option {
             tracing::info!("Creating/Opening the database at {path:?}.");
 
             match File::create_new(&path) {
@@ -362,8 +362,22 @@ impl State {
         */
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         tokio::spawn(async move {
-            while let Some(_request) = rx.recv().await {
-                //database;
+            while let Some(request) = rx.recv().await {
+                &database;
+                match request {
+                    StateAccessRequest::GetInvoiceStatus(a) => {}, 
+                    StateAccessRequest::CreateInvoice(a) => {},
+                    StateAccessRequest::ServerStatus(res) => {
+                        let description = ServerInfo {
+                            version: env!("CARGO_PKG_VERSION"),
+                            instance_id: String::new(),
+                            debug,
+                            kalatori_remark: remark.clone(),
+                        };
+                        let server_status = ServerStatus {description, supported_currencies: currencies.clone()};
+                        res.send(server_status);
+                    },
+                };
             }
         });
 
@@ -411,7 +425,7 @@ impl State {
             tx: self.tx.clone(),
         }
     }
-    /*
+   /* 
         pub fn server_info(&self) -> ServerInfo {
             ServerInfo {
                 version: env!("CARGO_PKG_VERSION"),
@@ -420,7 +434,8 @@ impl State {
                 kalatori_remark: self.remark.clone(),
             }
         }
-
+*/
+    /*
         pub fn currency_properties(&self, currency_name: &str) -> Result<&CurrencyProperties, DbError> {
             self.currencies
                 .get(currency_name)
