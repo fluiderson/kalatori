@@ -732,14 +732,18 @@ pub struct Processor {
 }
 
 impl Processor {
-    pub async fn ignite(rpc: String, recipient: AccountId, state: State, notif: CancellationToken) -> Result<Cow<'static, str>> {
+    pub async fn ignite(
+        rpc: String,
+        recipient: AccountId,
+        state: State,
+        notif: CancellationToken,
+    ) -> Result<Cow<'static, str>> {
         let client = Client::builder().build(rpc.clone()).await.unwrap();
         let rpc_c = RpcClient::new(client);
         let methods = LegacyRpcMethods::new(rpc_c.clone());
         let backend = Arc::new(LegacyBackend::builder().build(rpc_c));
         let onl = OnlineClient::from_backend(backend.clone()).await.unwrap();
         let st = onl.storage();
-
 
         Processor {
             state,
@@ -905,7 +909,7 @@ impl Processor {
                     .context("failed to deserialize a transfer event")?;
 
                     tracing::info!("{tr:?}");
-/* TODO process using cache and db access
+                    /* TODO process using cache and db access
                     #[allow(clippy::unnecessary_find_map)]
                     if let Some(invoic) = invoices.iter().find_map(|invoic| {
                         tracing::info!("{tr:?} {invoic:?}");

@@ -231,7 +231,10 @@ async fn process_order(
         .to_owned();
 
     if query.is_empty() {
-        let order_status = state.order_status(&order).await.map_err(|_|OrderError::InternalError)?;
+        let order_status = state
+            .order_status(&order)
+            .await
+            .map_err(|_| OrderError::InternalError)?;
         Ok((order_status, OrderSuccess::Found))
     } else {
         let get_parameter = |parameter: &str| {
@@ -254,14 +257,15 @@ async fn process_order(
             return Err(OrderError::LessThanExistentialDeposit(0.07));
         }
 
-        
-        let order_status = state.create_order(
-            OrderQuery{
+        let order_status = state
+            .create_order(OrderQuery {
                 order,
                 amount,
                 callback,
                 currency,
-        }).await.map_err(|_|OrderError::InternalError)?;
+            })
+            .await
+            .map_err(|_| OrderError::InternalError)?;
 
         Ok((order_status, OrderSuccess::Created))
     }
@@ -325,10 +329,7 @@ async fn status(
     extract::State(state): extract::State<State>,
 ) -> ([(HeaderName, &'static str); 1], Json<ServerStatus>) {
     match state.server_status().await {
-        Ok(status) => (
-        [(header::CACHE_CONTROL, "no-store")],
-        status.into(),
-    ),
+        Ok(status) => ([(header::CACHE_CONTROL, "no-store")], status.into()),
         Err(e) => panic!("db connection is down, state is lost"), //TODO tell this to client
     }
 }

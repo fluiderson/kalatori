@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result};
 use redb::{
     backends::{FileBackend, InMemoryBackend},
-    Database, ReadableTable, ReadOnlyTable, Table, TableDefinition, TableHandle, TypeName, Value,
+    Database, ReadOnlyTable, ReadableTable, Table, TableDefinition, TableHandle, TypeName, Value,
 };
 use serde::Deserialize;
 use std::{collections::HashMap, fs::File, io::ErrorKind, sync::Arc};
@@ -190,103 +190,102 @@ struct CreateInvoice {
 }
 
 //impl StateInterface {
-            /*
-            Ok((
-                OrderStatus {
-                    order,
-                    payment_status: if invoice.paid {
-                        PaymentStatus::Paid
-                    } else {
-                        PaymentStatus::Pending
-                    },
-                    message: String::new(),
-                    recipient: state.0.recipient.to_ss58check(),
-                    server_info: state.server_info(),
-                    order_info: OrderInfo {
-                        withdrawal_status: WithdrawalStatus::Waiting,
-                        amount: invoice.amount.format(6),
-                        currency: CurrencyInfo {
-                            currency: "USDC".into(),
-                            chain_name: "assethub-polkadot".into(),
-                            kind: TokenKind::Asset,
-                            decimals: 6,
-                            rpc_url: state.rpc.clone(),
-                            asset_id: Some(1337),
-                        },
-                        callback: invoice.callback.clone(),
-                        transactions: vec![],
-                        payment_account: invoice.paym_acc.to_ss58check(),
-                    },
-                },
-                OrderSuccess::Found,
-            ))
-        } else {
-            Ok((
-                OrderStatus {
-                    order,
-                    payment_status: PaymentStatus::Unknown,
-                    message: String::new(),
-                    recipient: state.0.recipient.to_ss58check(),
-                    server_info: state.server_info(),
-                    order_info: OrderInfo {
-                        withdrawal_status: WithdrawalStatus::Waiting,
-                        amount: 0f64,
-                        currency: CurrencyInfo {
-                            currency: "USDC".into(),
-                            chain_name: "assethub-polkadot".into(),
-                            kind: TokenKind::Asset,
-                            decimals: 6,
-                            rpc_url: state.rpc.clone(),
-                            asset_id: Some(1337),
-                        },
-                        callback: String::new(),
-                        transactions: vec![],
-                        payment_account: String::new(),
-                    },
-                },
-                OrderSuccess::Found,
-            ))
-        }*/
-
-
-    /*
-     *
-    let pay_acc: AccountId = state
-            .0
-            .pair
-            .derive(vec![DeriveJunction::hard(order.clone())].into_iter(), None)
-            .unwrap()
-            .0
-            .public()
-            .into();
-
-     * */
-
-                /*(
-            OrderStatus {
-                order,
-                payment_status: PaymentStatus::Pending,
-                message: String::new(),
-                recipient: state.0.recipient.to_ss58check(),
-                server_info: state.server_info(),
-                order_info: OrderInfo {
-                    withdrawal_status: WithdrawalStatus::Waiting,
-                    amount,
-                    currency: CurrencyInfo {
-                        currency: "USDC".into(),
-                        chain_name: "assethub-polkadot".into(),
-                        kind: TokenKind::Asset,
-                        decimals: 6,
-                        rpc_url: state.rpc.clone(),
-                        asset_id: Some(1337),
-                    },
-                    callback,
-                    transactions: vec![],
-                    payment_account: pay_acc.to_ss58check(),
-                },
+/*
+    Ok((
+        OrderStatus {
+            order,
+            payment_status: if invoice.paid {
+                PaymentStatus::Paid
+            } else {
+                PaymentStatus::Pending
             },
-            OrderSuccess::Created,
-        ))*/
+            message: String::new(),
+            recipient: state.0.recipient.to_ss58check(),
+            server_info: state.server_info(),
+            order_info: OrderInfo {
+                withdrawal_status: WithdrawalStatus::Waiting,
+                amount: invoice.amount.format(6),
+                currency: CurrencyInfo {
+                    currency: "USDC".into(),
+                    chain_name: "assethub-polkadot".into(),
+                    kind: TokenKind::Asset,
+                    decimals: 6,
+                    rpc_url: state.rpc.clone(),
+                    asset_id: Some(1337),
+                },
+                callback: invoice.callback.clone(),
+                transactions: vec![],
+                payment_account: invoice.paym_acc.to_ss58check(),
+            },
+        },
+        OrderSuccess::Found,
+    ))
+} else {
+    Ok((
+        OrderStatus {
+            order,
+            payment_status: PaymentStatus::Unknown,
+            message: String::new(),
+            recipient: state.0.recipient.to_ss58check(),
+            server_info: state.server_info(),
+            order_info: OrderInfo {
+                withdrawal_status: WithdrawalStatus::Waiting,
+                amount: 0f64,
+                currency: CurrencyInfo {
+                    currency: "USDC".into(),
+                    chain_name: "assethub-polkadot".into(),
+                    kind: TokenKind::Asset,
+                    decimals: 6,
+                    rpc_url: state.rpc.clone(),
+                    asset_id: Some(1337),
+                },
+                callback: String::new(),
+                transactions: vec![],
+                payment_account: String::new(),
+            },
+        },
+        OrderSuccess::Found,
+    ))
+}*/
+
+/*
+ *
+let pay_acc: AccountId = state
+        .0
+        .pair
+        .derive(vec![DeriveJunction::hard(order.clone())].into_iter(), None)
+        .unwrap()
+        .0
+        .public()
+        .into();
+
+ * */
+
+/*(
+    OrderStatus {
+        order,
+        payment_status: PaymentStatus::Pending,
+        message: String::new(),
+        recipient: state.0.recipient.to_ss58check(),
+        server_info: state.server_info(),
+        order_info: OrderInfo {
+            withdrawal_status: WithdrawalStatus::Waiting,
+            amount,
+            currency: CurrencyInfo {
+                currency: "USDC".into(),
+                chain_name: "assethub-polkadot".into(),
+                kind: TokenKind::Asset,
+                decimals: 6,
+                rpc_url: state.rpc.clone(),
+                asset_id: Some(1337),
+            },
+            callback,
+            transactions: vec![],
+            payment_account: pay_acc.to_ss58check(),
+        },
+    },
+    OrderSuccess::Created,
+))*/
 
 /*
         ServerStatus {
@@ -352,17 +351,17 @@ impl State {
             builder.create_with_backend(InMemoryBackend::new())
         }.context("failed to create/open the database")?;
 
-/*
-    currencies: HashMap<String, CurrencyProperties>,
-    recipient: AccountId,
-    pair: Pair,
-    depth: Option<Timestamp>,
-    account_lifetime: Timestamp,
-    debug: bool,
-    remark: String,
-    invoices: RwLock<HashMap<String, Invoicee>>,
-    rpc: String,
-*/
+        /*
+            currencies: HashMap<String, CurrencyProperties>,
+            recipient: AccountId,
+            pair: Pair,
+            depth: Option<Timestamp>,
+            account_lifetime: Timestamp,
+            debug: bool,
+            remark: String,
+            invoices: RwLock<HashMap<String, Invoicee>>,
+            rpc: String,
+        */
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         tokio::spawn(async move {
             while let Some(request) = rx.recv().await {
@@ -370,14 +369,17 @@ impl State {
             }
         });
 
-        Ok(Self {
-            tx,
-        })
+        Ok(Self { tx })
     }
 
     pub async fn order_status(&self, order: &str) -> Result<OrderStatus, DbError> {
         let (res, mut rx) = oneshot::channel();
-        self.tx.send(StateAccessRequest::GetInvoiceStatus(GetInvoiceStatus {order: order.to_string(), res})).await;
+        self.tx
+            .send(StateAccessRequest::GetInvoiceStatus(GetInvoiceStatus {
+                order: order.to_string(),
+                res,
+            }))
+            .await;
         rx.await.map_err(|_| DbError::DbEngineDown)
     }
 
@@ -387,54 +389,58 @@ impl State {
         rx.await.map_err(|_| DbError::DbEngineDown)
     }
 
-    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, DbError> { 
+    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, DbError> {
         let (res, mut rx) = oneshot::channel();
         /*
-        Invoicee {
-                callback: callback.clone(),
-                amount: Balance::parse(amount, 6),
-                paid: false,
-                paym_acc: pay_acc.clone(),
-            },
-*/
-        self.tx.send(StateAccessRequest::CreateInvoice(CreateInvoice{
-            order_query,
-            res,
-        })).await;
+                Invoicee {
+                        callback: callback.clone(),
+                        amount: Balance::parse(amount, 6),
+                        paid: false,
+                        paym_acc: pay_acc.clone(),
+                    },
+        */
+        self.tx
+            .send(StateAccessRequest::CreateInvoice(CreateInvoice {
+                order_query,
+                res,
+            }))
+            .await;
         rx.await.map_err(|_| DbError::DbEngineDown)
     }
 
     pub fn interface(&self) -> Self {
-        State{tx: self.tx.clone()}
-    }
-/*
-    pub fn server_info(&self) -> ServerInfo {
-        ServerInfo {
-            version: env!("CARGO_PKG_VERSION"),
-            instance_id: String::new(),
-            debug: self.debug,
-            kalatori_remark: self.remark.clone(),
+        State {
+            tx: self.tx.clone(),
         }
     }
+    /*
+        pub fn server_info(&self) -> ServerInfo {
+            ServerInfo {
+                version: env!("CARGO_PKG_VERSION"),
+                instance_id: String::new(),
+                debug: self.debug,
+                kalatori_remark: self.remark.clone(),
+            }
+        }
 
-    pub fn currency_properties(&self, currency_name: &str) -> Result<&CurrencyProperties, DbError> {
-        self.currencies
-            .get(currency_name)
-            .ok_or(DbError::CurrencyKeyNotFound)
-    }
+        pub fn currency_properties(&self, currency_name: &str) -> Result<&CurrencyProperties, DbError> {
+            self.currencies
+                .get(currency_name)
+                .ok_or(DbError::CurrencyKeyNotFound)
+        }
 
-    pub fn currency_info(&self, currency_name: &str) -> Result<CurrencyInfo, DbError> {
-        let currency = self.currency_properties(currency_name)?;
-        Ok(CurrencyInfo {
-            currency: currency_name.to_string(),
-            chain_name: currency.chain_name.clone(),
-            kind: currency.kind,
-            decimals: currency.decimals,
-            rpc_url: currency.rpc_url.clone(),
-            asset_id: currency.asset_id,
-        })
-    }
-*/
+        pub fn currency_info(&self, currency_name: &str) -> Result<CurrencyInfo, DbError> {
+            let currency = self.currency_properties(currency_name)?;
+            Ok(CurrencyInfo {
+                currency: currency_name.to_string(),
+                chain_name: currency.chain_name.clone(),
+                kind: currency.kind,
+                decimals: currency.decimals,
+                rpc_url: currency.rpc_url.clone(),
+                asset_id: currency.asset_id,
+            })
+        }
+    */
     //     pub fn rpc(&self) -> &str {
     //         &self.rpc
     //     }

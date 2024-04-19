@@ -171,7 +171,12 @@ async fn main() -> Result<()> {
 
     task_tracker.spawn(
         "proc",
-        Processor::ignite(rpc, recipient.into(), state.clone(), shutdown_notification.clone()),
+        Processor::ignite(
+            rpc,
+            recipient.into(),
+            state.clone(),
+            shutdown_notification.clone(),
+        ),
     );
 
     let server = server::new(shutdown_notification.clone(), host, state)
