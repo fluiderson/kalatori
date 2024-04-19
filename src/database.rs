@@ -1,6 +1,6 @@
 use crate::{
     rpc::{ConnectedChain, Currency},
-    server::{CurrencyInfo, CurrencyProperties, ServerInfo},
+    server::{CurrencyInfo, CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
     AccountId, AssetId, Balance, BlockNumber, Config, Nonce, Timestamp, Version,
 };
 use anyhow::{Context, Result};
@@ -17,13 +17,14 @@ use subxt::ext::{
         sr25519::{Pair, Public},
     },
 };
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 pub const MODULE: &str = module_path!();
 
 #[derive(Debug)]
 pub enum DbError {
     CurrencyKeyNotFound,
+    DbEngineDown,
 }
 
 // Tables
@@ -164,7 +165,7 @@ impl Value for Invoice {
 }
 
 pub struct ConfigWoChains {
-    pub recipient: String,
+    pub recipient: AccountId,
     pub debug: bool,
     pub remark: String,
     pub depth: Option<BlockNumber>,
@@ -172,16 +173,131 @@ pub struct ConfigWoChains {
     pub rpc: String,
 }
 
+enum StateAccessRequest {
+    GetInvoiceStatus(GetInvoiceStatus),
+    CreateInvoice(CreateInvoice),
+    ServerStatus(oneshot::Sender<ServerStatus>),
+}
+
+struct GetInvoiceStatus {
+    pub order: String,
+    pub res: oneshot::Sender<OrderStatus>,
+}
+
+struct CreateInvoice {
+    pub order_query: OrderQuery,
+    pub res: oneshot::Sender<OrderStatus>,
+}
+
+//impl StateInterface {
+            /*
+            Ok((
+                OrderStatus {
+                    order,
+                    payment_status: if invoice.paid {
+                        PaymentStatus::Paid
+                    } else {
+                        PaymentStatus::Pending
+                    },
+                    message: String::new(),
+                    recipient: state.0.recipient.to_ss58check(),
+                    server_info: state.server_info(),
+                    order_info: OrderInfo {
+                        withdrawal_status: WithdrawalStatus::Waiting,
+                        amount: invoice.amount.format(6),
+                        currency: CurrencyInfo {
+                            currency: "USDC".into(),
+                            chain_name: "assethub-polkadot".into(),
+                            kind: TokenKind::Asset,
+                            decimals: 6,
+                            rpc_url: state.rpc.clone(),
+                            asset_id: Some(1337),
+                        },
+                        callback: invoice.callback.clone(),
+                        transactions: vec![],
+                        payment_account: invoice.paym_acc.to_ss58check(),
+                    },
+                },
+                OrderSuccess::Found,
+            ))
+        } else {
+            Ok((
+                OrderStatus {
+                    order,
+                    payment_status: PaymentStatus::Unknown,
+                    message: String::new(),
+                    recipient: state.0.recipient.to_ss58check(),
+                    server_info: state.server_info(),
+                    order_info: OrderInfo {
+                        withdrawal_status: WithdrawalStatus::Waiting,
+                        amount: 0f64,
+                        currency: CurrencyInfo {
+                            currency: "USDC".into(),
+                            chain_name: "assethub-polkadot".into(),
+                            kind: TokenKind::Asset,
+                            decimals: 6,
+                            rpc_url: state.rpc.clone(),
+                            asset_id: Some(1337),
+                        },
+                        callback: String::new(),
+                        transactions: vec![],
+                        payment_account: String::new(),
+                    },
+                },
+                OrderSuccess::Found,
+            ))
+        }*/
+
+
+    /*
+     *
+    let pay_acc: AccountId = state
+            .0
+            .pair
+            .derive(vec![DeriveJunction::hard(order.clone())].into_iter(), None)
+            .unwrap()
+            .0
+            .public()
+            .into();
+
+     * */
+
+                /*(
+            OrderStatus {
+                order,
+                payment_status: PaymentStatus::Pending,
+                message: String::new(),
+                recipient: state.0.recipient.to_ss58check(),
+                server_info: state.server_info(),
+                order_info: OrderInfo {
+                    withdrawal_status: WithdrawalStatus::Waiting,
+                    amount,
+                    currency: CurrencyInfo {
+                        currency: "USDC".into(),
+                        chain_name: "assethub-polkadot".into(),
+                        kind: TokenKind::Asset,
+                        decimals: 6,
+                        rpc_url: state.rpc.clone(),
+                        asset_id: Some(1337),
+                    },
+                    callback,
+                    transactions: vec![],
+                    payment_account: pay_acc.to_ss58check(),
+                },
+            },
+            OrderSuccess::Created,
+        ))*/
+
+/*
+        ServerStatus {
+            description: state.server_info(),
+            supported_currencies: state.currencies.clone(),
+        }
+*/
+
+#[derive(Clone, Debug)]
 pub struct State {
-    pub currencies: HashMap<String, CurrencyProperties>,
-    pub recipient: AccountId,
-    pub pair: Pair,
-    pub depth: Option<Timestamp>,
-    pub account_lifetime: Timestamp,
-    pub debug: bool,
-    pub remark: String,
-    pub invoices: RwLock<HashMap<String, Invoicee>>,
-    pub rpc: String,
+    pub tx: tokio::sync::mpsc::Sender<StateAccessRequest>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -206,7 +322,7 @@ impl State {
             account_lifetime,
             rpc,
         }: ConfigWoChains,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<Self> {
         let builder = Database::builder();
         let is_new;
 
@@ -236,23 +352,62 @@ impl State {
             builder.create_with_backend(InMemoryBackend::new())
         }.context("failed to create/open the database")?;
 
-        //
+/*
+    currencies: HashMap<String, CurrencyProperties>,
+    recipient: AccountId,
+    pair: Pair,
+    depth: Option<Timestamp>,
+    account_lifetime: Timestamp,
+    debug: bool,
+    remark: String,
+    invoices: RwLock<HashMap<String, Invoicee>>,
+    rpc: String,
+*/
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        tokio::spawn(async move {
+            while let Some(request) = rx.recv().await {
+                //database;
+            }
+        });
 
-        Ok(Arc::new(Self {
-            currencies,
-            recipient: AccountId::from_string(&recipient)
-                .context("failed to convert \"recipient\" from the config to an account address")?,
-            pair: current_pair,
-            depth,
-            account_lifetime,
-            debug,
-            remark,
-
-            invoices: RwLock::new(HashMap::new()),
-            rpc,
-        }))
+        Ok(Self {
+            tx,
+        })
     }
 
+    pub async fn order_status(&self, order: &str) -> Result<OrderStatus, DbError> {
+        let (res, mut rx) = oneshot::channel();
+        self.tx.send(StateAccessRequest::GetInvoiceStatus(GetInvoiceStatus {order: order.to_string(), res})).await;
+        rx.await.map_err(|_| DbError::DbEngineDown)
+    }
+
+    pub async fn server_status(&self) -> Result<ServerStatus, DbError> {
+        let (res, mut rx) = oneshot::channel();
+        self.tx.send(StateAccessRequest::ServerStatus(res)).await;
+        rx.await.map_err(|_| DbError::DbEngineDown)
+    }
+
+    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, DbError> { 
+        let (res, mut rx) = oneshot::channel();
+        /*
+        Invoicee {
+                callback: callback.clone(),
+                amount: Balance::parse(amount, 6),
+                paid: false,
+                paym_acc: pay_acc.clone(),
+            },
+*/
+        self.tx.send(StateAccessRequest::CreateInvoice(CreateInvoice{
+            order_query,
+            res,
+        })).await;
+        rx.await.map_err(|_| DbError::DbEngineDown)
+    }
+
+    pub fn interface(&self) -> Self {
+        State{tx: self.tx.clone()}
+    }
+/*
     pub fn server_info(&self) -> ServerInfo {
         ServerInfo {
             version: env!("CARGO_PKG_VERSION"),
@@ -279,7 +434,7 @@ impl State {
             asset_id: currency.asset_id,
         })
     }
-
+*/
     //     pub fn rpc(&self) -> &str {
     //         &self.rpc
     //     }

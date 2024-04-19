@@ -151,25 +151,27 @@ async fn main() -> Result<()> {
 
     let rpc = env::var("KALATORI_RPC").unwrap();
 
+    let recipient = AccountId::from_string(&recipient)?;
+
     let state = State::initialise(
         database_path,
         currencies,
         pair,
         old_pairs,
         ConfigWoChains {
-            recipient,
+            recipient: recipient.clone(),
             debug: config.debug,
             remark,
             depth: config.depth,
             account_lifetime: config.account_lifetime,
-            rpc,
+            rpc: rpc.clone(),
         },
     )
     .context("failed to initialise the database module")?;
 
     task_tracker.spawn(
         "proc",
-        Processor::ignite(state.clone(), shutdown_notification.clone()),
+        Processor::ignite(rpc, recipient.into(), state.clone(), shutdown_notification.clone()),
     );
 
     let server = server::new(shutdown_notification.clone(), host, state)

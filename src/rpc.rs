@@ -722,7 +722,8 @@ impl Display for Shutdown {
 }
 
 pub struct Processor {
-    state: Arc<State>,
+    state: State,
+    recipient: AccountId,
     backend: Arc<LegacyBackend<RuntimeConfig>>,
     shutdown_notification: CancellationToken,
     methods: LegacyRpcMethods<RuntimeConfig>,
@@ -731,16 +732,18 @@ pub struct Processor {
 }
 
 impl Processor {
-    pub async fn ignite(state: Arc<State>, notif: CancellationToken) -> Result<Cow<'static, str>> {
-        let client = Client::builder().build(state.rpc.clone()).await.unwrap();
+    pub async fn ignite(rpc: String, recipient: AccountId, state: State, notif: CancellationToken) -> Result<Cow<'static, str>> {
+        let client = Client::builder().build(rpc.clone()).await.unwrap();
         let rpc_c = RpcClient::new(client);
         let methods = LegacyRpcMethods::new(rpc_c.clone());
         let backend = Arc::new(LegacyBackend::builder().build(rpc_c));
         let onl = OnlineClient::from_backend(backend.clone()).await.unwrap();
         let st = onl.storage();
 
+
         Processor {
             state,
+            recipient,
             backend,
             shutdown_notification: notif,
             methods,
@@ -879,7 +882,7 @@ impl Processor {
             .await
             .context("failed to obtain block events")?;
 
-        let invoices = &mut *self.state.invoices.write().await;
+        //let invoices = &mut *self.state.invoices.write().await;
 
         // let mut update = false;
         // let mut invoices_changes = HashMap::new();
@@ -902,7 +905,7 @@ impl Processor {
                     .context("failed to deserialize a transfer event")?;
 
                     tracing::info!("{tr:?}");
-
+/* TODO process using cache and db access
                     #[allow(clippy::unnecessary_find_map)]
                     if let Some(invoic) = invoices.iter().find_map(|invoic| {
                         tracing::info!("{tr:?} {invoic:?}");
@@ -942,7 +945,7 @@ impl Processor {
                                 paym_acc: invoic.1.paym_acc.clone(),
                             },
                         );
-                    }
+                    }*/
                 }
                 _ => {}
             }

@@ -28,6 +28,7 @@ anyhow = "1"
 redb = "2"
 tracing = "0.1"
 scale-info = "2"
+axum-macros = "0.4.1"
 
 [profile.release]
 strip = true

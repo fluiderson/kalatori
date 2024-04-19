@@ -10,6 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing, Json, Router,
 };
+use axum_macros::debug_handler;
 use serde::{Serialize, Serializer};
 use std::{borrow::Cow, collections::HashMap, future::Future, net::SocketAddr, sync::Arc};
 use subxt::ext::sp_core::{crypto::Ss58Codec, DeriveJunction, Pair};
@@ -21,6 +22,13 @@ pub const MODULE: &str = module_path!();
 const AMOUNT: &str = "amount";
 const CURRENCY: &str = "currency";
 const CALLBACK: &str = "callback";
+
+pub struct OrderQuery {
+    pub order: String,
+    pub amount: f64,
+    pub callback: String,
+    pub currency: String,
+}
 
 #[derive(Serialize)]
 pub struct OrderStatus {
@@ -60,7 +68,7 @@ pub enum WithdrawalStatus {
 }
 
 #[derive(Serialize)]
-struct ServerStatus {
+pub struct ServerStatus {
     description: ServerInfo,
     supported_currencies: HashMap<std::string::String, CurrencyProperties>,
 }
@@ -166,9 +174,9 @@ enum TxStatus {
 pub async fn new(
     shutdown_notification: CancellationToken,
     host: SocketAddr,
-    state: Arc<State>,
+    state: State,
 ) -> Result<impl Future<Output = Result<Cow<'static, str>>>> {
-    let v2 = Router::new()
+    let v2: Router<State> = Router::new()
         .route("/order/:order_id", routing::post(order))
         .route("/status", routing::get(status));
     let app = Router::new().nest("/v2", v2).with_state(state);
@@ -206,9 +214,8 @@ struct InvalidParameter {
     message: String,
 }
 
-#[allow(clippy::too_many_lines)]
 async fn process_order(
-    state: extract::State<Arc<State>>,
+    state: State,
     matched_path: &MatchedPath,
     path_result: Result<RawPathParams, RawPathParamsRejection>,
     query: &HashMap<String, String>,
@@ -224,67 +231,8 @@ async fn process_order(
         .to_owned();
 
     if query.is_empty() {
-        // TODO: try to query an order from the database.
-
-        let invoices = state.0.invoices.read().await;
-
-        if let Some(invoice) = invoices.get(&order) {
-            Ok((
-                OrderStatus {
-                    order,
-                    payment_status: if invoice.paid {
-                        PaymentStatus::Paid
-                    } else {
-                        PaymentStatus::Pending
-                    },
-                    message: String::new(),
-                    recipient: state.0.recipient.to_ss58check(),
-                    server_info: state.server_info(),
-                    order_info: OrderInfo {
-                        withdrawal_status: WithdrawalStatus::Waiting,
-                        amount: invoice.amount.format(6),
-                        currency: CurrencyInfo {
-                            currency: "USDC".into(),
-                            chain_name: "assethub-polkadot".into(),
-                            kind: TokenKind::Asset,
-                            decimals: 6,
-                            rpc_url: state.rpc.clone(),
-                            asset_id: Some(1337),
-                        },
-                        callback: invoice.callback.clone(),
-                        transactions: vec![],
-                        payment_account: invoice.paym_acc.to_ss58check(),
-                    },
-                },
-                OrderSuccess::Found,
-            ))
-        } else {
-            Ok((
-                OrderStatus {
-                    order,
-                    payment_status: PaymentStatus::Unknown,
-                    message: String::new(),
-                    recipient: state.0.recipient.to_ss58check(),
-                    server_info: state.server_info(),
-                    order_info: OrderInfo {
-                        withdrawal_status: WithdrawalStatus::Waiting,
-                        amount: 0f64,
-                        currency: CurrencyInfo {
-                            currency: "USDC".into(),
-                            chain_name: "assethub-polkadot".into(),
-                            kind: TokenKind::Asset,
-                            decimals: 6,
-                            rpc_url: state.rpc.clone(),
-                            asset_id: Some(1337),
-                        },
-                        callback: String::new(),
-                        transactions: vec![],
-                        payment_account: String::new(),
-                    },
-                },
-                OrderSuccess::Found,
-            ))
-        }
+        let order_status = state.order_status(&order).await.map_err(|_|OrderError::InternalError)?;
+        Ok((order_status, OrderSuccess::Found))
     } else {
         let get_parameter = |parameter: &str| {
             query
@@ -298,8 +246,6 @@ async fn process_order(
             .parse()
             .map_err(|_| OrderError::InvalidParameter(AMOUNT.into()))?;
 
-        // TODO: try to query & update or create an order in the database.
-
         if currency != "USDC" {
             return Err(OrderError::UnknownCurrency);
         }
@@ -308,56 +254,22 @@ async fn process_order(
             return Err(OrderError::LessThanExistentialDeposit(0.07));
         }
 
-        let mut invoices = state.0.invoices.write().await;
-        let pay_acc: AccountId = state
-            .0
-            .pair
-            .derive(vec![DeriveJunction::hard(order.clone())].into_iter(), None)
-            .unwrap()
-            .0
-            .public()
-            .into();
-
-        invoices.insert(
-            order.clone(),
-            Invoicee {
-                callback: callback.clone(),
-                amount: Balance::parse(amount, 6),
-                paid: false,
-                paym_acc: pay_acc.clone(),
-            },
-        );
-
-        Ok((
-            OrderStatus {
+        
+        let order_status = state.create_order(
+            OrderQuery{
                 order,
-                payment_status: PaymentStatus::Pending,
-                message: String::new(),
-                recipient: state.0.recipient.to_ss58check(),
-                server_info: state.server_info(),
-                order_info: OrderInfo {
-                    withdrawal_status: WithdrawalStatus::Waiting,
-                    amount,
-                    currency: CurrencyInfo {
-                        currency: "USDC".into(),
-                        chain_name: "assethub-polkadot".into(),
-                        kind: TokenKind::Asset,
-                        decimals: 6,
-                        rpc_url: state.rpc.clone(),
-                        asset_id: Some(1337),
-                    },
-                    callback,
-                    transactions: vec![],
-                    payment_account: pay_acc.to_ss58check(),
-                },
-            },
-            OrderSuccess::Created,
-        ))
+                amount,
+                callback,
+                currency,
+        }).await.map_err(|_|OrderError::InternalError)?;
+
+        Ok((order_status, OrderSuccess::Created))
     }
 }
 
+#[debug_handler]
 async fn order(
-    state: extract::State<Arc<State>>,
+    extract::State(state): extract::State<State>,
     matched_path: MatchedPath,
     path_result: Result<RawPathParams, RawPathParamsRejection>,
     query: Query<HashMap<String, String>>,
@@ -410,14 +322,13 @@ async fn order(
 }
 
 async fn status(
-    state: extract::State<Arc<State>>,
+    extract::State(state): extract::State<State>,
 ) -> ([(HeaderName, &'static str); 1], Json<ServerStatus>) {
-    (
+    match state.server_status().await {
+        Ok(status) => (
         [(header::CACHE_CONTROL, "no-store")],
-        ServerStatus {
-            description: state.server_info(),
-            supported_currencies: state.currencies.clone(),
-        }
-        .into(),
-    )
+        status.into(),
+    ),
+        Err(e) => panic!("db connection is down, state is lost"), //TODO tell this to client
+    }
 }
