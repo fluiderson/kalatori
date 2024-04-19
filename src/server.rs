@@ -1,7 +1,5 @@
 use crate::{
-    database::{Invoicee, State},
-    rpc::Currency,
-    AccountId, AssetId, Balance, BlockNumber, Decimals, ExtrinsicIndex,
+    database::{State}, AssetId, BlockNumber, Decimals, ExtrinsicIndex,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -12,8 +10,8 @@ use axum::{
 };
 use axum_macros::debug_handler;
 use serde::{Serialize, Serializer};
-use std::{borrow::Cow, collections::HashMap, future::Future, net::SocketAddr, sync::Arc};
-use subxt::ext::sp_core::{crypto::Ss58Codec, DeriveJunction, Pair};
+use std::{borrow::Cow, collections::HashMap, future::Future, net::SocketAddr};
+
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -330,6 +328,6 @@ async fn status(
 ) -> ([(HeaderName, &'static str); 1], Json<ServerStatus>) {
     match state.server_status().await {
         Ok(status) => ([(header::CACHE_CONTROL, "no-store")], status.into()),
-        Err(e) => panic!("db connection is down, state is lost"), //TODO tell this to client
+        Err(_e) => panic!("db connection is down, state is lost"), //TODO tell this to client
     }
 }

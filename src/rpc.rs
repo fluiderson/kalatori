@@ -2,8 +2,7 @@ use crate::{
     asset::Asset,
     database::{Invoicee, State},
     server::{
-        CurrencyInfo, CurrencyProperties, OrderInfo, OrderStatus, PaymentStatus, ServerInfo,
-        TokenKind, WithdrawalStatus,
+        CurrencyProperties,
     },
     AccountId, AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
     Nonce, OnlineClient, PalletIndex, RuntimeConfig, TaskTracker, Timestamp,
@@ -25,7 +24,6 @@ use subxt::{
         rpc::{reconnecting_rpc_client::Client, RpcClient, RpcSubscription},
         Backend, BackendExt, RuntimeVersion,
     },
-    blocks::Block,
     config::{DefaultExtrinsicParamsBuilder, Header},
     constants::ConstantsClient,
     dynamic::{self, At, Value},
@@ -35,7 +33,7 @@ use subxt::{
         scale_decode::DecodeAsType,
         scale_value,
         sp_core::{
-            crypto::{Ss58AddressFormat, Ss58Codec},
+            crypto::{Ss58AddressFormat},
             sr25519::Pair,
         },
     },
@@ -182,7 +180,7 @@ impl AssetProperties {
 impl ChainProperties {
     async fn fetch(
         chain: &str,
-        currencies: UnboundedSender<CurrenciesChannel>,
+        _currencies: UnboundedSender<CurrenciesChannel>,
         constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
         native_token_option: Option<NativeToken>,
         assets_fetcher: Option<AssetsInfoFetcher<'_>>,
@@ -269,7 +267,7 @@ impl ChainProperties {
 
         //Some(native_token.decimals),
 
-        let existential_deposit = if let Some(native_token) = native_token_option {
+        let existential_deposit = if let Some(_native_token) = native_token_option {
             Some(fetch_constant(constants, EXISTENTIAL_DEPOSIT).map(Balance)?)
         } else {
             None
@@ -479,7 +477,7 @@ async fn prepare_chain(
         .genesis_hash()
         .await
         .context("failed to fetch the genesis hash")?;
-    let (finalized_number, finalized_hash) = fetch_finalized_head_number_and_hash(&methods).await?;
+    let (_finalized_number, finalized_hash) = fetch_finalized_head_number_and_hash(&methods).await?;
     let (metadata, runtime_version) = fetch_runtime(&methods, &*backend, finalized_hash).await?;
 
     let client = OnlineClient::from_backend_with(
@@ -764,7 +762,7 @@ impl Processor {
     }
 
     async fn execute(mut self) -> Result<Cow<'static, str>> {
-        let (head_number, head_hash) = self
+        let (head_number, _head_hash) = self
             .finalized_head_number_and_hash()
             .await
             .context("failed to get the chain head")?;
@@ -1003,7 +1001,7 @@ impl Processor {
 
     async fn batch_transfer(
         &self,
-        nonce: Nonce,
+        _nonce: Nonce,
         block_hash_count: BlockNumber,
         signer: &PairSigner<RuntimeConfig, Pair>,
         transfers: Vec<Value>,

@@ -1,23 +1,21 @@
 use crate::{
-    rpc::{ConnectedChain, Currency},
-    server::{CurrencyInfo, CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
-    AccountId, AssetId, Balance, BlockNumber, Config, Nonce, Timestamp, Version,
+    server::{CurrencyProperties, OrderQuery, OrderStatus, ServerStatus},
+    AccountId, AssetId, Balance, BlockNumber, Nonce, Timestamp,
 };
 use anyhow::{Context, Result};
 use redb::{
     backends::{FileBackend, InMemoryBackend},
-    Database, ReadOnlyTable, ReadableTable, Table, TableDefinition, TableHandle, TypeName, Value,
+    Database, ReadableTable, TableDefinition, TypeName, Value,
 };
 use serde::Deserialize;
-use std::{collections::HashMap, fs::File, io::ErrorKind, sync::Arc};
+use std::{collections::HashMap, fs::File, io::ErrorKind};
 use subxt::ext::{
     codec::{Compact, Decode, Encode},
     sp_core::{
-        crypto::Ss58Codec,
-        sr25519::{Pair, Public},
+        sr25519::{Pair},
     },
 };
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{oneshot};
 
 pub const MODULE: &str = module_path!();
 
@@ -310,22 +308,22 @@ pub struct Invoicee {
 impl State {
     pub fn initialise(
         path_option: Option<String>,
-        currencies: HashMap<String, CurrencyProperties>,
-        current_pair: Pair,
-        old_pairs: HashMap<String, Pair>,
+        _currencies: HashMap<String, CurrencyProperties>,
+        _current_pair: Pair,
+        _old_pairs: HashMap<String, Pair>,
         ConfigWoChains {
-            recipient,
-            debug,
-            remark,
-            depth,
-            account_lifetime,
-            rpc,
+            recipient: _,
+            debug: _,
+            remark: _,
+            depth: _,
+            account_lifetime: _,
+            rpc: _,
         }: ConfigWoChains,
     ) -> Result<Self> {
         let builder = Database::builder();
         let is_new;
 
-        let database = if let Some(path) = path_option {
+        let _database = if let Some(path) = path_option {
             tracing::info!("Creating/Opening the database at {path:?}.");
 
             match File::create_new(&path) {
@@ -364,7 +362,7 @@ impl State {
         */
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         tokio::spawn(async move {
-            while let Some(request) = rx.recv().await {
+            while let Some(_request) = rx.recv().await {
                 //database;
             }
         });
@@ -373,7 +371,7 @@ impl State {
     }
 
     pub async fn order_status(&self, order: &str) -> Result<OrderStatus, DbError> {
-        let (res, mut rx) = oneshot::channel();
+        let (res, rx) = oneshot::channel();
         self.tx
             .send(StateAccessRequest::GetInvoiceStatus(GetInvoiceStatus {
                 order: order.to_string(),
@@ -384,13 +382,13 @@ impl State {
     }
 
     pub async fn server_status(&self) -> Result<ServerStatus, DbError> {
-        let (res, mut rx) = oneshot::channel();
+        let (res, rx) = oneshot::channel();
         self.tx.send(StateAccessRequest::ServerStatus(res)).await;
         rx.await.map_err(|_| DbError::DbEngineDown)
     }
 
     pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, DbError> {
-        let (res, mut rx) = oneshot::channel();
+        let (res, rx) = oneshot::channel();
         /*
                 Invoicee {
                         callback: callback.clone(),

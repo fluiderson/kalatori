@@ -15,7 +15,7 @@ use subxt::{
     config::{substrate::SubstrateHeader, PolkadotExtrinsicParams},
     ext::sp_core::{
         crypto::{AccountId32, Ss58Codec},
-        sr25519::{Pair, Public},
+        sr25519::{Pair},
         Pair as _,
     },
     PolkadotConfig,
@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
         shutdown_listener(shutdown_notification.clone()),
     );
 
-    let (chains, currencies) = rpc::prepare(config.chain, config.account_lifetime, config.depth)
+    let (_chains, currencies) = rpc::prepare(config.chain, config.account_lifetime, config.depth)
         .await
         .context("failed while preparing the RPC module")?;
 

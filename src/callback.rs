@@ -23,7 +23,7 @@ pub async fn callback(
     let req = ureq::post(&path);
 
     task::spawn_blocking(move || {
-        let d = req
+        let _d = req
             .send_json(OrderStatus {
                 order,
                 payment_status: PaymentStatus::Paid,
