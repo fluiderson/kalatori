@@ -1,4 +1,6 @@
-use anyhow::{Context, Error, Result};
+use mnemonic_external::{regular::InternalWordList, WordSet};
+use substrate_crypto_light::{common::cut_path, sr25519::Pair};
+
 use serde::Deserialize;
 use std::{
     borrow::Cow,
@@ -11,32 +13,26 @@ use std::{
     ops::Deref,
     panic, str,
 };
-use subxt::{
-    config::{substrate::SubstrateHeader, PolkadotExtrinsicParams},
-    ext::sp_core::{
-        crypto::{AccountId32, Ss58Codec},
-        sr25519::{Pair},
-        Pair as _,
-    },
-    PolkadotConfig,
-};
+use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::{
     signal,
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
 use tokio_util::{sync::CancellationToken, task};
-use toml_edit::de;
 use tracing_subscriber::{fmt::time::UtcTime, EnvFilter};
 
 mod asset;
 mod callback;
+mod chain;
 mod database;
+mod error;
 mod rpc;
 mod server;
+mod utils;
 
-use asset::Asset;
 use database::{ConfigWoChains, State};
+use error::Error;
 use rpc::Processor;
 
 const CONFIG: &str = "KALATORI_CONFIG";
@@ -61,44 +57,25 @@ type Nonce = u32;
 type Timestamp = u64;
 type PalletIndex = u8;
 
-type BlockHash = <RuntimeConfig as subxt::Config>::Hash;
-type AccountId = <RuntimeConfig as subxt::Config>::AccountId;
-type OnlineClient = subxt::OnlineClient<RuntimeConfig>;
-
-struct RuntimeConfig;
-
-impl subxt::Config for RuntimeConfig {
-    type Hash = <PolkadotConfig as subxt::Config>::Hash;
-    type AccountId = AccountId32;
-    type Address = <PolkadotConfig as subxt::Config>::Address;
-    type Signature = <PolkadotConfig as subxt::Config>::Signature;
-    type Hasher = <PolkadotConfig as subxt::Config>::Hasher;
-    type Header = SubstrateHeader<BlockNumber, Self::Hasher>;
-    type ExtrinsicParams = PolkadotExtrinsicParams<Self>;
-    type AssetId = Asset;
-}
+type BlockHash = primitive_types::H256;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Error> {
     let shutdown_notification = CancellationToken::new();
 
     set_panic_hook(shutdown_notification.clone());
     initialize_logger()?;
 
     let (pair, old_pairs) = parse_seeds()?;
-    let recipient = env::var(RECIPIENT).with_context(|| format!("failed to read {RECIPIENT}"))?;
+    let recipient = env::var(RECIPIENT).map_err(|_| Error::Env(RECIPIENT.to_string()))?;
 
-    let remark = match env::var(REMARK) {
-        Ok(remark) => remark,
-        Err(error) => Err(error).with_context(|| format!("failed to read {REMARK}"))?,
-    };
+    let remark = env::var(REMARK).map_err(|_| Error::Env(REMARK.to_string()))?;
 
-    let config = Config::parse()?;
+    let config = Config::load()?;
 
     let host = if let Some(unparsed_host) = config.host {
         unparsed_host
-            .parse()
-            .context("failed to convert `host` from the config to a socket address")?
+            .parse().map_err(|_| Error::ConfigParse("host to define a socket address".to_string()))?
     } else {
         DEFAULT_SOCKET
     };
@@ -145,13 +122,12 @@ async fn main() -> Result<()> {
         shutdown_listener(shutdown_notification.clone()),
     );
 
-    let (_chains, currencies) = rpc::prepare(config.chain, config.account_lifetime, config.depth)
-        .await
-        .context("failed while preparing the RPC module")?;
+    //let (chains, currencies) = rpc::prepare(config.chain, config.account_lifetime, config.depth).await
+    let currencies = HashMap::new();
 
     let rpc = env::var("KALATORI_RPC").unwrap();
 
-    let recipient = AccountId::from_string(&recipient)?;
+    let recipient = AccountId32::from_base58_string(&recipient).map_err(Error::RecipientAccount)?.0;
 
     let state = State::initialise(
         database_path,
@@ -166,8 +142,7 @@ async fn main() -> Result<()> {
             account_lifetime: config.account_lifetime,
             rpc: rpc.clone(),
         },
-    )
-    .context("failed to initialise the database module")?;
+    )?;
 
     task_tracker.spawn(
         "proc",
@@ -180,8 +155,7 @@ async fn main() -> Result<()> {
     );
 
     let server = server::new(shutdown_notification.clone(), host, state)
-        .await
-        .context("failed to initialise the server module")?;
+        .await?;
 
     // task_tracker.spawn(shutdown(
     //     processor.ignite(last_saved_block, task_tracker.clone(), error_tx.clone()),
@@ -224,7 +198,7 @@ fn set_panic_hook(shutdown_notification: CancellationToken) {
     }));
 }
 
-fn initialize_logger() -> Result<()> {
+fn initialize_logger() -> Result<(), Error> {
     let filter = match EnvFilter::try_from_env(LOG) {
         Err(error) => {
             let Some(VarError::NotPresent) = error
@@ -232,7 +206,7 @@ fn initialize_logger() -> Result<()> {
                 .expect("should always be `Some`")
                 .downcast_ref()
             else {
-                return Err(error).with_context(|| format!("failed to parse `{LOG}`"));
+                return Err(Error::Env(LOG.to_string()));
             };
 
             if cfg!(debug_assertions) {
@@ -290,15 +264,13 @@ fn default_filter() -> String {
     filter
 }
 
-fn parse_seeds() -> Result<(Pair, HashMap<String, Pair>)> {
-    let pair = Pair::from_string(
-        &env::var(SEED).with_context(|| format!("failed to read `{SEED}`"))?,
-        None,
-    )
-    .with_context(|| format!("failed to generate a key pair from `{SEED}`"))?;
+fn parse_seeds() -> Result<(Pair, HashMap<String, Pair>), Error> {
+    let pair = seed_from_phrase(
+        &env::var(SEED).map_err(|_| Error::Env(SEED.to_string()))?,
+    )?;
 
     let mut old_pairs = HashMap::new();
-
+/* TODO: add this at least when you do something about these
     for (raw_key, raw_value) in env::vars_os() {
         let raw_key_bytes = raw_key.as_encoded_bytes();
 
@@ -308,15 +280,26 @@ fn parse_seeds() -> Result<(Pair, HashMap<String, Pair>)> {
             let value = raw_value
                 .to_str()
                 .with_context(|| format!("failed to read a seed phrase from `{OLD_SEED}{key}`"))?;
-            let old_pair = Pair::from_string(value, None)
-                .with_context(|| format!("failed to generate a key pair from `{OLD_SEED}{key}`"))?;
+            let old_pair = seed_from_phrase(value)?;
 
             old_pairs.insert(key.to_owned(), old_pair);
         }
     }
-
+*/
     Ok((pair, old_pairs))
 }
+
+    pub fn seed_from_phrase(seed: &str) -> Result<Pair, Error> {
+        let mut word_set = WordSet::new();
+        for word in seed.split(' ') {
+            word_set
+                .add_word(&word, &InternalWordList)?;
+        }
+        let entropy = word_set.to_entropy()?;
+        let derivation = cut_path("").expect("empty derivation is hardcoded");
+        Ok(Pair::from_entropy_and_full_derivation(&entropy, derivation).expect("empty derivation and password are hardcoded"))
+    }
+
 
 #[derive(Clone)]
 struct TaskTracker {
@@ -337,7 +320,7 @@ impl TaskTracker {
     fn spawn(
         &self,
         name: impl Into<Cow<'static, str>> + Send + 'static,
-        task: impl Future<Output = Result<Cow<'static, str>>> + Send + 'static,
+        task: impl Future<Output = Result<Cow<'static, str>, Error>> + Send + 'static,
     ) -> JoinHandle<()> {
         let error_tx = self.error_tx.clone();
 
@@ -375,11 +358,11 @@ impl TaskTracker {
     async fn try_wait(
         self,
         mut error_rx: UnboundedReceiver<(Cow<'static, str>, Error)>,
-    ) -> Result<()> {
+    ) -> Result<(), Error> {
         drop(self.error_tx);
 
         if let Some((from, error)) = error_rx.recv().await {
-            return Err(error).with_context(|| format!("received a fatal error from {from}"));
+            return Err(error)?;
         }
 
         self.inner.wait().await;
@@ -388,11 +371,11 @@ impl TaskTracker {
     }
 }
 
-async fn shutdown_listener(shutdown_notification: CancellationToken) -> Result<Cow<'static, str>> {
+async fn shutdown_listener(shutdown_notification: CancellationToken) -> Result<Cow<'static, str>, Error> {
     tokio::select! {
         biased;
         signal = signal::ctrl_c() => {
-            signal.context("failed to listen for the shutdown signal")?;
+            signal.map_err(|_| Error::ShutdownSignal)?;
 
             // Print shutdown log messages on the next line after the Control-C command.
             println!();
@@ -420,10 +403,10 @@ struct Config {
 }
 
 impl Config {
-    fn parse() -> Result<Self> {
+    fn load() -> Result<Self, Error> {
         let config_path = env::var(CONFIG).or_else(|error| match error {
             VarError::NotUnicode(_) => {
-                Err(error).with_context(|| format!("failed to read `{CONFIG}`"))
+                Err(Error::Env(CONFIG.to_string()))
             }
             VarError::NotPresent => {
                 tracing::debug!(
@@ -433,11 +416,9 @@ impl Config {
                 Ok(DEFAULT_CONFIG.into())
             }
         })?;
-        let unparsed_config = fs::read_to_string(&config_path)
-            .with_context(|| format!("failed to read a config file at {config_path:?}"))?;
+        let unparsed_config = fs::read_to_string(&config_path).map_err(|_| Error::ConfigFileRead(config_path.clone()))?;
 
-        de::from_str(&unparsed_config)
-            .with_context(|| format!("failed to parse the config at {config_path:?}"))
+        toml::from_str(&unparsed_config).map_err(|_| Error::ConfigFileParse(config_path))
     }
 }
 

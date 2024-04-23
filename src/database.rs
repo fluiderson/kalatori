@@ -1,29 +1,19 @@
 use crate::{
+    error::ErrorDb,
     server::{CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
-    AccountId, AssetId, Balance, BlockNumber, Nonce, Timestamp,
+    AccountId32, AssetId, Balance, BlockNumber, Nonce, Timestamp,
 };
-use anyhow::{Context, Result};
+use parity_scale_codec::{Compact, Encode, Decode};
 use redb::{
     backends::{FileBackend, InMemoryBackend},
     Database, ReadableTable, TableDefinition, TypeName, Value,
 };
 use serde::Deserialize;
 use std::{collections::HashMap, fs::File, io::ErrorKind};
-use subxt::ext::{
-    codec::{Compact, Decode, Encode},
-    sp_core::{
-        sr25519::{Pair},
-    },
-};
+use substrate_crypto_light::sr25519::Pair;
 use tokio::sync::{oneshot};
 
 pub const MODULE: &str = module_path!();
-
-#[derive(Debug)]
-pub enum DbError {
-    CurrencyKeyNotFound,
-    DbEngineDown,
-}
 
 // Tables
 
@@ -34,18 +24,18 @@ const INVOICES: TableDefinition<'_, InvoiceKey, Invoice> = TableDefinition::new(
 
 const ACCOUNTS: &str = "accounts";
 
-type ACCOUNTS_KEY = (Option<AssetId>, Account);
-type ACCOUNTS_VALUE = InvoiceKey;
+//type ACCOUNTS_KEY = (Option<AssetId>, Account);
+//type ACCOUNTS_VALUE = InvoiceKey;
 
 const TRANSACTIONS: &str = "transactions";
 
-type TRANSACTIONS_KEY = BlockNumber;
-type TRANSACTIONS_VALUE = (Account, Nonce, Transfer);
+//type TRANSACTIONS_KEY = BlockNumber;
+//type TRANSACTIONS_VALUE = (Account, Nonce, Transfer);
 
 const HIT_LIST: &str = "hit_list";
 
-type HIT_LIST_KEY = BlockNumber;
-type HIT_LIST_VALUE = (Option<AssetId>, Account);
+//type HIT_LIST_KEY = BlockNumber;
+//type HIT_LIST_VALUE = (Option<AssetId>, Account);
 
 // `ROOT` keys
 
@@ -63,17 +53,15 @@ type ChainHash = [u8; 32];
 type PublicSlot = [u8; 32];
 type BalanceSlot = u128;
 type Derivation = [u8; 32];
-type Account = [u8; 32];
+pub type Account = [u8; 32];
 
 #[derive(Encode, Decode)]
-#[codec(crate = subxt::ext::codec)]
 enum ChainKind {
     Id(Vec<Compact<AssetId>>),
     MultiLocation(Vec<Compact<AssetId>>),
 }
 
 #[derive(Encode, Decode)]
-#[codec(crate = subxt::ext::codec)]
 struct DaemonInfo {
     chains: Vec<(String, ChainProperties)>,
     current_key: PublicSlot,
@@ -81,7 +69,6 @@ struct DaemonInfo {
 }
 
 #[derive(Encode, Decode)]
-#[codec(crate = subxt::ext::codec)]
 struct ChainProperties {
     genesis: BlockHash,
     hash: ChainHash,
@@ -89,11 +76,9 @@ struct ChainProperties {
 }
 
 #[derive(Encode, Decode)]
-#[codec(crate = subxt::ext::codec)]
 struct Transfer(Option<Compact<AssetId>>, #[codec(compact)] BalanceSlot);
 
 #[derive(Encode, Decode, Debug)]
-#[codec(crate = subxt::ext::codec)]
 struct Invoice {
     derivation: (PublicSlot, Derivation),
     paid: bool,
@@ -107,7 +92,6 @@ struct Invoice {
 }
 
 #[derive(Encode, Decode, Debug)]
-#[codec(crate = subxt::ext::codec)]
 enum TransferTxs {
     Asset {
         #[codec(compact)]
@@ -122,7 +106,6 @@ enum TransferTxs {
 }
 
 // #[derive(Encode, Decode, Debug)]
-// #[codec(crate = subxt::ext::codec)]
 // struct TransferTxsAsset<T> {
 //     recipient: Account,
 //     encoded: Vec<u8>,
@@ -131,7 +114,6 @@ enum TransferTxs {
 // }
 
 #[derive(Encode, Decode, Debug)]
-#[codec(crate = subxt::ext::codec)]
 struct TransferTx {
     recipient: Account,
     exact_amount: Option<Compact<BalanceSlot>>,
@@ -163,7 +145,7 @@ impl Value for Invoice {
 }
 
 pub struct ConfigWoChains {
-    pub recipient: AccountId,
+    pub recipient: AccountId32,
     pub debug: bool,
     pub remark: String,
     pub depth: Option<BlockNumber>,
@@ -302,7 +284,7 @@ pub struct Invoicee {
     pub callback: String,
     pub amount: Balance,
     pub paid: bool,
-    pub paym_acc: AccountId,
+    pub paym_acc: Account,
 }
 
 impl State {
@@ -319,7 +301,7 @@ impl State {
             account_lifetime,
             rpc,
         }: ConfigWoChains,
-    ) -> Result<Self> {
+    ) -> Result<Self, ErrorDb> {
         let builder = Database::builder();
         let is_new;
 
@@ -330,14 +312,14 @@ impl State {
                 Ok(file) => {
                     is_new = true;
 
-                    FileBackend::new(file).and_then(|backend| builder.create_with_backend(backend))
+                    FileBackend::new(file).and_then(|backend| builder.create_with_backend(backend)).map_err(ErrorDb::DbStartError)?
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                     is_new = false;
 
-                    builder.create(path)
+                    builder.create(path).map_err(ErrorDb::DbStartError)?
                 }
-                Err(error) => Err(error.into())
+                Err(error) => return Err(error.into())
             }
         } else {
             tracing::warn!(
@@ -346,8 +328,8 @@ impl State {
 
             is_new = true;
 
-            builder.create_with_backend(InMemoryBackend::new())
-        }.context("failed to create/open the database")?;
+            builder.create_with_backend(InMemoryBackend::new()).map_err(ErrorDb::DbStartError)?
+        };//.context("failed to create/open the database")?;
 
         /*
             currencies: HashMap<String, CurrencyProperties>,
@@ -384,7 +366,7 @@ impl State {
         Ok(Self { tx })
     }
 
-    pub async fn order_status(&self, order: &str) -> Result<OrderStatus, DbError> {
+    pub async fn order_status(&self, order: &str) -> Result<OrderStatus, ErrorDb> {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(StateAccessRequest::GetInvoiceStatus(GetInvoiceStatus {
@@ -392,16 +374,16 @@ impl State {
                 res,
             }))
             .await;
-        rx.await.map_err(|_| DbError::DbEngineDown)
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)
     }
 
-    pub async fn server_status(&self) -> Result<ServerStatus, DbError> {
+    pub async fn server_status(&self) -> Result<ServerStatus, ErrorDb> {
         let (res, rx) = oneshot::channel();
         self.tx.send(StateAccessRequest::ServerStatus(res)).await;
-        rx.await.map_err(|_| DbError::DbEngineDown)
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)
     }
 
-    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, DbError> {
+    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, ErrorDb> {
         let (res, rx) = oneshot::channel();
         /*
                 Invoicee {
@@ -417,7 +399,7 @@ impl State {
                 res,
             }))
             .await;
-        rx.await.map_err(|_| DbError::DbEngineDown)
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)
     }
 
     pub fn interface(&self) -> Self {
@@ -436,13 +418,13 @@ impl State {
         }
 */
     /*
-        pub fn currency_properties(&self, currency_name: &str) -> Result<&CurrencyProperties, DbError> {
+        pub fn currency_properties(&self, currency_name: &str) -> Result<&CurrencyProperties, ErrorDb> {
             self.currencies
                 .get(currency_name)
-                .ok_or(DbError::CurrencyKeyNotFound)
+                .ok_or(ErrorDb::CurrencyKeyNotFound)
         }
 
-        pub fn currency_info(&self, currency_name: &str) -> Result<CurrencyInfo, DbError> {
+        pub fn currency_info(&self, currency_name: &str) -> Result<CurrencyInfo, ErrorDb> {
             let currency = self.currency_properties(currency_name)?;
             Ok(CurrencyInfo {
                 currency: currency_name.to_string(),

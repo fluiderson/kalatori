@@ -1,18 +1,5 @@
 use crate::{AssetId, PalletIndex};
 use std::marker::PhantomData;
-use subxt::ext::{
-    codec::{Encode, Output},
-    scale_decode::{
-        self,
-        error::ErrorKind,
-        visitor::{
-            types::{Composite, Tuple},
-            TypeIdFor,
-        },
-        DecodeAsType, IntoVisitor, TypeResolver, Visitor,
-    },
-    scale_encode::{self, EncodeAsType},
-};
 
 #[derive(Clone, Debug)]
 pub enum Asset {
@@ -25,6 +12,7 @@ impl Asset {
     const MULTI_LOCATION: &'static str = "MultiLocation";
 }
 
+/*
 pub struct AssetVisitor<R>(PhantomData<R>);
 
 fn try_into_asset_id(
@@ -191,9 +179,6 @@ impl Encode for Asset {
 }
 
 #[derive(EncodeAsType, DecodeAsType, Encode)]
-#[encode_as_type(crate_path = "subxt::ext::scale_encode")]
-#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
-#[codec(crate = subxt::ext::codec)]
 struct MultiLocation {
     parents: u8,
     interior: Junctions,
@@ -212,18 +197,12 @@ impl MultiLocation {
 }
 
 #[derive(EncodeAsType, DecodeAsType, Encode)]
-#[encode_as_type(crate_path = "subxt::ext::scale_encode")]
-#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
-#[codec(crate = subxt::ext::codec)]
 enum Junctions {
     #[codec(index = 2)]
     X2(Junction, Junction),
 }
 
 #[derive(EncodeAsType, DecodeAsType, Encode)]
-#[encode_as_type(crate_path = "subxt::ext::scale_encode")]
-#[decode_as_type(crate_path = "subxt::ext::scale_decode")]
-#[codec(crate = subxt::ext::codec)]
 enum Junction {
     #[codec(index = 4)]
     PalletInstance(PalletIndex),
@@ -242,3 +221,4 @@ impl Junction {
         }
     }
 }
+*/

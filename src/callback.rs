@@ -3,9 +3,8 @@ use crate::{
         CurrencyInfo, OrderInfo, OrderStatus, PaymentStatus, ServerInfo, TokenKind,
         WithdrawalStatus,
     },
-    AccountId, Balance,
+    AccountId32, Balance,
 };
-use subxt::ext::sp_core::crypto::Ss58Codec;
 use tokio::task;
 
 pub const MODULE: &str = module_path!();
@@ -13,13 +12,14 @@ pub const MODULE: &str = module_path!();
 pub async fn callback(
     path: String,
     order: String,
-    recipient: AccountId,
+    recipient: AccountId32,
     debug: bool,
     remark: String,
     amount: Balance,
     rpc_url: String,
-    paym_acc: AccountId,
+    paym_acc: AccountId32,
 ) {
+    /*
     let req = ureq::post(&path);
 
     task::spawn_blocking(move || {
@@ -55,4 +55,5 @@ pub async fn callback(
     })
     .await
     .unwrap();
+    */
 }

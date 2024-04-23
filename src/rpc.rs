@@ -1,51 +1,31 @@
 use crate::{
-    asset::Asset,
+    chain::{base58prefix, pallet_index, storage_key, unit},
     database::{Invoicee, State},
+    error::{Error, ErrorChain, NotHex},
     server::{
         CurrencyProperties,
     },
-    AccountId, AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
-    Nonce, OnlineClient, PalletIndex, RuntimeConfig, TaskTracker, Timestamp,
+    utils::unhex,
+    AccountId32, AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
+    Nonce, PalletIndex, TaskTracker, Timestamp,
 };
-use anyhow::{Context, Result};
+use frame_metadata::{v15::RuntimeMetadataV15, RuntimeMetadata};
+use jsonrpsee::core::client::ClientT;
+use jsonrpsee::rpc_params;
+use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
+use primitive_types::H256;
 use scale_info::TypeDef;
+use parity_scale_codec::DecodeAll;
 use serde::{Deserialize, Deserializer};
+use serde_json::{Map, Number, Value};
 use std::{
     borrow::Cow,
     collections::{hash_map::Entry, HashMap},
-    error::Error,
-    fmt::{self, Debug, Display, Formatter},
+    fmt::Debug,
     num::NonZeroU64,
-    sync::Arc,
 };
-use subxt::{
-    backend::{
-        legacy::{LegacyBackend, LegacyRpcMethods},
-        rpc::{reconnecting_rpc_client::Client, RpcClient, RpcSubscription},
-        Backend, BackendExt, RuntimeVersion,
-    },
-    config::{DefaultExtrinsicParamsBuilder, Header},
-    constants::ConstantsClient,
-    dynamic::{self, At, Value},
-    error::RpcError,
-    ext::{
-        futures::TryFutureExt,
-        scale_decode::DecodeAsType,
-        scale_value,
-        sp_core::{
-            crypto::{Ss58AddressFormat},
-            sr25519::Pair,
-        },
-    },
-    runtime_api::RuntimeApiClient,
-    storage::{Storage, StorageClient},
-    tx::{PairSigner, SubmittableExtrinsic},
-    Config, Metadata,
-};
-use tokio::sync::{
-    mpsc::{self, UnboundedSender},
-    oneshot::{self, Sender},
-};
+use substrate_parser::{AsMetadata, cards::{ExtendedData, ParsedData}, decode_all_as_type, ShortSpecs};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 pub const MODULE: &str = module_path!();
@@ -67,6 +47,7 @@ const BABE: &str = "Babe";
 
 const AURA: &str = "AuraApi";
 
+/*
 type ConnectedChainsChannel = (
     Sender<Option<(String, ConnectedChain)>>,
     (String, ConnectedChain),
@@ -79,10 +60,10 @@ type CurrenciesChannel = (
 
 struct AssetsInfoFetcher<'a> {
     assets: (AssetInfo, Vec<AssetInfo>),
-    storage: &'a Storage<RuntimeConfig, OnlineClient>,
     pallet_index: Option<PalletIndex>,
 }
-
+*/
+/*
 async fn fetch_finalized_head_number_and_hash(
     methods: &LegacyRpcMethods<RuntimeConfig>,
 ) -> Result<(BlockNumber, BlockHash)> {
@@ -98,57 +79,12 @@ async fn fetch_finalized_head_number_and_hash(
 
     Ok((head.block.header.number, head_hash))
 }
-
-async fn fetch_runtime(
-    methods: &LegacyRpcMethods<RuntimeConfig>,
-    backend: &impl Backend<RuntimeConfig>,
-    at: BlockHash,
-) -> Result<(Metadata, RuntimeVersion)> {
-    Ok((
-        fetch_metadata(backend, at)
-            .await
-            .context("failed to fetch metadata")?,
-        methods
-            .state_get_runtime_version(Some(at))
-            .await
-            .map(|runtime_version| RuntimeVersion {
-                spec_version: runtime_version.spec_version,
-                transaction_version: runtime_version.transaction_version,
-            })
-            .context("failed to fetch the runtime version")?,
-    ))
-}
-
-async fn fetch_metadata(backend: &impl Backend<RuntimeConfig>, at: BlockHash) -> Result<Metadata> {
-    const LATEST_SUPPORTED_METADATA_VERSION: u32 = 15;
-
-    backend
-        .metadata_at_version(LATEST_SUPPORTED_METADATA_VERSION, at)
-        .or_else(|error| async {
-            if let subxt::Error::Rpc(RpcError::ClientError(_)) | subxt::Error::Other(_) = error {
-                backend.legacy_metadata(at).await
-            } else {
-                Err(error)
-            }
-        })
-        .await
-        .map_err(Into::into)
-}
-
-fn fetch_constant<T: DecodeAsType>(
-    constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
-    constant: (&str, &str),
-) -> Result<T> {
-    constants
-        .at(&dynamic::constant(constant.0, constant.1))
-        .with_context(|| format!("failed to get the constant {constant:?}"))?
-        .as_type()
-        .with_context(|| format!("failed to decode the constant {constant:?}"))
-}
+*/
 
 #[derive(Debug)]
 struct ChainProperties {
-    address_format: Ss58AddressFormat,
+    specs: ShortSpecs,
+    metadata: RuntimeMetadataV15,
     existential_deposit: Option<Balance>,
     assets_pallet: Option<AssetsPallet>,
     block_hash_count: BlockNumber,
@@ -167,29 +103,28 @@ struct AssetProperties {
     min_balance: Balance,
     decimals: Decimals,
 }
-
+/*
 impl AssetProperties {
-    async fn fetch(storage: &Storage<RuntimeConfig, OnlineClient>, asset: AssetId) -> Result<Self> {
+    async fn fetch(asset: AssetId) -> Result<Self, ErrorChain> {
         Ok(Self {
-            min_balance: check_sufficiency_and_fetch_min_balance(storage, asset).await?,
-            decimals: fetch_asset_decimals(storage, asset).await?,
+            min_balance: check_sufficiency_and_fetch_min_balance(asset).await?,
+            decimals: fetch_asset_decimals(asset).await?,
         })
     }
-}
-
+}*/
+/*
 impl ChainProperties {
     async fn fetch(
         chain: &str,
-        _currencies: UnboundedSender<CurrenciesChannel>,
-        constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
+        currencies: Sender<CurrenciesChannel>,
         native_token_option: Option<NativeToken>,
         assets_fetcher: Option<AssetsInfoFetcher<'_>>,
         account_lifetime: BlockNumber,
         depth: Option<NonZeroU64>,
-    ) -> Result<Self> {
-        const ADDRESS_PREFIX: (&str, &str) = (SYSTEM, "SS58Prefix");
-        const EXISTENTIAL_DEPOSIT: (&str, &str) = (BALANCES, "ExistentialDeposit");
-        const BLOCK_HASH_COUNT: (&str, &str) = (SYSTEM, "BlockHashCount");
+    ) -> Result<Self, ErrorChain> {
+        //const ADDRESS_PREFIX: (&str, &str) = (SYSTEM, "SS58Prefix");
+        const EXISTENTIAL_DEPOSIT: "ExistentialDeposit";//(&str, &str) = (BALANCES, "ExistentialDeposit");
+        const BLOCK_HASH_COUNT: "BlockHashCount";//(&str, &str) = (SYSTEM, "BlockHashCount");
 
         /* wtf is this?
         let try_add_currency = |name, asset| async move {
@@ -220,6 +155,8 @@ impl ChainProperties {
             }
         };*/
 
+        let specs = specs();
+
         let assets_pallet = if let Some(AssetsInfoFetcher {
             assets: (last_asset_info, assets_info),
             storage,
@@ -230,7 +167,6 @@ impl ChainProperties {
                 assets: &mut HashMap<AssetId, AssetProperties>,
                 id: AssetId,
                 chain: &str,
-                storage: &Storage<RuntimeConfig, OnlineClient>,
             ) -> Result<()> {
                 match assets.entry(id) {
                     Entry::Occupied(_) => Err(anyhow::anyhow!(
@@ -262,19 +198,18 @@ impl ChainProperties {
             None
         };
 
-        let address_format = Ss58AddressFormat::custom(fetch_constant(constants, ADDRESS_PREFIX)?);
-        let block_hash_count = fetch_constant(constants, BLOCK_HASH_COUNT)?;
+        let block_hash_count = fetch_constant(constants, SYSTEM, BLOCK_HASH_COUNT)?;
 
         //Some(native_token.decimals),
 
         let existential_deposit = if let Some(_native_token) = native_token_option {
-            Some(fetch_constant(constants, EXISTENTIAL_DEPOSIT).map(Balance)?)
+            Some(fetch_constant(metadata, BALANCES, ).map(Balance)?)
         } else {
             None
         };
 
         let chain = Self {
-            address_format,
+            specs,
             existential_deposit,
             assets_pallet,
             block_hash_count,
@@ -284,17 +219,19 @@ impl ChainProperties {
 
         Ok(chain)
     }
-}
-
+}*/
+/*
 async fn check_sufficiency_and_fetch_min_balance(
-    storage: &Storage<RuntimeConfig, OnlineClient>,
+    client: &WsClient,
     asset: AssetId,
-) -> Result<Balance> {
+    block: BlockHash,
+) -> Result<Balance, ErrorChain> {
     const ASSET: &str = "Asset";
     const MIN_BALANCE: &str = "min_balance";
     const IS_SUFFICIENT: &str = "is_sufficient";
 
-    let asset_info = storage
+    let asset_info = storage_fetch(client, ASSETS, ASSET, block);
+    /*
         .fetch(&dynamic::storage(ASSETS, ASSET, vec![asset.into()]))
         .await
         .with_context(|| format!("failed to fetch asset {asset} info from a chain"))?
@@ -303,6 +240,7 @@ async fn check_sufficiency_and_fetch_min_balance(
         })?
         .to_value()
         .with_context(|| format!("failed to decode asset {asset} info"))?;
+    */
 
     let encoded_is_sufficient = asset_info
         .at(IS_SUFFICIENT)
@@ -327,16 +265,39 @@ async fn check_sufficiency_and_fetch_min_balance(
             encoded_min_balance.value
         )
     })
+}*/
+
+pub async fn storage_fetch(client: &WsClient, prefix: &str, storage_name: &str, block: &BlockHash) -> Result<String, ErrorChain> {
+    let key = storage_key(prefix, storage_name);
+    value_by_key_from_storage(client, &key, &hex::encode(block)).await
+} 
+
+pub async fn value_by_key_from_storage(
+    client: &WsClient,
+    whole_key: &str,
+    block_hash: &str,
+) -> Result<String, ErrorChain> {
+    let storage_value = client
+        .request("state_getStorage", rpc_params![whole_key, block_hash])
+        .await?;
+    if let Value::String(a) = storage_value {
+        Ok(a)
+    } else {
+        Err(ErrorChain::StorageValueFormat(whole_key.to_string()))
+    }
 }
 
+/*
 async fn fetch_asset_decimals(
-    storage: &Storage<RuntimeConfig, OnlineClient>,
+    client: &WsClient,
     asset: AssetId,
-) -> Result<Decimals> {
+    block: &BlockHash,
+) -> Result<Decimals, ErrorChain> {
     const METADATA: &str = "Metadata";
     const DECIMALS: &str = "decimals";
 
-    let asset_metadata = storage
+    let asset_metadata = storage_fetch(client, ASSETS, METADATA, block);
+        /*storage
         .fetch(&dynamic::storage(ASSETS, METADATA, vec![asset.into()]))
         .await
         .with_context(|| format!("failed to fetch asset {asset} metadata from a chain"))?
@@ -344,7 +305,7 @@ async fn fetch_asset_decimals(
             format!("received nothing after fetching asset {asset} metadata from a chain")
         })?
         .to_value()
-        .with_context(|| format!("failed to decode asset {asset} metadata"))?;
+        .with_context(|| format!("failed to decode asset {asset} metadata"))?;*/
     let encoded_decimals = asset_metadata
         .at(DECIMALS)
         .with_context(|| format!("{DECIMALS} field wasn't found in asset {asset} metadata"))?;
@@ -359,8 +320,8 @@ async fn fetch_asset_decimals(
     decimals.try_into().with_context(|| {
         format!("asset {asset} {DECIMALS:?} must be less than `u8`, got {decimals}")
     })
-}
-
+}*/
+/*
 pub async fn prepare(
     chains: Vec<Chain>,
     account_lifetime: Timestamp,
@@ -368,7 +329,7 @@ pub async fn prepare(
 ) -> Result<(
     HashMap<String, ConnectedChain>,
     HashMap<String, CurrencyProperties>,
-)> {
+), ErrorChain> {
     let mut connected_chains = HashMap::with_capacity(chains.len());
     let mut currencies = HashMap::with_capacity(
         chains
@@ -385,8 +346,8 @@ pub async fn prepare(
     );
 
     let (connected_chains_tx, mut connected_chains_rx) =
-        mpsc::unbounded_channel::<ConnectedChainsChannel>();
-    let (currencies_tx, mut currencies_rx) = mpsc::unbounded_channel::<CurrenciesChannel>();
+        mpsc::channel::<ConnectedChainsChannel>(1024);
+    let (currencies_tx, mut currencies_rx) = mpsc::channel::<CurrenciesChannel>(1024);
 
     let connected_chains_jh = tokio::spawn(async move {
         while let Some((tx, (name, chain))) = connected_chains_rx.recv().await {
@@ -450,54 +411,158 @@ pub async fn prepare(
     Ok((connected_chains_jh.await?, currencies_jh.await?))
 }
 
+/// fetch genesis hash, must be a hexadecimal string transformable into
+/// H256 format
+async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
+    let genesis_hash_request: Value = client
+        .request(
+            "chain_getBlockHash",
+            rpc_params![Value::Number(Number::from(0u8))],
+        )
+        .await
+        .map_err(ErrorChain::Client)?;
+    match genesis_hash_request {
+        Value::String(x) => {
+            let genesis_hash_raw = unhex(&x, NotHex::GenesisHash)?;
+            Ok(H256(
+                genesis_hash_raw
+                    .try_into()
+                    .map_err(|_| ErrorChain::GenesisHashLength)?,
+            ))
+        },
+        _ => return Err(ErrorChain::GenesisHashFormat),
+    }
+
+}
+
+/// fetch current block hash, to request later the metadata and specs for
+/// the same block
+async fn block_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
+        let block_hash_request: Value = client
+            .request("chain_getBlockHash", rpc_params![])
+            .await
+            .map_err(ErrorChain::Client)?;
+        match block_hash_request {
+            Value::String(x) => {
+                let block_hash_raw = unhex(&x, NotHex::BlockHash)?;
+            Ok(H256(
+                block_hash_raw
+                    .try_into()
+                    .map_err(|_| ErrorChain::BlockHashLength)?,
+            ))
+            }
+            _ => return Err(ErrorChain::BlockHashFormat),
+        }
+}
+
+/// fetch metadata at known block
+async fn metadata(client: &WsClient, block: &BlockHash) -> Result<RuntimeMetadataV15, ErrorChain> {
+    let block_hash_string = block.to_string();
+        let metadata_request: Value = client
+            .request(
+                "state_call",
+                rpc_params![
+                    "Metadata_metadata_at_version",
+                    "0f000000",
+                    &block_hash_string
+                ],
+            )
+            .await
+            .map_err(ErrorChain::Client)?;
+        match metadata_request {
+            Value::String(x) => {
+                let metadata_request_raw = unhex(&x, NotHex::Metadata)?;
+                let maybe_metadata_raw =
+                    Option::<Vec<u8>>::decode_all(&mut &metadata_request_raw[..])
+                        .map_err(|_| ErrorChain::RawMetadataNotDecodeable)?;
+                if let Some(meta_v15_bytes) = maybe_metadata_raw {
+                    if meta_v15_bytes.starts_with(b"meta") {
+                        match RuntimeMetadata::decode_all(&mut &meta_v15_bytes[4..]) {
+                            Ok(RuntimeMetadata::V15(runtime_metadata_v15)) => return Ok(runtime_metadata_v15),
+                            Ok(_) => return Err(ErrorChain::NoMetadataV15),
+                            Err(_) => return Err(ErrorChain::MetadataNotDecodeable),
+                        }
+                    } else {
+                        return Err(ErrorChain::NoMetaPrefix);
+                    }
+                } else {
+                    return Err(ErrorChain::NoMetadataV15);
+                }
+            }
+            _ => return Err(ErrorChain::MetadataFormat),
+        };
+}
+
+// fetch specs at known block
+async fn specs(client: &WsClient, metadata: &RuntimeMetadataV15, block_hash: &BlockHash) -> Result<ShortSpecs, ErrorChain> {
+        let specs_request: Value = client
+            .request("system_properties", rpc_params![hex::encode(&block_hash.0)])
+            .await?;
+            //.map_err(ErrorChain::Client)?;
+        match specs_request {
+            Value::Object(properties) => system_properties_to_short_specs(&properties, &metadata),
+            _ => return Err(ErrorChain::PropertiesFormat),
+        }
+}
+
+
+async fn state_call(client: &WsClient, params: RpcParams) -> Result<String, ErrorChain> {
+    let res = client
+        .request(
+            "state_call",
+            params,
+        )
+        .await
+        .map_err(ErrorChain::Client)?
+    if let Value::String(a) = res { Ok(a) } else { Err(ErrorChain::StateCallResponse(res)) }
+}
+
+
+
 #[tracing::instrument(skip_all, fields(chain = chain.name))]
 async fn prepare_chain(
     chain: Chain,
-    connected_chains: UnboundedSender<ConnectedChainsChannel>,
-    currencies: UnboundedSender<CurrenciesChannel>,
+    connected_chains: Sender<ConnectedChainsChannel>,
+    currencies: Sender<CurrenciesChannel>,
     account_lifetime: Timestamp,
     depth_option: Option<Timestamp>,
-) -> Result<Cow<'static, str>> {
+) -> Result<Cow<'static, str>, ErrorChain> {
     let chain_name = chain.name;
     let endpoint = chain
         .endpoints
-        .first()
-        .context("chain doesn't have any `endpoints` in the config")?;
-    let rpc_client = RpcClient::new(
-        Client::builder()
-            .build(endpoint.into())
+        .first().ok_or(ErrorChain::EmptyEndpoints)?;
+    let client = WsClientBuilder::default()
+            .build(&endpoint)
             .await
-            .context("failed to construct the RPC client")?,
-    );
+            .map_err(ErrorChain::Client)?;
+   
+    let genesis = genesis_hash(&client).await?;
 
-    let methods = LegacyRpcMethods::new(rpc_client.clone());
-    let backend = Arc::new(LegacyBackend::builder().build(rpc_client.clone()));
+    let finalized_hash = block_hash(&client).await?;
+    let block_hash_string = finalized_hash.to_string();
+    let metadata = metadata(&client, &finalized_hash).await?;
+    let specs = specs(&client, &metadata, &finalized_hash).await?;
 
-    let genesis = methods
-        .genesis_hash()
-        .await
-        .context("failed to fetch the genesis hash")?;
-    let (_finalized_number, finalized_hash) = fetch_finalized_head_number_and_hash(&methods).await?;
-    let (metadata, runtime_version) = fetch_runtime(&methods, &*backend, finalized_hash).await?;
-
-    let client = OnlineClient::from_backend_with(
-        genesis,
-        runtime_version,
-        metadata.clone(),
-        backend.clone(),
-    )
-    .context("failed to construct the API client")?;
-    let constants = client.constants();
-
-    let (block_time, runtime_api) = if metadata.pallet_by_name(BABE).is_some() {
-        const EXPECTED_BLOCK_TIME: (&str, &str) = (BABE, "ExpectedBlockTime");
-
-        (fetch_constant(&constants, EXPECTED_BLOCK_TIME)?, None)
+    //TODO: we don't have to require this mechanism at all
+    let block_time = if pallet_index(&metadata, BABE).is_some() {
+        match fetch_constant(&metadata, BABE, "ExpectedBlockTime").ok_or(ErrorChain::BabeExpectedBlockTime)?.data {
+            
+        }
     } else {
-        const SLOT_DURATION: &str = "slot_duration";
+        //const SLOT_DURATION: &str = "slot_duration";
 
-        let runtime_api = client.runtime_api();
+        state_call(
+            &client, 
+            rpc_params![
+                    "Aura_slot_duration",
+                    &block_hash_string
+                ],
+        )
+            .await?
+            .parse::<u64>()
+            .map_err(|_| ErrorChain::AuraSlotDurationFormat)?
 
+        /*
         (
             runtime_api
                 .at(finalized_hash)
@@ -511,18 +576,19 @@ async fn prepare_chain(
                 .as_type()
                 .context("failed to decode Aura's slot duration")?,
             Some(runtime_api),
-        )
+        )*/
     };
 
     let block_time_non_zero =
-        NonZeroU64::new(block_time).context("block interval can't equal 0")?;
+        NonZeroU64::new(block_time).ok_or(ErrorChain::ZeroBlockTime)?;//.context("block interval can't equal 0")?;
 
     let account_lifetime_in_blocks = account_lifetime / block_time_non_zero;
-
+/* TODO
     if account_lifetime_in_blocks == 0 {
         anyhow::bail!("block interval is longer than the given `account-lifetime`");
     }
-
+*/
+/*
     let depth_in_blocks = if let Some(depth) = depth_option {
         let depth_in_blocks = depth / block_time_non_zero;
 
@@ -537,12 +603,9 @@ async fn prepare_chain(
     } else {
         None
     };
-
+*/
     let rpc = endpoint.into();
-
-    let storage_client = client.storage();
-    let storage = storage_client.at(finalized_hash);
-
+/*
     let assets_info_fetcher = if let Some(assets) = chain
         .asset
         .and_then(|mut assets| assets.pop().map(|latest| (latest, assets)))
@@ -562,14 +625,14 @@ async fn prepare_chain(
         let types = metadata.types();
 
         let TypeDef::Composite(ref extension_type) = types
-            .resolve(extension)
+            .resolve(extension);/*
             .with_context(|| {
                 format!("failed to resolve the type of the {CHARGE_ASSET_TX_PAYMENT:?} extension")
             })?
             .type_def
         else {
             anyhow::bail!("{CHARGE_ASSET_TX_PAYMENT:?} extension has an unexpected type");
-        };
+        };*/
 
         let asset_id_field = extension_type
             .fields
@@ -579,14 +642,15 @@ async fn prepare_chain(
                     .name
                     .as_ref()
                     .and_then(|name| (name == ASSET_ID).then_some(field.ty.id))
-            })
+            });/*
             .with_context(|| {
                 format!(
                 "failed to find the field {ASSET_ID:?} in the {CHARGE_ASSET_TX_PAYMENT:?} extension"
             )
-            })?;
+            })?;*/
 
-        let TypeDef::Variant(ref option) = types.resolve(asset_id_field).with_context(|| {
+        let TypeDef::Variant(ref option) = types.resolve(asset_id_field);
+            /*.with_context(|| {
             format!(
                 "failed to resolve the type of the field {ASSET_ID:?} in the {CHARGE_ASSET_TX_PAYMENT:?} extension"
             )
@@ -594,7 +658,7 @@ async fn prepare_chain(
             anyhow::bail!(
                 "field {ASSET_ID:?} in the {CHARGE_ASSET_TX_PAYMENT:?} extension has an unexpected type"
             );
-        };
+        };*/
 
         let asset_id_some = option.variants.iter().find_map(|variant| {
             if variant.name == SOME {
@@ -611,24 +675,23 @@ async fn prepare_chain(
             } else {
                 None
             }
-        }).with_context(|| format!(
+        })/*.with_context(|| format!(
             "field {ASSET_ID:?} in the {CHARGE_ASSET_TX_PAYMENT:?} extension doesn't contain the {SOME:?} variant"
-        ))?;
+        ))?*/;
 
-        let asset_id = &types.resolve(asset_id_some).with_context(|| {
+        let asset_id = &types.resolve(asset_id_some);/*.with_context(|| {
             format!(
                 "failed to resolve the type of the {SOME:?} variant of the field {ASSET_ID:?} in the {CHARGE_ASSET_TX_PAYMENT:?} extension"
             )
-        })?.type_def;
+        })?.type_def;*/
 
         let pallet_index = if let TypeDef::Primitive(_) = asset_id {
             None
         } else {
-            Some(metadata.pallet_by_name_err(ASSETS)?.index())
+            pallet_index(metadata, ASSETS)
         };
         Some(AssetsInfoFetcher {
             assets,
-            storage: &storage,
             pallet_index,
         })
     } else {
@@ -640,11 +703,11 @@ async fn prepare_chain(
     } else {
         None
     };
-
+*/
+    /*
     let properties = ChainProperties::fetch(
         &chain_name,
         currencies,
-        &constants,
         chain.native_token,
         assets_info_fetcher,
         account_lifetime_in_blocks,
@@ -653,15 +716,11 @@ async fn prepare_chain(
     .await?;
 
     let connected_chain = ConnectedChain {
-        methods,
+        //methods,
         genesis,
         rpc,
         client,
-        storage,
         properties,
-        constants,
-        runtime_api,
-        backend,
     };
 
     let (tx, rx) = oneshot::channel();
@@ -675,92 +734,61 @@ async fn prepare_chain(
             "found `[chain]`s with the same name ({name:?}) in the config, all chain names must be unique",
         );
     }
-
+*/
     Ok("".into())
 }
-
+*/
 #[derive(Debug)]
 pub struct Currency {
     chain: String,
     asset: Option<AssetId>,
 }
 
+#[derive(Debug)]
 pub struct ConnectedChain {
     rpc: String,
-    methods: LegacyRpcMethods<RuntimeConfig>,
-    backend: Arc<LegacyBackend<RuntimeConfig>>,
-    client: OnlineClient,
+    client: WsClient,
     genesis: BlockHash,
     properties: ChainProperties,
-    constants: ConstantsClient<RuntimeConfig, OnlineClient>,
-    storage: Option<StorageClient<RuntimeConfig, OnlineClient>>,
-    runtime_api: Option<RuntimeApiClient<RuntimeConfig, OnlineClient>>,
 }
 
-impl Debug for ConnectedChain {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct(stringify!(ConnectedChain))
-            .field("rpc", &self.rpc)
-            .field("genesis", &self.genesis)
-            .field("properties", &self.properties)
-            .finish_non_exhaustive()
-    }
-}
 
-#[derive(Debug)]
-struct Shutdown;
+//#[derive(Debug)]
+//struct Shutdown;
 
-impl Error for Shutdown {}
-
-// Not used, but required for the `anyhow::Context` trait.
-impl Display for Shutdown {
-    fn fmt(&self, _: &mut Formatter<'_>) -> fmt::Result {
-        unimplemented!()
-    }
-}
+//impl Error for Shutdown {}
 
 pub struct Processor {
     state: State,
-    recipient: AccountId,
-    backend: Arc<LegacyBackend<RuntimeConfig>>,
+    recipient: AccountId32,
     shutdown_notification: CancellationToken,
-    methods: LegacyRpcMethods<RuntimeConfig>,
-    client: OnlineClient,
-    storage: StorageClient<RuntimeConfig, OnlineClient>,
 }
 
 impl Processor {
     pub async fn ignite(
         rpc: String,
-        recipient: AccountId,
+        recipient: AccountId32,
         state: State,
         notif: CancellationToken,
-    ) -> Result<Cow<'static, str>> {
-        let client = Client::builder().build(rpc.clone()).await.unwrap();
-        let rpc_c = RpcClient::new(client);
-        let methods = LegacyRpcMethods::new(rpc_c.clone());
-        let backend = Arc::new(LegacyBackend::builder().build(rpc_c));
-        let onl = OnlineClient::from_backend(backend.clone()).await.unwrap();
-        let st = onl.storage();
+    ) -> Result<Cow<'static, str>, Error> {
+        let client = WsClientBuilder::default().build(rpc.clone()).await.map_err(ErrorChain::Client)?;
 
         Processor {
             state,
             recipient,
-            backend,
             shutdown_notification: notif,
-            methods,
-            client: onl,
-            storage: st,
-        }
+        };
+        Ok("The RPC module is shut down.".into())
+        /*
         .execute()
         .await
         .or_else(|error| {
             error
                 .downcast()
                 .map(|Shutdown| "The RPC module is shut down.".into())
-        })
+        })*/
     }
-
+/*
     async fn execute(mut self) -> Result<Cow<'static, str>> {
         let (head_number, _head_hash) = self
             .finalized_head_number_and_hash()
@@ -807,8 +835,8 @@ impl Processor {
             .chain_subscribe_finalized_heads()
             .await
             .context("failed to subscribe to finalized heads")
-    }
-
+    }*/
+/*
     async fn process_skipped(
         &self,
         next_unscanned: &mut BlockNumber,
@@ -832,8 +860,8 @@ impl Processor {
         *next_unscanned = head;
 
         Ok(())
-    }
-
+    }*/
+/*
     async fn process_finalized_heads(
         &mut self,
         mut subscription: RpcSubscription<<RuntimeConfig as Config>::Header>,
@@ -868,8 +896,8 @@ impl Processor {
         }
 
         Ok(())
-    }
-
+    }*/
+/*
     async fn process_block(&self, number: BlockNumber, hash: BlockHash) -> Result<()> {
         tracing::debug!("Processing the block: {number}.");
 
@@ -969,7 +997,7 @@ impl Processor {
     async fn balance(&self, hash: BlockHash, account: &AccountId) -> Result<Balance> {
         const ACCOUNT: &str = "Account";
         const BALANCE: &str = "balance";
-
+/* TODO: this should fetch balance and also considet native-nonnative shit wtf is this?
         if let Some(account_info) = self
             .storage
             .at(hash)
@@ -996,34 +1024,38 @@ impl Processor {
             })
         } else {
             Ok(Balance(0))
-        }
+        }*/
     }
 
     async fn batch_transfer(
         &self,
-        _nonce: Nonce,
+        nonce: Nonce,
         block_hash_count: BlockNumber,
         signer: &PairSigner<RuntimeConfig, Pair>,
         transfers: Vec<Value>,
     ) -> Result<SubmittableExtrinsic<RuntimeConfig, OnlineClient>> {
         const FORCE_BATCH: &str = "force_batch";
 
-        let call = dynamic::tx(UTILITY, FORCE_BATCH, vec![Value::from(transfers)]);
+        //let call = dynamic::tx(UTILITY, FORCE_BATCH, vec![Value::from(transfers)]);
         let (number, hash) = self
             .finalized_head_number_and_hash()
             .await
             .context("failed to get the chain head while constructing a transaction")?;
+        /*
         let extensions = DefaultExtrinsicParamsBuilder::new()
             .mortal_unchecked(number.into(), hash, block_hash_count.into())
             .tip_of(0, Asset::Id(1337));
-
+*/
+        //TODO create tx
+        /*
         self.client
             .tx()
             .create_signed(&call, signer, extensions.build())
             .await
             .context("failed to create a transfer transaction")
+        */
     }
-
+*/
     // async fn current_nonce(&self, account: &AccountId) -> Result<Nonce> {
     //     self.api
     //         .blocks
@@ -1079,7 +1111,7 @@ impl Processor {
     //     Ok(())
     // }
 }
-
+/*
 fn construct_transfer(to: &AccountId, amount: u128) -> Value {
     const TRANSFER_KEEP_ALIVE: &str = "transfer";
 
@@ -1096,11 +1128,11 @@ fn construct_transfer(to: &AccountId, amount: u128) -> Value {
     )
     .into_value()
 }
-
+*/
 #[derive(Debug)]
 struct InvoiceChanges {
     invoice: Invoicee,
-    incoming: HashMap<AccountId, Balance>,
+    incoming: HashMap<AccountId32, Balance>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -1108,17 +1140,17 @@ struct Transferred {
     asset_id: u32,
     // The implementation of `Deserialize` for `AccountId32` works only with strings.
     #[serde(deserialize_with = "account_deserializer")]
-    from: AccountId,
+    from: AccountId32,
     #[serde(deserialize_with = "account_deserializer")]
-    to: AccountId,
+    to: AccountId32,
     amount: u128,
 }
 
-fn account_deserializer<'de, D>(deserializer: D) -> Result<AccountId, D::Error>
+fn account_deserializer<'de, D>(deserializer: D) -> Result<AccountId32, D::Error>
 where
     D: Deserializer<'de>,
 {
-    <([u8; 32],)>::deserialize(deserializer).map(|address| AccountId::new(address.0))
+    <([u8; 32],)>::deserialize(deserializer).map(|address| AccountId32(address.0))
 }
 
 // impl Transferred {

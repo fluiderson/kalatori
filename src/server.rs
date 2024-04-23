@@ -1,7 +1,7 @@
 use crate::{
     database::{State}, AssetId, BlockNumber, Decimals, ExtrinsicIndex,
+    error::{Error, ErrorOrder, ErrorServer},
 };
-use anyhow::{Context, Result};
 use axum::{
     extract::{self, rejection::RawPathParamsRejection, MatchedPath, Query, RawPathParams},
     http::{header, HeaderName, StatusCode},
@@ -21,6 +21,7 @@ const AMOUNT: &str = "amount";
 const CURRENCY: &str = "currency";
 const CALLBACK: &str = "callback";
 
+#[derive(Debug)]
 pub struct OrderQuery {
     pub order: String,
     pub amount: f64,
@@ -28,7 +29,7 @@ pub struct OrderQuery {
     pub currency: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct OrderStatus {
     pub order: String,
     pub payment_status: PaymentStatus,
@@ -39,7 +40,7 @@ pub struct OrderStatus {
     pub order_info: OrderInfo,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct OrderInfo {
     pub withdrawal_status: WithdrawalStatus,
     pub amount: f64,
@@ -49,7 +50,7 @@ pub struct OrderInfo {
     pub payment_account: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PaymentStatus {
     Pending,
@@ -57,7 +58,7 @@ pub enum PaymentStatus {
     Unknown,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WithdrawalStatus {
     Waiting,
@@ -65,27 +66,27 @@ pub enum WithdrawalStatus {
     Completed,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ServerStatus {
     pub description: ServerInfo,
     pub supported_currencies: HashMap<std::string::String, CurrencyProperties>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct ServerHealth {
     description: ServerInfo,
     connected_rpcs: Vec<RpcInfo>,
     status: Health,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct RpcInfo {
     rpc_url: String,
     chain_name: String,
     status: Health,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Health {
     Ok,
@@ -93,7 +94,7 @@ enum Health {
     Critical,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct CurrencyInfo {
     pub currency: String,
     pub chain_name: String,
@@ -121,7 +122,7 @@ pub enum TokenKind {
     Balances,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ServerInfo {
     pub version: &'static str,
     pub instance_id: String,
@@ -129,7 +130,7 @@ pub struct ServerInfo {
     pub kalatori_remark: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct TransactionInfo {
     #[serde(skip_serializing_if = "Option::is_none", flatten)]
     finalized_tx: Option<FinalizedTx>,
@@ -142,13 +143,14 @@ pub struct TransactionInfo {
     status: TxStatus,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct FinalizedTx {
     block_number: BlockNumber,
     position_in_block: ExtrinsicIndex,
     timestamp: String,
 }
 
+#[derive(Debug)]
 enum Amount {
     All,
     Exact(f64),
@@ -161,7 +163,7 @@ fn amount_serializer<S: Serializer>(amount: &Amount, serializer: S) -> Result<S:
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum TxStatus {
     Pending,
@@ -173,40 +175,32 @@ pub async fn new(
     shutdown_notification: CancellationToken,
     host: SocketAddr,
     state: State,
-) -> Result<impl Future<Output = Result<Cow<'static, str>>>> {
+) -> Result<impl Future<Output = Result<Cow<'static, str>, Error>>, ErrorServer> {
     let v2: Router<State> = Router::new()
         .route("/order/:order_id", routing::post(order))
         .route("/status", routing::get(status));
     let app = Router::new().nest("/v2", v2).with_state(state);
 
     let listener = TcpListener::bind(host)
-        .await
-        .with_context(|| format!("failed to bind the TCP listener to {host:?}"))?;
+        .await.map_err(|_| ErrorServer::TcpListenerBind(host))?;
 
     Ok(async {
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_notification.cancelled_owned())
-            .await?;
+            .await.map_err(|_| ErrorServer::ThreadError)?;
 
         Ok("The server module is shut down.".into())
     })
 }
 
+#[derive(Debug, Serialize)]
 enum OrderSuccess {
     Created,
     Found,
 }
 
-enum OrderError {
-    LessThanExistentialDeposit(f64),
-    UnknownCurrency,
-    MissingParameter(String),
-    InvalidParameter(String),
-    AlreadyProcessed(Box<OrderStatus>),
-    InternalError,
-}
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct InvalidParameter {
     parameter: String,
     message: String,
@@ -217,42 +211,42 @@ async fn process_order(
     matched_path: &MatchedPath,
     path_result: Result<RawPathParams, RawPathParamsRejection>,
     query: &HashMap<String, String>,
-) -> Result<(OrderStatus, OrderSuccess), OrderError> {
+) -> Result<(OrderStatus, OrderSuccess), ErrorOrder> {
     const ORDER_ID: &str = "order_id";
 
     let path_parameters =
-        path_result.map_err(|_| OrderError::InvalidParameter(matched_path.as_str().to_owned()))?;
+        path_result.map_err(|_| ErrorOrder::InvalidParameter(matched_path.as_str().to_owned()))?;
     let order = path_parameters
         .iter()
         .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
-        .ok_or_else(|| OrderError::MissingParameter(ORDER_ID.into()))?
+        .ok_or_else(|| ErrorOrder::MissingParameter(ORDER_ID.into()))?
         .to_owned();
 
     if query.is_empty() {
         let order_status = state
             .order_status(&order)
             .await
-            .map_err(|_| OrderError::InternalError)?;
+            .map_err(|_| ErrorOrder::InternalError)?;
         Ok((order_status, OrderSuccess::Found))
     } else {
         let get_parameter = |parameter: &str| {
             query
                 .get(parameter)
-                .ok_or_else(|| OrderError::MissingParameter(parameter.into()))
+                .ok_or_else(|| ErrorOrder::MissingParameter(parameter.into()))
         };
 
         let currency = get_parameter(CURRENCY)?.to_owned();
         let callback = get_parameter(CALLBACK)?.to_owned();
         let amount = get_parameter(AMOUNT)?
             .parse()
-            .map_err(|_| OrderError::InvalidParameter(AMOUNT.into()))?;
+            .map_err(|_| ErrorOrder::InvalidParameter(AMOUNT.into()))?;
 
         if currency != "USDC" {
-            return Err(OrderError::UnknownCurrency);
+            return Err(ErrorOrder::UnknownCurrency);
         }
 
         if amount < 0.07 {
-            return Err(OrderError::LessThanExistentialDeposit(0.07));
+            return Err(ErrorOrder::LessThanExistentialDeposit(0.07));
         }
 
         let order_status = state
@@ -263,7 +257,7 @@ async fn process_order(
                 currency,
             })
             .await
-            .map_err(|_| OrderError::InternalError)?;
+            .map_err(|_| ErrorOrder::InternalError)?;
 
         Ok((order_status, OrderSuccess::Created))
     }
@@ -283,7 +277,7 @@ async fn order(
         }
         .into_response(),
         Err(error) => match error {
-            OrderError::LessThanExistentialDeposit(existential_deposit) => (
+            ErrorOrder::LessThanExistentialDeposit(existential_deposit) => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
                     parameter: AMOUNT.into(),
@@ -291,7 +285,7 @@ async fn order(
                 }]),
             )
                 .into_response(),
-            OrderError::UnknownCurrency => (
+            ErrorOrder::UnknownCurrency => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
                     parameter: CURRENCY.into(),
@@ -299,7 +293,7 @@ async fn order(
                 }]),
             )
                 .into_response(),
-            OrderError::MissingParameter(parameter) => (
+            ErrorOrder::MissingParameter(parameter) => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
                     parameter,
@@ -307,7 +301,7 @@ async fn order(
                 }]),
             )
                 .into_response(),
-            OrderError::InvalidParameter(parameter) => (
+            ErrorOrder::InvalidParameter(parameter) => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
                     parameter,
@@ -315,10 +309,10 @@ async fn order(
                 }]),
             )
                 .into_response(),
-            OrderError::AlreadyProcessed(order_status) => {
+            ErrorOrder::AlreadyProcessed(order_status) => {
                 (StatusCode::CONFLICT, Json(order_status)).into_response()
             }
-            OrderError::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            ErrorOrder::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
     }
 }
