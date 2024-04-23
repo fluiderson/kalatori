@@ -1,17 +1,16 @@
 use crate::{
-    error::ErrorDb,
+    error::{Error, ErrorDb},
     server::{CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
     AccountId32, AssetId, Balance, BlockNumber, Nonce, Timestamp,
 };
-use parity_scale_codec::{Compact, Encode, Decode};
+use parity_scale_codec::{Compact, Decode, Encode};
 use redb::{
     backends::{FileBackend, InMemoryBackend},
     Database, ReadableTable, TableDefinition, TypeName, Value,
 };
 use serde::Deserialize;
 use std::{collections::HashMap, fs::File, io::ErrorKind};
-use substrate_crypto_light::sr25519::Pair;
-use tokio::sync::{oneshot};
+use tokio::sync::oneshot;
 
 pub const MODULE: &str = module_path!();
 
@@ -153,20 +152,44 @@ pub struct ConfigWoChains {
     pub rpc: String,
 }
 
-enum StateAccessRequest {
-    GetInvoiceStatus(GetInvoiceStatus),
-    CreateInvoice(CreateInvoice),
-    ServerStatus(oneshot::Sender<ServerStatus>),
-}
+pub struct DatabaseServer {}
 
-struct GetInvoiceStatus {
-    pub order: String,
-    pub res: oneshot::Sender<OrderStatus>,
-}
+impl DatabaseServer {
+    pub fn init(path_option: Option<String>) -> Result<Self, Error> {
+        let builder = Database::builder();
+        let is_new;
 
-struct CreateInvoice {
-    pub order_query: OrderQuery,
-    pub res: oneshot::Sender<OrderStatus>,
+        let database = if let Some(path) = path_option {
+            tracing::info!("Creating/Opening the database at {path:?}.");
+
+            match File::create_new(&path) {
+                Ok(file) => {
+                    is_new = true;
+
+                    FileBackend::new(file)
+                        .and_then(|backend| builder.create_with_backend(backend))
+                        .map_err(ErrorDb::DbStartError)?
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    is_new = false;
+
+                    builder.create(path).map_err(ErrorDb::DbStartError)?
+                }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            tracing::warn!(
+                "The in-memory backend for the database is selected. All saved data will be deleted after the shutdown!"
+            );
+
+            is_new = true;
+
+            builder
+                .create_with_backend(InMemoryBackend::new())
+                .map_err(ErrorDb::DbStartError)?
+        }; //.context("failed to create/open the database")?;
+        Ok(Self {})
+    }
 }
 
 //impl StateInterface {
@@ -274,11 +297,6 @@ let pay_acc: AccountId = state
         }
 */
 
-#[derive(Clone, Debug)]
-pub struct State {
-    pub tx: tokio::sync::mpsc::Sender<StateAccessRequest>,
-}
-
 #[derive(Deserialize, Debug)]
 pub struct Invoicee {
     pub callback: String,
@@ -287,127 +305,10 @@ pub struct Invoicee {
     pub paym_acc: Account,
 }
 
-impl State {
-    pub fn initialise(
-        path_option: Option<String>,
-        currencies: HashMap<String, CurrencyProperties>,
-        current_pair: Pair,
-        old_pairs: HashMap<String, Pair>,
-        ConfigWoChains {
-            recipient,
-            debug,
-            remark,
-            depth,
-            account_lifetime,
-            rpc,
-        }: ConfigWoChains,
-    ) -> Result<Self, ErrorDb> {
-        let builder = Database::builder();
-        let is_new;
+/*
 
-        let database = if let Some(path) = path_option {
-            tracing::info!("Creating/Opening the database at {path:?}.");
-
-            match File::create_new(&path) {
-                Ok(file) => {
-                    is_new = true;
-
-                    FileBackend::new(file).and_then(|backend| builder.create_with_backend(backend)).map_err(ErrorDb::DbStartError)?
-                }
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    is_new = false;
-
-                    builder.create(path).map_err(ErrorDb::DbStartError)?
-                }
-                Err(error) => return Err(error.into())
-            }
-        } else {
-            tracing::warn!(
-                "The in-memory backend for the database is selected. All saved data will be deleted after the shutdown!"
-            );
-
-            is_new = true;
-
-            builder.create_with_backend(InMemoryBackend::new()).map_err(ErrorDb::DbStartError)?
-        };//.context("failed to create/open the database")?;
-
-        /*
-            currencies: HashMap<String, CurrencyProperties>,
-            recipient: AccountId,
-            pair: Pair,
-            depth: Option<Timestamp>,
-            account_lifetime: Timestamp,
-            debug: bool,
-            remark: String,
-            invoices: RwLock<HashMap<String, Invoicee>>,
-            rpc: String,
-        */
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-        tokio::spawn(async move {
-            while let Some(request) = rx.recv().await {
-                &database;
-                match request {
-                    StateAccessRequest::GetInvoiceStatus(a) => {}, 
-                    StateAccessRequest::CreateInvoice(a) => {},
-                    StateAccessRequest::ServerStatus(res) => {
-                        let description = ServerInfo {
-                            version: env!("CARGO_PKG_VERSION"),
-                            instance_id: String::new(),
-                            debug,
-                            kalatori_remark: remark.clone(),
-                        };
-                        let server_status = ServerStatus {description, supported_currencies: currencies.clone()};
-                        res.send(server_status);
-                    },
-                };
-            }
-        });
-
-        Ok(Self { tx })
-    }
-
-    pub async fn order_status(&self, order: &str) -> Result<OrderStatus, ErrorDb> {
-        let (res, rx) = oneshot::channel();
-        self.tx
-            .send(StateAccessRequest::GetInvoiceStatus(GetInvoiceStatus {
-                order: order.to_string(),
-                res,
-            }))
-            .await;
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)
-    }
-
-    pub async fn server_status(&self) -> Result<ServerStatus, ErrorDb> {
-        let (res, rx) = oneshot::channel();
-        self.tx.send(StateAccessRequest::ServerStatus(res)).await;
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)
-    }
-
-    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, ErrorDb> {
-        let (res, rx) = oneshot::channel();
-        /*
-                Invoicee {
-                        callback: callback.clone(),
-                        amount: Balance::parse(amount, 6),
-                        paid: false,
-                        paym_acc: pay_acc.clone(),
-                    },
-        */
-        self.tx
-            .send(StateAccessRequest::CreateInvoice(CreateInvoice {
-                order_query,
-                res,
-            }))
-            .await;
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)
-    }
-
-    pub fn interface(&self) -> Self {
-        State {
-            tx: self.tx.clone(),
-        }
-    }
-   /* 
+*/
+/*
         pub fn server_info(&self) -> ServerInfo {
             ServerInfo {
                 version: env!("CARGO_PKG_VERSION"),
@@ -417,55 +318,54 @@ impl State {
             }
         }
 */
-    /*
-        pub fn currency_properties(&self, currency_name: &str) -> Result<&CurrencyProperties, ErrorDb> {
-            self.currencies
-                .get(currency_name)
-                .ok_or(ErrorDb::CurrencyKeyNotFound)
-        }
+/*
+    pub fn currency_properties(&self, currency_name: &str) -> Result<&CurrencyProperties, ErrorDb> {
+        self.currencies
+            .get(currency_name)
+            .ok_or(ErrorDb::CurrencyKeyNotFound)
+    }
 
-        pub fn currency_info(&self, currency_name: &str) -> Result<CurrencyInfo, ErrorDb> {
-            let currency = self.currency_properties(currency_name)?;
-            Ok(CurrencyInfo {
-                currency: currency_name.to_string(),
-                chain_name: currency.chain_name.clone(),
-                kind: currency.kind,
-                decimals: currency.decimals,
-                rpc_url: currency.rpc_url.clone(),
-                asset_id: currency.asset_id,
-            })
-        }
-    */
-    //     pub fn rpc(&self) -> &str {
-    //         &self.rpc
-    //     }
+    pub fn currency_info(&self, currency_name: &str) -> Result<CurrencyInfo, ErrorDb> {
+        let currency = self.currency_properties(currency_name)?;
+        Ok(CurrencyInfo {
+            currency: currency_name.to_string(),
+            chain_name: currency.chain_name.clone(),
+            kind: currency.kind,
+            decimals: currency.decimals,
+            rpc_url: currency.rpc_url.clone(),
+            asset_id: currency.asset_id,
+        })
+    }
+*/
+//     pub fn rpc(&self) -> &str {
+//         &self.rpc
+//     }
 
-    //     pub fn destination(&self) -> &Option<Account> {
-    //         &self.destination
-    //     }
+//     pub fn destination(&self) -> &Option<Account> {
+//         &self.destination
+//     }
 
-    //     pub fn write(&self) -> Result<WriteTransaction<'_>> {
-    //         self.db
-    //             .begin_write()
-    //             .map(WriteTransaction)
-    //             .context("failed to begin a write transaction for the database")
-    //     }
+//     pub fn write(&self) -> Result<WriteTransaction<'_>> {
+//         self.db
+//             .begin_write()
+//             .map(WriteTransaction)
+//             .context("failed to begin a write transaction for the database")
+//     }
 
-    //     pub fn read(&self) -> Result<ReadTransaction<'_>> {
-    //         self.db
-    //             .begin_read()
-    //             .map(ReadTransaction)
-    //             .context("failed to begin a read transaction for the database")
-    //     }
+//     pub fn read(&self) -> Result<ReadTransaction<'_>> {
+//         self.db
+//             .begin_read()
+//             .map(ReadTransaction)
+//             .context("failed to begin a read transaction for the database")
+//     }
 
-    //     pub async fn properties(&self) -> RwLockReadGuard<'_, ChainProperties> {
-    //         self.properties.read().await
-    //     }
+//     pub async fn properties(&self) -> RwLockReadGuard<'_, ChainProperties> {
+//         self.properties.read().await
+//     }
 
-    //     pub fn pair(&self) -> &Pair {
-    //         &self.pair
-    //     }
-}
+//     pub fn pair(&self) -> &Pair {
+//         &self.pair
+//     }
 
 /*
 pub struct ReadTransaction(redb::ReadTransaction);

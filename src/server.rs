@@ -1,6 +1,7 @@
 use crate::{
-    database::{State}, AssetId, BlockNumber, Decimals, ExtrinsicIndex,
     error::{Error, ErrorOrder, ErrorServer},
+    state::State,
+    AssetId, BlockNumber, Decimals, ExtrinsicIndex,
 };
 use axum::{
     extract::{self, rejection::RawPathParamsRejection, MatchedPath, Query, RawPathParams},
@@ -182,12 +183,14 @@ pub async fn new(
     let app = Router::new().nest("/v2", v2).with_state(state);
 
     let listener = TcpListener::bind(host)
-        .await.map_err(|_| ErrorServer::TcpListenerBind(host))?;
+        .await
+        .map_err(|_| ErrorServer::TcpListenerBind(host))?;
 
     Ok(async {
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_notification.cancelled_owned())
-            .await.map_err(|_| ErrorServer::ThreadError)?;
+            .await
+            .map_err(|_| ErrorServer::ThreadError)?;
 
         Ok("The server module is shut down.".into())
     })
@@ -198,7 +201,6 @@ enum OrderSuccess {
     Created,
     Found,
 }
-
 
 #[derive(Debug, Serialize)]
 struct InvalidParameter {

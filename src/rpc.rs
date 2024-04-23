@@ -1,10 +1,9 @@
 use crate::{
     chain::{base58prefix, pallet_index, storage_key, unit},
-    database::{Invoicee, State},
+    database::Invoicee,
     error::{Error, ErrorChain, NotHex},
-    server::{
-        CurrencyProperties,
-    },
+    server::CurrencyProperties,
+    state::State,
     utils::unhex,
     AccountId32, AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
     Nonce, PalletIndex, TaskTracker, Timestamp,
@@ -13,9 +12,9 @@ use frame_metadata::{v15::RuntimeMetadataV15, RuntimeMetadata};
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
+use parity_scale_codec::DecodeAll;
 use primitive_types::H256;
 use scale_info::TypeDef;
-use parity_scale_codec::DecodeAll;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Number, Value};
 use std::{
@@ -24,7 +23,10 @@ use std::{
     fmt::Debug,
     num::NonZeroU64,
 };
-use substrate_parser::{AsMetadata, cards::{ExtendedData, ParsedData}, decode_all_as_type, ShortSpecs};
+use substrate_parser::{
+    cards::{ExtendedData, ParsedData},
+    decode_all_as_type, AsMetadata, ShortSpecs,
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -267,10 +269,15 @@ async fn check_sufficiency_and_fetch_min_balance(
     })
 }*/
 
-pub async fn storage_fetch(client: &WsClient, prefix: &str, storage_name: &str, block: &BlockHash) -> Result<String, ErrorChain> {
+pub async fn storage_fetch(
+    client: &WsClient,
+    prefix: &str,
+    storage_name: &str,
+    block: &BlockHash,
+) -> Result<String, ErrorChain> {
     let key = storage_key(prefix, storage_name);
     value_by_key_from_storage(client, &key, &hex::encode(block)).await
-} 
+}
 
 pub async fn value_by_key_from_storage(
     client: &WsClient,
@@ -535,7 +542,7 @@ async fn prepare_chain(
             .build(&endpoint)
             .await
             .map_err(ErrorChain::Client)?;
-   
+
     let genesis = genesis_hash(&client).await?;
 
     let finalized_hash = block_hash(&client).await?;
@@ -546,13 +553,13 @@ async fn prepare_chain(
     //TODO: we don't have to require this mechanism at all
     let block_time = if pallet_index(&metadata, BABE).is_some() {
         match fetch_constant(&metadata, BABE, "ExpectedBlockTime").ok_or(ErrorChain::BabeExpectedBlockTime)?.data {
-            
+
         }
     } else {
         //const SLOT_DURATION: &str = "slot_duration";
 
         state_call(
-            &client, 
+            &client,
             rpc_params![
                     "Aura_slot_duration",
                     &block_hash_string
@@ -752,7 +759,6 @@ pub struct ConnectedChain {
     properties: ChainProperties,
 }
 
-
 //#[derive(Debug)]
 //struct Shutdown;
 
@@ -771,7 +777,10 @@ impl Processor {
         state: State,
         notif: CancellationToken,
     ) -> Result<Cow<'static, str>, Error> {
-        let client = WsClientBuilder::default().build(rpc.clone()).await.map_err(ErrorChain::Client)?;
+        let client = WsClientBuilder::default()
+            .build(rpc.clone())
+            .await
+            .map_err(ErrorChain::Client)?;
 
         Processor {
             state,
@@ -788,7 +797,7 @@ impl Processor {
                 .map(|Shutdown| "The RPC module is shut down.".into())
         })*/
     }
-/*
+    /*
     async fn execute(mut self) -> Result<Cow<'static, str>> {
         let (head_number, _head_hash) = self
             .finalized_head_number_and_hash()
@@ -836,7 +845,7 @@ impl Processor {
             .await
             .context("failed to subscribe to finalized heads")
     }*/
-/*
+    /*
     async fn process_skipped(
         &self,
         next_unscanned: &mut BlockNumber,
@@ -861,7 +870,7 @@ impl Processor {
 
         Ok(())
     }*/
-/*
+    /*
     async fn process_finalized_heads(
         &mut self,
         mut subscription: RpcSubscription<<RuntimeConfig as Config>::Header>,
@@ -897,165 +906,165 @@ impl Processor {
 
         Ok(())
     }*/
-/*
-    async fn process_block(&self, number: BlockNumber, hash: BlockHash) -> Result<()> {
-        tracing::debug!("Processing the block: {number}.");
+    /*
+        async fn process_block(&self, number: BlockNumber, hash: BlockHash) -> Result<()> {
+            tracing::debug!("Processing the block: {number}.");
 
-        let block = self
-            .client
-            .blocks()
-            .at(hash)
-            .await
-            .context("failed to obtain a block for processing")?;
-        let events = block
-            .events()
-            .await
-            .context("failed to obtain block events")?;
+            let block = self
+                .client
+                .blocks()
+                .at(hash)
+                .await
+                .context("failed to obtain a block for processing")?;
+            let events = block
+                .events()
+                .await
+                .context("failed to obtain block events")?;
 
-        //let invoices = &mut *self.state.invoices.write().await;
+            //let invoices = &mut *self.state.invoices.write().await;
 
-        // let mut update = false;
-        // let mut invoices_changes = HashMap::new();
+            // let mut update = false;
+            // let mut invoices_changes = HashMap::new();
 
-        for event_result in events.iter() {
-            const UPDATE: &str = "CodeUpdated";
-            const TRANSFERRED: &str = "Transferred";
-            let event = event_result.context("failed to decode an event")?;
-            let metadata = event.event_metadata();
+            for event_result in events.iter() {
+                const UPDATE: &str = "CodeUpdated";
+                const TRANSFERRED: &str = "Transferred";
+                let event = event_result.context("failed to decode an event")?;
+                let metadata = event.event_metadata();
 
-            #[allow(clippy::single_match)]
-            match (metadata.pallet.name(), &*metadata.variant.name) {
-                // (SYSTEM, UPDATE) => update = true,
-                (ASSETS, TRANSFERRED) => {
-                    let tr = Transferred::deserialize(
-                        event
-                            .field_values()
-                            .context("failed to decode event's fields")?,
-                    )
-                    .context("failed to deserialize a transfer event")?;
+                #[allow(clippy::single_match)]
+                match (metadata.pallet.name(), &*metadata.variant.name) {
+                    // (SYSTEM, UPDATE) => update = true,
+                    (ASSETS, TRANSFERRED) => {
+                        let tr = Transferred::deserialize(
+                            event
+                                .field_values()
+                                .context("failed to decode event's fields")?,
+                        )
+                        .context("failed to deserialize a transfer event")?;
 
-                    tracing::info!("{tr:?}");
-                    /* TODO process using cache and db access
-                    #[allow(clippy::unnecessary_find_map)]
-                    if let Some(invoic) = invoices.iter().find_map(|invoic| {
-                        tracing::info!("{tr:?} {invoic:?}");
-                        tracing::info!("{}", tr.to == invoic.1.paym_acc);
-                        tracing::info!("{}", *invoic.1.amount >= tr.amount);
+                        tracing::info!("{tr:?}");
+                        /* TODO process using cache and db access
+                        #[allow(clippy::unnecessary_find_map)]
+                        if let Some(invoic) = invoices.iter().find_map(|invoic| {
+                            tracing::info!("{tr:?} {invoic:?}");
+                            tracing::info!("{}", tr.to == invoic.1.paym_acc);
+                            tracing::info!("{}", *invoic.1.amount >= tr.amount);
 
-                        if tr.to == invoic.1.paym_acc && *invoic.1.amount <= tr.amount {
-                            Some(invoic)
-                        } else {
-                            None
-                        }
-                    }) {
-                        tracing::info!("{invoic:?}");
+                            if tr.to == invoic.1.paym_acc && *invoic.1.amount <= tr.amount {
+                                Some(invoic)
+                            } else {
+                                None
+                            }
+                        }) {
+                            tracing::info!("{invoic:?}");
 
-                        if !invoic.1.callback.is_empty() {
-                            tracing::info!("{:?}", invoic.1.callback);
+                            if !invoic.1.callback.is_empty() {
+                                tracing::info!("{:?}", invoic.1.callback);
 
-                            crate::callback::callback(
-                                invoic.1.callback.clone(),
-                                invoic.0.to_string(),
-                                self.state.recipient.clone(),
-                                self.state.debug,
-                                self.state.remark.clone(),
-                                invoic.1.amount,
-                                self.state.rpc.clone(),
-                                invoic.1.paym_acc.clone(),
-                            )
-                            .await;
-                        }
+                                crate::callback::callback(
+                                    invoic.1.callback.clone(),
+                                    invoic.0.to_string(),
+                                    self.state.recipient.clone(),
+                                    self.state.debug,
+                                    self.state.remark.clone(),
+                                    invoic.1.amount,
+                                    self.state.rpc.clone(),
+                                    invoic.1.paym_acc.clone(),
+                                )
+                                .await;
+                            }
 
-                        invoices.insert(
-                            invoic.0.clone(),
-                            Invoicee {
-                                callback: invoic.1.callback.clone(),
-                                amount: Balance(*invoic.1.amount),
-                                paid: true,
-                                paym_acc: invoic.1.paym_acc.clone(),
-                            },
-                        );
-                    }*/
+                            invoices.insert(
+                                invoic.0.clone(),
+                                Invoicee {
+                                    callback: invoic.1.callback.clone(),
+                                    amount: Balance(*invoic.1.amount),
+                                    paid: true,
+                                    paym_acc: invoic.1.paym_acc.clone(),
+                                },
+                            );
+                        }*/
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+
+            // for (invoice, changes) in invoices_changes {
+            //     let price = match changes.invoice.status {
+            //         InvoiceStatus::Unpaid(price) | InvoiceStatus::Paid(price) => price,
+            //     };
+
+            //     self.process_unpaid(&block, changes, hash, invoice, price)
+            //         .await
+            //         .context("failed to process an unpaid invoice")?;
+            // }
+
+            Ok(())
         }
 
-        // for (invoice, changes) in invoices_changes {
-        //     let price = match changes.invoice.status {
-        //         InvoiceStatus::Unpaid(price) | InvoiceStatus::Paid(price) => price,
-        //     };
+        async fn balance(&self, hash: BlockHash, account: &AccountId) -> Result<Balance> {
+            const ACCOUNT: &str = "Account";
+            const BALANCE: &str = "balance";
+    /* TODO: this should fetch balance and also considet native-nonnative shit wtf is this?
+            if let Some(account_info) = self
+                .storage
+                .at(hash)
+                .fetch(&dynamic::storage(
+                    ASSETS,
+                    ACCOUNT,
+                    vec![
+                        Value::from(1337u32),
+                        Value::from_bytes(AsRef::<[u8; 32]>::as_ref(account)),
+                    ],
+                ))
+                .await
+                .context("failed to fetch account info from the chain")?
+            {
+                let decoded_account_info = account_info
+                    .to_value()
+                    .context("failed to decode account info")?;
+                let encoded_balance = decoded_account_info
+                    .at(BALANCE)
+                    .with_context(|| format!("{BALANCE} field wasn't found in account info"))?;
 
-        //     self.process_unpaid(&block, changes, hash, invoice, price)
-        //         .await
-        //         .context("failed to process an unpaid invoice")?;
-        // }
+                encoded_balance.as_u128().map(Balance).with_context(|| {
+                    format!("expected `u128` as the type of a balance, got {encoded_balance}")
+                })
+            } else {
+                Ok(Balance(0))
+            }*/
+        }
 
-        Ok(())
-    }
+        async fn batch_transfer(
+            &self,
+            nonce: Nonce,
+            block_hash_count: BlockNumber,
+            signer: &PairSigner<RuntimeConfig, Pair>,
+            transfers: Vec<Value>,
+        ) -> Result<SubmittableExtrinsic<RuntimeConfig, OnlineClient>> {
+            const FORCE_BATCH: &str = "force_batch";
 
-    async fn balance(&self, hash: BlockHash, account: &AccountId) -> Result<Balance> {
-        const ACCOUNT: &str = "Account";
-        const BALANCE: &str = "balance";
-/* TODO: this should fetch balance and also considet native-nonnative shit wtf is this?
-        if let Some(account_info) = self
-            .storage
-            .at(hash)
-            .fetch(&dynamic::storage(
-                ASSETS,
-                ACCOUNT,
-                vec![
-                    Value::from(1337u32),
-                    Value::from_bytes(AsRef::<[u8; 32]>::as_ref(account)),
-                ],
-            ))
-            .await
-            .context("failed to fetch account info from the chain")?
-        {
-            let decoded_account_info = account_info
-                .to_value()
-                .context("failed to decode account info")?;
-            let encoded_balance = decoded_account_info
-                .at(BALANCE)
-                .with_context(|| format!("{BALANCE} field wasn't found in account info"))?;
-
-            encoded_balance.as_u128().map(Balance).with_context(|| {
-                format!("expected `u128` as the type of a balance, got {encoded_balance}")
-            })
-        } else {
-            Ok(Balance(0))
-        }*/
-    }
-
-    async fn batch_transfer(
-        &self,
-        nonce: Nonce,
-        block_hash_count: BlockNumber,
-        signer: &PairSigner<RuntimeConfig, Pair>,
-        transfers: Vec<Value>,
-    ) -> Result<SubmittableExtrinsic<RuntimeConfig, OnlineClient>> {
-        const FORCE_BATCH: &str = "force_batch";
-
-        //let call = dynamic::tx(UTILITY, FORCE_BATCH, vec![Value::from(transfers)]);
-        let (number, hash) = self
-            .finalized_head_number_and_hash()
-            .await
-            .context("failed to get the chain head while constructing a transaction")?;
-        /*
-        let extensions = DefaultExtrinsicParamsBuilder::new()
-            .mortal_unchecked(number.into(), hash, block_hash_count.into())
-            .tip_of(0, Asset::Id(1337));
-*/
-        //TODO create tx
-        /*
-        self.client
-            .tx()
-            .create_signed(&call, signer, extensions.build())
-            .await
-            .context("failed to create a transfer transaction")
-        */
-    }
-*/
+            //let call = dynamic::tx(UTILITY, FORCE_BATCH, vec![Value::from(transfers)]);
+            let (number, hash) = self
+                .finalized_head_number_and_hash()
+                .await
+                .context("failed to get the chain head while constructing a transaction")?;
+            /*
+            let extensions = DefaultExtrinsicParamsBuilder::new()
+                .mortal_unchecked(number.into(), hash, block_hash_count.into())
+                .tip_of(0, Asset::Id(1337));
+    */
+            //TODO create tx
+            /*
+            self.client
+                .tx()
+                .create_signed(&call, signer, extensions.build())
+                .await
+                .context("failed to create a transfer transaction")
+            */
+        }
+    */
     // async fn current_nonce(&self, account: &AccountId) -> Result<Nonce> {
     //     self.api
     //         .blocks

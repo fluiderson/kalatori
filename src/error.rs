@@ -1,7 +1,4 @@
-use crate::{
-    server::OrderStatus,
-    SocketAddr,
-};
+use crate::{server::OrderStatus, SocketAddr};
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::core::client::error::Error as ClientError;
 use mnemonic_external::error::ErrorWordList;
@@ -42,6 +39,12 @@ pub enum Error {
 
     #[error("Seed phrase invalid: {0:?}")]
     InvalidSeed(ErrorWordList),
+
+    #[error("Fatal error. System is shutting down.")]
+    Fatal,
+
+    #[error("Operating system related I/O error {0:?}")]
+    IoError(std::io::Error),
 }
 
 impl From<ErrorDb> for Error {
@@ -59,6 +62,12 @@ impl From<ErrorChain> for Error {
 impl From<ErrorServer> for Error {
     fn from(e: ErrorServer) -> Error {
         Error::ErrorServer(e)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::IoError(e)
     }
 }
 
@@ -88,12 +97,11 @@ pub enum ErrorChain {
     #[error("Threading error. {0}")]
     Tokio(JoinError),
 
-//    #[error("Internal database error. {0}")]
-//    DbInternal(sled::Error),
+    //    #[error("Internal database error. {0}")]
+    //    DbInternal(sled::Error),
 
-//    #[error("Database error recording transaction. {0}")]
-//    DbTransaction(sled::transaction::TransactionError),
-
+    //    #[error("Database error recording transaction. {0}")]
+    //    DbTransaction(sled::transaction::TransactionError),
     #[error("Format of fetched decimals {value} is not supported.")]
     DecimalsFormatNotSupported { value: String },
 
@@ -102,7 +110,6 @@ pub enum ErrorChain {
 
     //#[error("Key in the database {} is damaged, and could not be decoded.", hex::encode(.0))]
     //DecodeDbKey(IVec),
-
     #[error("MetadataSpecs in the database for genesis hash {} got damaged, and could not be decoded.", hex::encode(.0))]
     DecodeDbMetadataSpecs(H256),
 
@@ -286,7 +293,7 @@ pub enum ErrorServer {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ErrorUtil {
-        #[error("{0}")]
+    #[error("{0}")]
     NotHex(NotHex),
 }
 
@@ -304,4 +311,3 @@ pub enum NotHex {
     #[error("Encoded storage value string is not a valid hexadecimal.")]
     StorageValue,
 }
-

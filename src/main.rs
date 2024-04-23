@@ -29,11 +29,13 @@ mod database;
 mod error;
 mod rpc;
 mod server;
+mod state;
 mod utils;
 
-use database::{ConfigWoChains, State};
+use database::ConfigWoChains;
 use error::Error;
 use rpc::Processor;
+use state::State;
 
 const CONFIG: &str = "KALATORI_CONFIG";
 const LOG: &str = "KALATORI_LOG";
@@ -66,6 +68,8 @@ async fn main() -> Result<(), Error> {
     set_panic_hook(shutdown_notification.clone());
     initialize_logger()?;
 
+    // Read env
+
     let (pair, old_pairs) = parse_seeds()?;
     let recipient = env::var(RECIPIENT).map_err(|_| Error::Env(RECIPIENT.to_string()))?;
 
@@ -75,7 +79,8 @@ async fn main() -> Result<(), Error> {
 
     let host = if let Some(unparsed_host) = config.host {
         unparsed_host
-            .parse().map_err(|_| Error::ConfigParse("host to define a socket address".to_string()))?
+            .parse()
+            .map_err(|_| Error::ConfigParse("host to define a socket address".to_string()))?
     } else {
         DEFAULT_SOCKET
     };
@@ -108,6 +113,8 @@ async fn main() -> Result<(), Error> {
         }))
     };
 
+    // Start services
+
     tracing::info!(
         "Kalatori {} by {} is starting on {}...",
         env!("CARGO_PKG_VERSION"),
@@ -127,10 +134,11 @@ async fn main() -> Result<(), Error> {
 
     let rpc = env::var("KALATORI_RPC").unwrap();
 
-    let recipient = AccountId32::from_base58_string(&recipient).map_err(Error::RecipientAccount)?.0;
+    let recipient = AccountId32::from_base58_string(&recipient)
+        .map_err(Error::RecipientAccount)?
+        .0;
 
     let state = State::initialise(
-        database_path,
         currencies,
         pair,
         old_pairs,
@@ -142,6 +150,7 @@ async fn main() -> Result<(), Error> {
             account_lifetime: config.account_lifetime,
             rpc: rpc.clone(),
         },
+        &task_tracker,
     )?;
 
     task_tracker.spawn(
@@ -154,8 +163,7 @@ async fn main() -> Result<(), Error> {
         ),
     );
 
-    let server = server::new(shutdown_notification.clone(), host, state)
-        .await?;
+    let server = server::new(shutdown_notification.clone(), host, state).await?;
 
     // task_tracker.spawn(shutdown(
     //     processor.ignite(last_saved_block, task_tracker.clone(), error_tx.clone()),
@@ -163,9 +171,13 @@ async fn main() -> Result<(), Error> {
     // ));
     task_tracker.spawn("the server module", server);
 
+    // Main loop
+
     task_tracker
         .wait_with_notification(error_rx, shutdown_notification)
         .await;
+
+    // Shutdown
 
     tracing::info!("Goodbye!");
 
@@ -265,41 +277,38 @@ fn default_filter() -> String {
 }
 
 fn parse_seeds() -> Result<(Pair, HashMap<String, Pair>), Error> {
-    let pair = seed_from_phrase(
-        &env::var(SEED).map_err(|_| Error::Env(SEED.to_string()))?,
-    )?;
+    let pair = seed_from_phrase(&env::var(SEED).map_err(|_| Error::Env(SEED.to_string()))?)?;
 
     let mut old_pairs = HashMap::new();
-/* TODO: add this at least when you do something about these
-    for (raw_key, raw_value) in env::vars_os() {
-        let raw_key_bytes = raw_key.as_encoded_bytes();
+    /* TODO: add this at least when you do something about these
+        for (raw_key, raw_value) in env::vars_os() {
+            let raw_key_bytes = raw_key.as_encoded_bytes();
 
-        if let Some(stripped_raw_key) = raw_key_bytes.strip_prefix(OLD_SEED.as_bytes()) {
-            let key = str::from_utf8(stripped_raw_key)
-                .context("failed to read an old seed environment variable name")?;
-            let value = raw_value
-                .to_str()
-                .with_context(|| format!("failed to read a seed phrase from `{OLD_SEED}{key}`"))?;
-            let old_pair = seed_from_phrase(value)?;
+            if let Some(stripped_raw_key) = raw_key_bytes.strip_prefix(OLD_SEED.as_bytes()) {
+                let key = str::from_utf8(stripped_raw_key)
+                    .context("failed to read an old seed environment variable name")?;
+                let value = raw_value
+                    .to_str()
+                    .with_context(|| format!("failed to read a seed phrase from `{OLD_SEED}{key}`"))?;
+                let old_pair = seed_from_phrase(value)?;
 
-            old_pairs.insert(key.to_owned(), old_pair);
+                old_pairs.insert(key.to_owned(), old_pair);
+            }
         }
-    }
-*/
+    */
     Ok((pair, old_pairs))
 }
 
-    pub fn seed_from_phrase(seed: &str) -> Result<Pair, Error> {
-        let mut word_set = WordSet::new();
-        for word in seed.split(' ') {
-            word_set
-                .add_word(&word, &InternalWordList)?;
-        }
-        let entropy = word_set.to_entropy()?;
-        let derivation = cut_path("").expect("empty derivation is hardcoded");
-        Ok(Pair::from_entropy_and_full_derivation(&entropy, derivation).expect("empty derivation and password are hardcoded"))
+pub fn seed_from_phrase(seed: &str) -> Result<Pair, Error> {
+    let mut word_set = WordSet::new();
+    for word in seed.split(' ') {
+        word_set.add_word(&word, &InternalWordList)?;
     }
-
+    let entropy = word_set.to_entropy()?;
+    let derivation = cut_path("").expect("empty derivation is hardcoded");
+    Ok(Pair::from_entropy_and_full_derivation(&entropy, derivation)
+        .expect("empty derivation and password are hardcoded"))
+}
 
 #[derive(Clone)]
 struct TaskTracker {
@@ -371,7 +380,9 @@ impl TaskTracker {
     }
 }
 
-async fn shutdown_listener(shutdown_notification: CancellationToken) -> Result<Cow<'static, str>, Error> {
+async fn shutdown_listener(
+    shutdown_notification: CancellationToken,
+) -> Result<Cow<'static, str>, Error> {
     tokio::select! {
         biased;
         signal = signal::ctrl_c() => {
@@ -405,9 +416,7 @@ struct Config {
 impl Config {
     fn load() -> Result<Self, Error> {
         let config_path = env::var(CONFIG).or_else(|error| match error {
-            VarError::NotUnicode(_) => {
-                Err(Error::Env(CONFIG.to_string()))
-            }
+            VarError::NotUnicode(_) => Err(Error::Env(CONFIG.to_string())),
             VarError::NotPresent => {
                 tracing::debug!(
                     "`{CONFIG}` isn't present, using the default value instead: {DEFAULT_CONFIG:?}."
@@ -416,7 +425,8 @@ impl Config {
                 Ok(DEFAULT_CONFIG.into())
             }
         })?;
-        let unparsed_config = fs::read_to_string(&config_path).map_err(|_| Error::ConfigFileRead(config_path.clone()))?;
+        let unparsed_config = fs::read_to_string(&config_path)
+            .map_err(|_| Error::ConfigFileRead(config_path.clone()))?;
 
         toml::from_str(&unparsed_config).map_err(|_| Error::ConfigFileParse(config_path))
     }

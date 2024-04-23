@@ -2,12 +2,18 @@
 
 //TransactionToFill::init(&mut (), metadata, genesis_hash).unwrap();
 use crate::error::ErrorChain;
-use frame_metadata::{v14::StorageHasher, v15::{RuntimeMetadataV15, StorageEntryType}};
+use frame_metadata::{
+    v14::StorageHasher,
+    v15::{RuntimeMetadataV15, StorageEntryType},
+};
 use parity_scale_codec::{Decode, Encode};
 use scale_info::{TypeDef, TypeDefPrimitive};
 use serde_json::{Map, Number, Value};
 use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
-use substrate_parser::{AsMetadata, cards::{ExtendedData, ParsedData}, decode_all_as_type, ShortSpecs};
+use substrate_parser::{
+    cards::{ExtendedData, ParsedData},
+    decode_all_as_type, AsMetadata, ShortSpecs,
+};
 
 pub fn hashed_key_element(data: &[u8], hasher: &StorageHasher) -> Vec<u8> {
     match hasher {
@@ -21,14 +27,21 @@ pub fn hashed_key_element(data: &[u8], hasher: &StorageHasher) -> Vec<u8> {
     }
 }
 
-pub fn whole_key_u32_value(prefix: &str, storage_name: &str, metadata_v15: &RuntimeMetadataV15, entered_data: u32) -> String {
+pub fn whole_key_u32_value(
+    prefix: &str,
+    storage_name: &str,
+    metadata_v15: &RuntimeMetadataV15,
+    entered_data: u32,
+) -> String {
     for pallet in metadata_v15.pallets.iter() {
         if let Some(storage) = &pallet.storage {
             if storage.prefix == prefix {
                 for entry in storage.entries.iter() {
                     if entry.name == storage_name {
                         match &entry.ty {
-                            StorageEntryType::Plain(_) => panic!("expected map with single entry, got plain"),
+                            StorageEntryType::Plain(_) => {
+                                panic!("expected map with single entry, got plain")
+                            }
                             StorageEntryType::Map {
                                 hashers,
                                 key: key_ty,
@@ -37,16 +50,22 @@ pub fn whole_key_u32_value(prefix: &str, storage_name: &str, metadata_v15: &Runt
                                 if hashers.len() == 1 {
                                     let hasher = &hashers[0];
                                     match metadata_v15.types.resolve(key_ty.id).unwrap().type_def {
-                                        TypeDef::Primitive(TypeDefPrimitive::U32) => return format!(
-                                            "0x{}{}{}",
-                                            hex::encode(twox_128(prefix.as_bytes())),
-                                            hex::encode(twox_128(storage_name.as_bytes())),
-                                            hex::encode(hashed_key_element(&entered_data.encode(), hasher))
-                                        ),
-                                        _ => panic!("wrong data type")
+                                        TypeDef::Primitive(TypeDefPrimitive::U32) => {
+                                            return format!(
+                                                "0x{}{}{}",
+                                                hex::encode(twox_128(prefix.as_bytes())),
+                                                hex::encode(twox_128(storage_name.as_bytes())),
+                                                hex::encode(hashed_key_element(
+                                                    &entered_data.encode(),
+                                                    hasher
+                                                ))
+                                            )
+                                        }
+                                        _ => panic!("wrong data type"),
                                     }
+                                } else {
+                                    panic!("expected map with single entry, got multiple entries")
                                 }
-                                else {panic!("expected map with single entry, got multiple entries")}
                             }
                         }
                     }
@@ -57,7 +76,6 @@ pub fn whole_key_u32_value(prefix: &str, storage_name: &str, metadata_v15: &Runt
     }
     panic!("have not found pallet");
 }
-
 
 pub fn decimals(x: &Map<String, Value>) -> Result<u8, ErrorChain> {
     match x.get("tokenDecimals") {
@@ -137,7 +155,6 @@ pub fn decimals(x: &Map<String, Value>) -> Result<u8, ErrorChain> {
     }
 }
 
-
 pub fn optional_prefix_from_meta(metadata: &RuntimeMetadataV15) -> Option<u16> {
     let mut base58_prefix_data = None;
     for pallet in &metadata.pallets {
@@ -188,8 +205,11 @@ pub fn optional_prefix_from_meta(metadata: &RuntimeMetadataV15) -> Option<u16> {
     }
 }
 
-
-pub fn fetch_constant(metadata: &RuntimeMetadataV15, pallet_name: &str, constant_name: &str) -> Option<ExtendedData> {
+pub fn fetch_constant(
+    metadata: &RuntimeMetadataV15,
+    pallet_name: &str,
+    constant_name: &str,
+) -> Option<ExtendedData> {
     let mut found = None;
     for pallet in &metadata.pallets {
         if pallet.name == pallet_name {
@@ -208,7 +228,11 @@ pub fn fetch_constant(metadata: &RuntimeMetadataV15, pallet_name: &str, constant
             &value.as_ref(),
             &mut (),
             &metadata.types,
-        ).ok() } else {None}
+        )
+        .ok()
+    } else {
+        None
+    }
 }
 
 pub fn system_properties_to_short_specs(
@@ -227,11 +251,15 @@ pub fn system_properties_to_short_specs(
 }
 
 pub fn pallet_index(metadata: &RuntimeMetadataV15, name: &str) -> Option<u8> {
-    for pallet in &metadata.pallets { if pallet.name == name {return Some(pallet.index)} };
-    return None
+    for pallet in &metadata.pallets {
+        if pallet.name == name {
+            return Some(pallet.index);
+        }
+    }
+    return None;
 }
 
-pub fn storage_key(prefix: &str, storage_name: &str)-> String {
+pub fn storage_key(prefix: &str, storage_name: &str) -> String {
     format!(
         "0x{}{}",
         hex::encode(twox_128(prefix.as_bytes())),
@@ -354,4 +382,3 @@ pub fn unit(x: &Map<String, Value>) -> Result<String, ErrorChain> {
         None => Err(ErrorChain::NoUnit),
     }
 }
-
