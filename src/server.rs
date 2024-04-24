@@ -216,61 +216,63 @@ async fn process_order(
     if query.is_empty() {
         // TODO: try to query an order from the database.
 
-        let invoices = state.0.invoices.read().await;
+        // let invoices = state.0.invoices.read().await;
 
-        if let Some(invoice) = invoices.get(&order) {
-            Ok((
-                OrderStatus {
-                    order,
-                    payment_status: if invoice.paid {
-                        PaymentStatus::Paid
-                    } else {
-                        PaymentStatus::Unknown
-                    },
-                    message: String::new(),
-                    recipient: state.0.recipient.to_ss58check(),
-                    server_info: ServerInfo {
-                        version: env!("CARGO_PKG_VERSION"),
-                        instance_id: String::new(),
-                        debug: state.0.debug,
-                        kalatori_remark: state.remark.clone(),
-                    },
-                    order_info: Some(OrderInfo {
-                        withdrawal_status: WithdrawalStatus::Waiting,
-                        amount: invoice.amount.format(6),
-                        currency: CurrencyInfo {
-                            currency: "USDC".into(),
-                            chain_name: "assethub-polkadot".into(),
-                            kind: TokenKind::Asset,
-                            decimals: 6,
-                            rpc_url: state.rpc.clone(),
-                            asset_id: Some(1337),
-                        },
-                        callback: invoice.callback.clone(),
-                        transactions: vec![],
-                        payment_account: invoice.paym_acc.to_ss58check(),
-                    }),
-                },
-                OrderSuccess::Found,
-            ))
-        } else {
-            Ok((
-                OrderStatus {
-                    order,
-                    payment_status: PaymentStatus::Unknown,
-                    message: String::new(),
-                    recipient: state.0.recipient.to_ss58check(),
-                    server_info: ServerInfo {
-                        version: env!("CARGO_PKG_VERSION"),
-                        instance_id: String::new(),
-                        debug: state.0.debug,
-                        kalatori_remark: state.remark.clone(),
-                    },
-                    order_info: None,
-                },
-                OrderSuccess::Found,
-            ))
-        }
+        // if let Some(invoice) = invoices.get(&order) {
+        //     Ok((
+        //         OrderStatus {
+        //             order,
+        //             payment_status: if invoice.paid {
+        //                 PaymentStatus::Paid
+        //             } else {
+        //                 PaymentStatus::Unknown
+        //             },
+        //             message: String::new(),
+        //             recipient: state.0.recipient.to_ss58check(),
+        //             server_info: ServerInfo {
+        //                 version: env!("CARGO_PKG_VERSION"),
+        //                 instance_id: String::new(),
+        //                 debug: state.0.debug,
+        //                 kalatori_remark: state.remark.clone(),
+        //             },
+        //             order_info: Some(OrderInfo {
+        //                 withdrawal_status: WithdrawalStatus::Waiting,
+        //                 amount: invoice.amount.format(6),
+        //                 currency: CurrencyInfo {
+        //                     currency: "USDC".into(),
+        //                     chain_name: "assethub-polkadot".into(),
+        //                     kind: TokenKind::Asset,
+        //                     decimals: 6,
+        //                     rpc_url: state.rpc.clone(),
+        //                     asset_id: Some(1337),
+        //                 },
+        //                 callback: invoice.callback.clone(),
+        //                 transactions: vec![],
+        //                 payment_account: invoice.paym_acc.to_ss58check(),
+        //             }),
+        //         },
+        //         OrderSuccess::Found,
+        //     ))
+        // } else {
+        //     Ok((
+        //         OrderStatus {
+        //             order,
+        //             payment_status: PaymentStatus::Unknown,
+        //             message: String::new(),
+        //             recipient: state.0.recipient.to_ss58check(),
+        //             server_info: ServerInfo {
+        //                 version: env!("CARGO_PKG_VERSION"),
+        //                 instance_id: String::new(),
+        //                 debug: state.0.debug,
+        //                 kalatori_remark: state.remark.clone(),
+        //             },
+        //             order_info: None,
+        //         },
+        //         OrderSuccess::Found,
+        //     ))
+        // }
+
+        todo!()
     } else {
         let get_parameter = |parameter: &str| {
             query
@@ -280,9 +282,9 @@ async fn process_order(
 
         let currency = get_parameter(CURRENCY)?.to_owned();
         let callback = get_parameter(CALLBACK)?.to_owned();
-        let amount = get_parameter(AMOUNT)?
-            .parse()
-            .map_err(|_| OrderError::InvalidParameter(AMOUNT.into()))?;
+        // let amount = get_parameter(AMOUNT)?
+        //     .parse()
+        //     .map_err(|_| OrderError::InvalidParameter(AMOUNT.into()))?;
 
         // TODO: try to query & update or create an order in the database.
 
@@ -290,60 +292,61 @@ async fn process_order(
             return Err(OrderError::UnknownCurrency);
         }
 
-        if amount < 0.07 {
-            return Err(OrderError::LessThanExistentialDeposit(0.07));
-        }
+        // if amount < 0.07 {
+        //     return Err(OrderError::LessThanExistentialDeposit(0.07));
+        // }
 
-        let mut invoices = state.0.invoices.write().await;
-        let pay_acc: AccountId = state
+        // let mut invoices = /* state.0.invoices.write().await */ todo!();
+        let pay_acc: AccountId = /* state
             .0
             .pair
             .derive(vec![DeriveJunction::hard(order.clone())].into_iter(), None)
             .unwrap()
             .0
             .public()
-            .into();
+            .into() */ todo!();
 
-        invoices.insert(
-            order.clone(),
-            Invoicee {
-                callback: callback.clone(),
-                amount: Balance::parse(amount, 6),
-                paid: false,
-                paym_acc: pay_acc.clone(),
-            },
-        );
+        // invoices.insert(
+        //     order.clone(),
+        //     Invoicee {
+        //         callback: callback.clone(),
+        //         amount: Balance::parse(amount, 6),
+        //         paid: false,
+        //         paym_acc: pay_acc.clone(),
+        //     },
+        // );
 
-        Ok((
-            OrderStatus {
-                order,
-                payment_status: PaymentStatus::Pending,
-                message: String::new(),
-                recipient: state.0.recipient.to_ss58check(),
-                server_info: ServerInfo {
-                    version: env!("CARGO_PKG_VERSION"),
-                    instance_id: String::new(),
-                    debug: state.0.debug,
-                    kalatori_remark: state.0.remark.clone(),
-                },
-                order_info: Some(OrderInfo {
-                    withdrawal_status: WithdrawalStatus::Waiting,
-                    amount,
-                    currency: CurrencyInfo {
-                        currency: "USDC".into(),
-                        chain_name: "assethub-polkadot".into(),
-                        kind: TokenKind::Asset,
-                        decimals: 6,
-                        rpc_url: state.rpc.clone(),
-                        asset_id: Some(1337),
-                    },
-                    callback,
-                    transactions: vec![],
-                    payment_account: pay_acc.to_ss58check(),
-                }),
-            },
-            OrderSuccess::Created,
-        ))
+        // Ok((
+        //     OrderStatus {
+        //         order,
+        //         payment_status: PaymentStatus::Pending,
+        //         message: String::new(),
+        //         recipient: state.0.recipient.to_ss58check(),
+        //         server_info: ServerInfo {
+        //             version: env!("CARGO_PKG_VERSION"),
+        //             instance_id: String::new(),
+        //             debug: state.0.debug,
+        //             kalatori_remark: state.0.remark.clone(),
+        //         },
+        //         order_info: Some(OrderInfo {
+        //             withdrawal_status: WithdrawalStatus::Waiting,
+        //             amount,
+        //             currency: CurrencyInfo {
+        //                 currency: "USDC".into(),
+        //                 chain_name: "assethub-polkadot".into(),
+        //                 kind: TokenKind::Asset,
+        //                 decimals: 6,
+        //                 rpc_url: state.rpc.clone(),
+        //                 asset_id: Some(1337),
+        //             },
+        //             callback,
+        //             transactions: vec![],
+        //             payment_account: pay_acc.to_ss58check(),
+        //         }),
+        //     },
+        //     OrderSuccess::Created,
+        // ))
+        todo!()
     }
 }
 
@@ -405,22 +408,23 @@ async fn status(
 ) -> ([(HeaderName, &'static str); 1], Json<ServerStatus>) {
     (
         [(header::CACHE_CONTROL, "no-store")],
-        ServerStatus {
-            description: ServerInfo {
-                version: env!("CARGO_PKG_VERSION"),
-                instance_id: String::new(),
-                debug: state.0.debug,
-                kalatori_remark: state.0.remark.clone(),
-            },
-            supported_currencies: vec![CurrencyInfo {
-                currency: "USDC".into(),
-                chain_name: "assethub-polkadot".into(),
-                kind: TokenKind::Asset,
-                decimals: 6,
-                rpc_url: state.rpc.clone(),
-                asset_id: Some(1337),
-            }],
-        }
-        .into(),
+        // ServerStatus {
+        //     description: ServerInfo {
+        //         version: env!("CARGO_PKG_VERSION"),
+        //         instance_id: String::new(),
+        //         debug: state.0.debug,
+        //         kalatori_remark: state.0.remark.clone(),
+        //     },
+        //     supported_currencies: vec![CurrencyInfo {
+        //         currency: "USDC".into(),
+        //         chain_name: "assethub-polkadot".into(),
+        //         kind: TokenKind::Asset,
+        //         decimals: 6,
+        //         rpc_url: state.rpc.clone(),
+        //         asset_id: Some(1337),
+        //     }],
+        // }
+        // .into(),
+        todo!()
     )
 }

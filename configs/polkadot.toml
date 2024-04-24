@@ -1,5 +1,4 @@
 account-lifetime = 604800000 # 1 week.
-depth = 86400000 # 1 day.
 
 [[chain]]
 name = "polkadot"

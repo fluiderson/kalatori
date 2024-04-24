@@ -1,7 +1,7 @@
 [package]
 name = "kalatori"
 authors = ["Alzymologist Oy <contact@zymologia.fi>"]
-version = "0.2.0-rc2"
+version = "0.2.0-rc3"
 edition = "2021"
 description = "A gateway daemon for Kalatori."
 license = "GPL-3.0-or-later"
@@ -18,9 +18,10 @@ ureq = { version = "2", default-features = false, features = ["json"] }
 
 names = { version = "0.14", default-features = false }
 
-subxt = { version = "=0.35", features = ["substrate-compat", "unstable-reconnecting-rpc-client"] }
+subxt = { version = "=0.35.3", features = ["substrate-compat", "unstable-reconnecting-rpc-client"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio = { version = "1", features = ["signal"] }
+time = "0.3"
 
 hex-simd = "0.8"
 serde = "1"

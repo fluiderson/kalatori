@@ -9,7 +9,7 @@ use subxt::ext::{
             types::{Composite, Tuple},
             TypeIdFor,
         },
-        DecodeAsType, IntoVisitor, TypeResolver, Visitor,
+        DecodeAsType, IntoVisitor, TypeResolver,
     },
     scale_encode::{self, EncodeAsType},
 };
@@ -25,7 +25,7 @@ impl Asset {
     const MULTI_LOCATION: &'static str = "MultiLocation";
 }
 
-pub struct AssetVisitor<R>(PhantomData<R>);
+pub struct Visitor<R>(PhantomData<R>);
 
 fn try_into_asset_id(
     number: impl TryInto<AssetId> + ToString + Copy,
@@ -105,7 +105,7 @@ macro_rules! visit_composite_or_tuple {
     };
 }
 
-impl<R: TypeResolver> Visitor for AssetVisitor<R> {
+impl<R: TypeResolver> scale_decode::Visitor for Visitor<R> {
     type Value<'scale, 'resolver> = Asset;
     type Error = scale_decode::Error;
     type TypeResolver = R;
@@ -147,10 +147,10 @@ impl<R: TypeResolver> Visitor for AssetVisitor<R> {
 }
 
 impl IntoVisitor for Asset {
-    type AnyVisitor<R: TypeResolver> = AssetVisitor<R>;
+    type AnyVisitor<R: TypeResolver> = Visitor<R>;
 
     fn into_visitor<R: TypeResolver>() -> Self::AnyVisitor<R> {
-        AssetVisitor(PhantomData)
+        Visitor(PhantomData)
     }
 }
 

@@ -1,6 +1,7 @@
 use anyhow::{Context, Error, Result};
 use serde::Deserialize;
 use std::{
+    any::Any,
     borrow::Cow,
     collections::HashMap,
     env::{self, VarError},
@@ -22,7 +23,7 @@ use subxt::{
 };
 use tokio::{
     signal,
-    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{self, error::SendError, UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
 use tokio_util::{sync::CancellationToken, task};
@@ -36,8 +37,7 @@ mod rpc;
 mod server;
 
 use asset::Asset;
-use database::{ConfigWoChains, State};
-use rpc::Processor;
+use database::{ConfigWoChains, PublicSlot, State};
 
 const CONFIG: &str = "KALATORI_CONFIG";
 const LOG: &str = "KALATORI_LOG";
@@ -78,8 +78,16 @@ impl subxt::Config for RuntimeConfig {
     type AssetId = Asset;
 }
 
+fn main() -> Result<()> {
+    try_main().map_err(|error| {
+        tracing::info!("Badbye!");
+
+        error
+    })
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn try_main() -> Result<()> {
     let shutdown_notification = CancellationToken::new();
 
     set_panic_hook(shutdown_notification.clone());
@@ -96,7 +104,7 @@ async fn main() -> Result<()> {
 
     let config = Config::parse()?;
 
-    let host = if let Some(unparsed_host) = config.host {
+    let host = if let Some(unparsed_host) = &config.host {
         unparsed_host
             .parse()
             .context("failed to convert `host` from the config to a socket address")?
@@ -104,25 +112,15 @@ async fn main() -> Result<()> {
         DEFAULT_SOCKET
     };
 
-    let debug = config.debug.unwrap_or_default();
-
-    let database_path = 'database: {
-        if debug {
-            if config.in_memory_db.unwrap_or_default() {
-                if config.database.is_some() {
-                    tracing::warn!(
-                        "`database` is set in the config but ignored because `in_memory_db` is \"true\""
-                    );
-                }
-
-                break 'database None;
-            }
-        } else if config.in_memory_db.is_some() {
+    let database_path = if config.in_memory_db.unwrap_or_default() {
+        if config.database.is_some() {
             tracing::warn!(
-                "`in_memory_db` is set in the config but ignored because `debug` isn't set"
+                "`database` is set in the config but ignored because `in_memory_db` is \"true\""
             );
         }
 
+        None
+    } else {
         Some(config.database.unwrap_or_else(|| {
             tracing::debug!(
                 "`database` isn't present in the config, using the default value instead: {DEFAULT_DATABASE:?}."
@@ -138,6 +136,28 @@ async fn main() -> Result<()> {
         env!("CARGO_PKG_AUTHORS")
     );
 
+    let (chains, currencies) = rpc::prepare(config.chain, config.account_lifetime)
+        .await
+        .context("failed to prepare the RPC module")?;
+
+    tracing::info!(
+        "The number of served chains: {}. With the total number of currencies: {}.",
+        chains.len(),
+        currencies.len()
+    );
+
+    let state = State::initialize(
+        database_path,
+        config.debug,
+        &recipient,
+        remark,
+        pair,
+        old_pairs,
+        config.account_lifetime,
+        chains,
+    )
+    .context("failed to initialize the database module")?;
+
     let (task_tracker, error_rx) = TaskTracker::new();
 
     task_tracker.spawn(
@@ -145,42 +165,36 @@ async fn main() -> Result<()> {
         shutdown_listener(shutdown_notification.clone()),
     );
 
-    let (chains, currencies) = rpc::prepare(config.chain, config.account_lifetime, config.depth)
-        .await
-        .context("failed while preparing the RPC module")?;
+    // let state = State::initialise(
+    //     database_path,
+    //     currencies,
+    //     pair,
+    //     old_pairs,
+    //     ConfigWoChains {
+    //         recipient,
+    //         debug: config.debug,
+    //         remark,
+    //         depth: config.depth,
+    //         account_lifetime: config.account_lifetime,
+    //         rpc,
+    //     },
+    // )
+    // .context("failed to initialise the database module")?;
 
-    let rpc = env::var("KALATORI_RPC").unwrap();
+    // task_tracker.spawn(
+    //     "proc",
+    //     Processor::ignite(state.clone(), shutdown_notification.clone()),
+    // );
 
-    let state = State::initialise(
-        database_path,
-        currencies,
-        pair,
-        old_pairs,
-        ConfigWoChains {
-            recipient,
-            debug: config.debug,
-            remark,
-            depth: config.depth,
-            account_lifetime: config.account_lifetime,
-            rpc,
-        },
-    )
-    .context("failed to initialise the database module")?;
-
-    task_tracker.spawn(
-        "proc",
-        Processor::ignite(state.clone(), shutdown_notification.clone()),
-    );
-
-    let server = server::new(shutdown_notification.clone(), host, state)
-        .await
-        .context("failed to initialise the server module")?;
+    // let server = server::new(shutdown_notification.clone(), host, state)
+    //     .await
+    //     .context("failed to initialise the server module")?;
 
     // task_tracker.spawn(shutdown(
     //     processor.ignite(last_saved_block, task_tracker.clone(), error_tx.clone()),
     //     error_tx,
     // ));
-    task_tracker.spawn("the server module", server);
+    // task_tracker.spawn("the server module", server);
 
     task_tracker
         .wait_with_notification(error_rx, shutdown_notification)
@@ -283,7 +297,7 @@ fn default_filter() -> String {
     filter
 }
 
-fn parse_seeds() -> Result<(Pair, HashMap<String, Pair>)> {
+fn parse_seeds() -> Result<(Pair, HashMap<PublicSlot, (Pair, String)>)> {
     let pair = Pair::from_string(
         &env::var(SEED).with_context(|| format!("failed to read `{SEED}`"))?,
         None,
@@ -304,7 +318,7 @@ fn parse_seeds() -> Result<(Pair, HashMap<String, Pair>)> {
             let old_pair = Pair::from_string(value, None)
                 .with_context(|| format!("failed to generate a key pair from `{OLD_SEED}{key}`"))?;
 
-            old_pairs.insert(key.to_owned(), old_pair);
+            old_pairs.insert(old_pair.public().0, (old_pair, key.to_owned()));
         }
     }
 
@@ -339,7 +353,13 @@ impl TaskTracker {
                 Ok(shutdown_message) if !shutdown_message.is_empty() => {
                     tracing::info!("{shutdown_message}");
                 }
-                Err(error) => error_tx.send((name.into(), error)).unwrap(),
+                Err(error) => {
+                    if let Err(SendError((from, unsent_error))) =
+                        error_tx.send((name.into(), error))
+                    {
+                        tracing::error!("Received a fatal error from {from}:\n{unsent_error:?}");
+                    }
+                }
                 _ => {}
             }
         })
@@ -350,6 +370,8 @@ impl TaskTracker {
         mut error_rx: UnboundedReceiver<(Cow<'static, str>, Error)>,
         shutdown_notification: CancellationToken,
     ) {
+        // `self` holds the last `error_tx`, so we need to drop it; otherwise it'll create a
+        // deadlock at `error_rx.recv()`.
         drop(self.error_tx);
 
         while let Some((from, error)) = error_rx.recv().await {
