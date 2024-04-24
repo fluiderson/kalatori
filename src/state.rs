@@ -1,6 +1,7 @@
 use crate::{
+    database::Database,
+    definitions::api_v2::{CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
     error::Error,
-    server::{CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
     ConfigWoChains, TaskTracker,
 };
 
@@ -9,6 +10,8 @@ use std::collections::HashMap;
 use substrate_crypto_light::sr25519::Pair;
 use tokio::sync::oneshot;
 
+/// Struct to store state of daemon. If something requires cooperation of more than one component,
+/// it should go through here.
 #[derive(Clone, Debug)]
 pub struct State {
     pub tx: tokio::sync::mpsc::Sender<StateAccessRequest>,
@@ -27,7 +30,8 @@ impl State {
             account_lifetime,
             rpc,
         }: ConfigWoChains,
-        task_tracker: &TaskTracker,
+        db: Database,
+        task_tracker: TaskTracker,
     ) -> Result<Self, Error> {
         /*
             currencies: HashMap<String, CurrencyProperties>,
@@ -41,6 +45,8 @@ impl State {
             rpc: String,
         */
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+
+        // Remember to always spawn async here or things might deadlock
         task_tracker.spawn("State Handler", async move {
             while let Some(request) = rx.recv().await {
                 match request {

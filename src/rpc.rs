@@ -1,8 +1,8 @@
 use crate::{
     chain::{base58prefix, pallet_index, storage_key, unit},
     database::Invoicee,
+    definitions::api_v2::CurrencyProperties,
     error::{Error, ErrorChain, NotHex},
-    server::CurrencyProperties,
     state::State,
     utils::unhex,
     AccountId32, AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,

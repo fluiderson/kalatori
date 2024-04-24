@@ -1,5 +1,5 @@
 use crate::{
-    server::{
+    definitions::api_v2::{
         CurrencyInfo, OrderInfo, OrderStatus, PaymentStatus, ServerInfo, TokenKind,
         WithdrawalStatus,
     },

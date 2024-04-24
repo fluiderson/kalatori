@@ -1,26 +1,28 @@
+//! Database server module
+//!
+//! We do not need concurrency here, as this is our actual source of truth for legally binging
+//! commercial offers and contracts, hence causality is a must. Care must be taken that no threads
+//! are spawned here other than main database server thread that does everything in series.
+
 use crate::{
+    definitions::api_v2::{CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
     error::{Error, ErrorDb},
-    server::{CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
-    AccountId32, AssetId, Balance, BlockNumber, Nonce, Timestamp,
+    AccountId32, AssetId, Balance, BlockNumber, Nonce, TaskTracker, Timestamp,
 };
 use parity_scale_codec::{Compact, Decode, Encode};
-use redb::{
-    backends::{FileBackend, InMemoryBackend},
-    Database, ReadableTable, TableDefinition, TypeName, Value,
-};
 use serde::Deserialize;
 use std::{collections::HashMap, fs::File, io::ErrorKind};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 pub const MODULE: &str = module_path!();
 
 // Tables
-
+/*
 const ROOT: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("root");
 const KEYS: TableDefinition<'_, PublicSlot, U256Slot> = TableDefinition::new("keys");
 const CHAINS: TableDefinition<'_, ChainHash, BlockNumber> = TableDefinition::new("chains");
 const INVOICES: TableDefinition<'_, InvoiceKey, Invoice> = TableDefinition::new("invoices");
-
+*/
 const ACCOUNTS: &str = "accounts";
 
 //type ACCOUNTS_KEY = (Option<AssetId>, Account);
@@ -118,6 +120,7 @@ struct TransferTx {
     exact_amount: Option<Compact<BalanceSlot>>,
 }
 
+/*
 impl Value for Invoice {
     type SelfType<'a> = Self;
 
@@ -141,7 +144,7 @@ impl Value for Invoice {
     fn type_name() -> TypeName {
         TypeName::new(stringify!(Invoice))
     }
-}
+}*/
 
 pub struct ConfigWoChains {
     pub recipient: AccountId32,
@@ -152,44 +155,50 @@ pub struct ConfigWoChains {
     pub rpc: String,
 }
 
-pub struct DatabaseServer {}
+/// Database server handle
+#[derive(Clone, Debug)]
+pub struct Database {
+    tx: mpsc::Sender<DbRequest>,
+}
 
-impl DatabaseServer {
-    pub fn init(path_option: Option<String>) -> Result<Self, Error> {
-        let builder = Database::builder();
-        let is_new;
-
+impl Database {
+    pub fn init(path_option: Option<String>, task_tracker: TaskTracker) -> Result<Self, Error> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let database = if let Some(path) = path_option {
             tracing::info!("Creating/Opening the database at {path:?}.");
 
-            match File::create_new(&path) {
-                Ok(file) => {
-                    is_new = true;
-
-                    FileBackend::new(file)
-                        .and_then(|backend| builder.create_with_backend(backend))
-                        .map_err(ErrorDb::DbStartError)?
-                }
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    is_new = false;
-
-                    builder.create(path).map_err(ErrorDb::DbStartError)?
-                }
-                Err(error) => return Err(error.into()),
-            }
+            sled::open(path).map_err(ErrorDb::DbStartError)?;
         } else {
+            // TODO
+            /*
             tracing::warn!(
                 "The in-memory backend for the database is selected. All saved data will be deleted after the shutdown!"
-            );
+            );*/
+            let db = sled::open("temp.db").map_err(ErrorDb::DbStartError)?;
+        };
 
-            is_new = true;
+        task_tracker.spawn("Database server", async move {
+            // No process forking beyond this point!
+            while let Some(request) = rx.recv().await {
+                match request {
+                    DbRequest::CreateOrder => {}
+                };
+            }
 
-            builder
-                .create_with_backend(InMemoryBackend::new())
-                .map_err(ErrorDb::DbStartError)?
-        }; //.context("failed to create/open the database")?;
-        Ok(Self {})
+            Ok("Database server is shutting down".into())
+        });
+
+        Ok(Self { tx })
     }
+
+    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, ErrorDb> {
+        let (res, rx) = oneshot::channel();
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)
+    }
+}
+
+enum DbRequest {
+    CreateOrder,
 }
 
 //impl StateInterface {

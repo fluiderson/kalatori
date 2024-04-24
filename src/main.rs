@@ -26,6 +26,7 @@ mod asset;
 mod callback;
 mod chain;
 mod database;
+mod definitions;
 mod error;
 mod rpc;
 mod server;
@@ -138,6 +139,8 @@ async fn main() -> Result<(), Error> {
         .map_err(Error::RecipientAccount)?
         .0;
 
+    let db = database::Database::init(database_path, task_tracker.clone())?;
+
     let state = State::initialise(
         currencies,
         pair,
@@ -150,7 +153,8 @@ async fn main() -> Result<(), Error> {
             account_lifetime: config.account_lifetime,
             rpc: rpc.clone(),
         },
-        &task_tracker,
+        db,
+        task_tracker.clone(),
     )?;
 
     task_tracker.spawn(
