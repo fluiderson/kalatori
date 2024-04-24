@@ -146,7 +146,7 @@ async fn try_main() -> Result<()> {
         currencies.len()
     );
 
-    let state = State::initialize(
+    let (state, checked_chains) = State::initialize(
         database_path,
         config.debug,
         &recipient,
@@ -164,22 +164,6 @@ async fn try_main() -> Result<()> {
         "the shutdown listener",
         shutdown_listener(shutdown_notification.clone()),
     );
-
-    // let state = State::initialise(
-    //     database_path,
-    //     currencies,
-    //     pair,
-    //     old_pairs,
-    //     ConfigWoChains {
-    //         recipient,
-    //         debug: config.debug,
-    //         remark,
-    //         depth: config.depth,
-    //         account_lifetime: config.account_lifetime,
-    //         rpc,
-    //     },
-    // )
-    // .context("failed to initialise the database module")?;
 
     // task_tracker.spawn(
     //     "proc",

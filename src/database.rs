@@ -33,6 +33,8 @@ use tokio::sync::RwLock;
 
 pub const MODULE: &str = module_path!();
 
+type CheckedChains = HashMap<Rc<String>, (Option<ConnectedChain>, ChainHash)>;
+
 // Tables
 
 const ROOT: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("root");
@@ -210,7 +212,7 @@ impl State {
         old_pairs: HashMap<PublicSlot, (Pair, String)>,
         account_lifetime: Timestamp,
         chains: HashMap<Arc<String>, ConnectedChain>,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<(Arc<Self>, CheckedChains)> {
         let builder = Database::builder();
 
         let (mut database, is_new) = if let Some(path) = path_option {
@@ -303,14 +305,18 @@ impl State {
             tracing::debug!("The database doesn't need to be compacted.");
         }
 
-        Ok(Arc::new(Self {
-            recipient: AccountId::from_string(recipient)
-                .context("failed to convert `recipient` from the config to an account address")?,
-            pair,
-            account_lifetime,
-            debug,
-            remark,
-        }))
+        Ok((
+            Arc::new(Self {
+                recipient: AccountId::from_string(recipient).context(
+                    "failed to convert `recipient` from the config to an account address",
+                )?,
+                pair,
+                account_lifetime,
+                debug,
+                remark,
+            }),
+            checked_chains,
+        ))
     }
 
     //     pub fn rpc(&self) -> &str {
@@ -431,7 +437,7 @@ fn process_existing_db(
     public: PublicSlot,
     old_pairs: HashMap<PublicSlot, (Pair, String)>,
     mut chains: HashMap<Arc<String>, ConnectedChain>,
-    checked_chains: &mut HashMap<Rc<String>, Option<ConnectedChain>>,
+    checked_chains: &mut CheckedChains,
 ) -> Result<Vec<u8>> {
     let db_version: Version = decode_slot(encoded_db_version, DB_VERSION_KEY)?;
 
@@ -490,7 +496,7 @@ fn process_existing_db(
 fn process_empty_db(
     is_new: bool,
     chains: HashMap<Arc<String>, ConnectedChain>,
-    checked_chains: &mut HashMap<Rc<String>, Option<ConnectedChain>>,
+    checked_chains: &mut CheckedChains,
     root: &mut Table<'_, &str, &[u8]>,
     public: PublicSlot,
 ) -> Result<Vec<u8>> {
@@ -658,7 +664,7 @@ fn process_db_chain(
     properties: ChainProperties,
     db_chains: &mut Vec<(Rc<String>, ChainProperties)>,
     chain_hashes: &mut HashSet<ChainHash>,
-    checked_chains: &mut HashMap<Rc<String>, Option<ConnectedChain>>,
+    checked_chains: &mut CheckedChains,
 ) -> Result<()> {
     if !chain_hashes.insert(properties.hash) {
         tracing::debug!("Detected a chain hash duplicate {name:?} in the database.");
@@ -689,7 +695,7 @@ fn process_db_chain(
 
             return Ok(());
         }
-        Entry::Vacant(entry) => entry.insert(checked_connected_chain),
+        Entry::Vacant(entry) => entry.insert((checked_connected_chain, properties.hash)),
     };
 
     tracing::info!(
@@ -706,7 +712,7 @@ fn process_chain(
     name: Arc<String>,
     chain: ConnectedChain,
     chain_hashes: &mut HashSet<ChainHash>,
-    checked_chains: &mut HashMap<Rc<String>, Option<ConnectedChain>>,
+    checked_chains: &mut CheckedChains,
     db_chains: &mut Vec<(Rc<String>, ChainProperties)>,
 ) {
     let genesis = U256::from(chain.genesis.0);
@@ -731,7 +737,7 @@ fn process_chain(
                     hash,
                 },
             ));
-            checked_chains.insert(name_rc.clone(), Some(chain));
+            checked_chains.insert(name_rc.clone(), (Some(chain), hash));
 
             break;
         }
