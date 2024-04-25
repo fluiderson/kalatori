@@ -2,7 +2,7 @@ use crate::{
     definitions::api_v2::*,
     error::{Error, ErrorOrder, ErrorServer},
     state::State,
-    AssetId, BlockNumber, Decimals, ExtrinsicIndex,
+    definitions::api_v2::{AssetId, BlockNumber, Decimals, ExtrinsicIndex,}
 };
 use axum::{
     extract::{self, rejection::RawPathParamsRejection, MatchedPath, Query, RawPathParams},

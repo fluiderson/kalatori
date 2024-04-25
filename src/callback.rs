@@ -1,11 +1,12 @@
 use crate::{
-    definitions::api_v2::{
+    definitions::{api_v2::{
         CurrencyInfo, OrderInfo, OrderStatus, PaymentStatus, ServerInfo, TokenKind,
         WithdrawalStatus,
-    },
-    AccountId32, Balance,
+    }, Balance},
 };
+use substrate_crypto_light::common::AccountId32;
 use tokio::task;
+
 
 pub const MODULE: &str = module_path!();
 

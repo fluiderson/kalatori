@@ -5,8 +5,8 @@ use crate::{
     error::{Error, ErrorChain, NotHex},
     state::State,
     utils::unhex,
-    AccountId32, AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
-    Nonce, PalletIndex, TaskTracker, Timestamp,
+    definitions::{api_v2::{AssetId, BlockNumber, Decimals,     }, AssetInfo, Balance, BlockHash, Chain, NativeToken, Nonce, PalletIndex, Timestamp},
+TaskTracker, 
 };
 use frame_metadata::{v15::RuntimeMetadataV15, RuntimeMetadata};
 use jsonrpsee::core::client::ClientT;
@@ -23,6 +23,7 @@ use std::{
     fmt::Debug,
     num::NonZeroU64,
 };
+use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
     cards::{ExtendedData, ParsedData},
     decode_all_as_type, AsMetadata, ShortSpecs,

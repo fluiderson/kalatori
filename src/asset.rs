@@ -1,4 +1,4 @@
-use crate::{AssetId, PalletIndex};
+use crate::definitions::{api_v2::AssetId, PalletIndex};
 use std::marker::PhantomData;
 
 #[derive(Clone, Debug)]

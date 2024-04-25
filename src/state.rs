@@ -8,6 +8,7 @@ use crate::{
 use std::collections::HashMap;
 
 use substrate_crypto_light::sr25519::Pair;
+use substrate_crypto_light::common::AccountId32;
 use tokio::sync::oneshot;
 
 /// Struct to store state of daemon. If something requires cooperation of more than one component,

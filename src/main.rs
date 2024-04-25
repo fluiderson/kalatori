@@ -1,6 +1,5 @@
 use mnemonic_external::{regular::InternalWordList, WordSet};
 use substrate_crypto_light::{common::cut_path, sr25519::Pair};
-
 use serde::Deserialize;
 use std::{
     borrow::Cow,
@@ -34,6 +33,7 @@ mod state;
 mod utils;
 
 use database::ConfigWoChains;
+use crate::definitions::{Chain, Version, Timestamp};
 use error::Error;
 use rpc::Processor;
 use state::State;
@@ -51,16 +51,6 @@ const DEFAULT_CONFIG: &str = "configs/polkadot.toml";
 const DEFAULT_SOCKET: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 16726);
 const DEFAULT_DATABASE: &str = "kalatori.db";
 
-type AssetId = u32;
-type Decimals = u8;
-type BlockNumber = u64;
-type ExtrinsicIndex = u32;
-type Version = u64;
-type Nonce = u32;
-type Timestamp = u64;
-type PalletIndex = u8;
-
-type BlockHash = primitive_types::H256;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -436,74 +426,6 @@ impl Config {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct Chain {
-    name: String,
-    endpoints: Vec<String>,
-    #[serde(flatten)]
-    native_token: Option<NativeToken>,
-    asset: Option<Vec<AssetInfo>>,
-}
 
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct NativeToken {
-    native_token: String,
-    decimals: Decimals,
-}
 
-#[derive(Deserialize)]
-struct AssetInfo {
-    name: String,
-    id: AssetId,
-}
 
-#[derive(Deserialize, Debug, Clone, Copy)]
-struct Balance(u128);
-
-impl Deref for Balance {
-    type Target = u128;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Balance {
-    fn format(&self, decimals: Decimals) -> f64 {
-        #[allow(clippy::cast_precision_loss)]
-        let float = **self as f64;
-
-        float / decimal_exponent_product(decimals)
-    }
-
-    fn parse(float: f64, decimals: Decimals) -> Self {
-        let parsed_float = (float * decimal_exponent_product(decimals)).round();
-
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        Self(parsed_float as _)
-    }
-}
-
-fn decimal_exponent_product(decimals: Decimals) -> f64 {
-    10f64.powi(decimals.into())
-}
-
-#[cfg(test)]
-#[test]
-#[allow(
-    clippy::inconsistent_digit_grouping,
-    clippy::unreadable_literal,
-    clippy::float_cmp
-)]
-
-fn balance_insufficient_precision() {
-    const DECIMALS: Decimals = 10;
-
-    let float = 931395.862219815_3;
-    let parsed = Balance::parse(float, DECIMALS);
-
-    assert_eq!(*parsed, 931395_862219815_2);
-    assert_eq!(parsed.format(DECIMALS), 931395.862219815_1);
-}
