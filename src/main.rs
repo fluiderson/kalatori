@@ -32,7 +32,7 @@ mod server;
 mod state;
 mod utils;
 
-use crate::definitions::{Chain, Timestamp, Version};
+use crate::definitions::{Chain, Entropy, Timestamp, Version};
 use database::ConfigWoChains;
 use error::Error;
 use rpc::Processor;
@@ -60,7 +60,7 @@ async fn main() -> Result<(), Error> {
 
     // Read env
 
-    let (pair, old_pairs) = parse_seeds()?;
+    let secret_entropy = parse_seeds()?;
     let recipient = env::var(RECIPIENT).map_err(|_| Error::Env(RECIPIENT.to_string()))?;
 
     let remark = env::var(REMARK).map_err(|_| Error::Env(REMARK.to_string()))?;
@@ -134,8 +134,7 @@ async fn main() -> Result<(), Error> {
 
     let state = State::initialise(
         currencies,
-        pair,
-        old_pairs,
+        secret_entropy,
         ConfigWoChains {
             recipient: recipient.clone(),
             debug: config.debug,
@@ -272,10 +271,10 @@ fn default_filter() -> String {
     filter
 }
 
-fn parse_seeds() -> Result<(Pair, HashMap<String, Pair>), Error> {
-    let pair = seed_from_phrase(&env::var(SEED).map_err(|_| Error::Env(SEED.to_string()))?)?;
+fn parse_seeds() -> Result<Entropy, Error> {
+    entropy_from_phrase(&env::var(SEED).map_err(|_| Error::Env(SEED.to_string()))?)
 
-    let mut old_pairs = HashMap::new();
+    //let mut old_pairs = HashMap::new();
     /* TODO: add this at least when you do something about these
         for (raw_key, raw_value) in env::vars_os() {
             let raw_key_bytes = raw_key.as_encoded_bytes();
@@ -292,18 +291,18 @@ fn parse_seeds() -> Result<(Pair, HashMap<String, Pair>), Error> {
             }
         }
     */
-    Ok((pair, old_pairs))
 }
 
-pub fn seed_from_phrase(seed: &str) -> Result<Pair, Error> {
+pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, Error> {
     let mut word_set = WordSet::new();
     for word in seed.split(' ') {
         word_set.add_word(&word, &InternalWordList)?;
     }
-    let entropy = word_set.to_entropy()?;
+    Ok(word_set.to_entropy()?)
+    /*
     let derivation = cut_path("").expect("empty derivation is hardcoded");
     Ok(Pair::from_entropy_and_full_derivation(&entropy, derivation)
-        .expect("empty derivation and password are hardcoded"))
+        .expect("empty derivation and password are hardcoded"))*/
 }
 
 #[derive(Clone)]

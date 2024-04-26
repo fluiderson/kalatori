@@ -1,13 +1,14 @@
 use crate::{
+    chain::derivations,
     database::Database,
-    definitions::api_v2::{CurrencyProperties, OrderQuery, OrderResponse, OrderStatus, ServerInfo, ServerStatus},
-    error::Error,
+    definitions::{api_v2::{CurrencyProperties, OrderCreateResponse, OrderQuery, OrderInfo, OrderResponse, OrderStatus, ServerInfo, ServerStatus}, Entropy},
+    error::{Error, ErrorOrder},
     ConfigWoChains, TaskTracker,
 };
 
 use std::collections::HashMap;
 
-use substrate_crypto_light::common::AccountId32;
+use substrate_crypto_light::common::{AccountId32, AsBase58};
 use substrate_crypto_light::sr25519::Pair;
 use tokio::sync::oneshot;
 
@@ -21,8 +22,7 @@ pub struct State {
 impl State {
     pub fn initialise(
         currencies: HashMap<String, CurrencyProperties>,
-        current_pair: Pair,
-        old_pairs: HashMap<String, Pair>,
+        seed_entropy: Entropy,
         ConfigWoChains {
             recipient,
             debug,
@@ -48,33 +48,37 @@ impl State {
         */
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
 
-        let recipient_ss58 = String::new(); // TODO ASAP
+        let recipient_ss58 = recipient.to_base58_string(2); //TODO
 
-        // Remember to always spawn async here or things might deadlock
-        task_tracker.spawn("State Handler", async move {
-            while let Some(request) = rx.recv().await {
-                match request {
-                    StateAccessRequest::GetInvoiceStatus(request) => {
-                        let server_info = ServerInfo { // TODO
+        let server_info = ServerInfo { // TODO
                             version: env!("CARGO_PKG_VERSION"),
                             instance_id: instance_id.clone(),
                             debug,
                             kalatori_remark: remark.clone(),
                         };
 
-                        request.res.send(get_invoice_status(request.order, recipient_ss58.clone(), server_info, &db).await);
+        let state = StateData {
+            currencies,
+            recipient: recipient_ss58,
+            server_info,
+            db,
+            seed_entropy,
+        };
+
+        // Remember to always spawn async here or things might deadlock
+        task_tracker.spawn("State Handler", async move {
+            while let Some(request) = rx.recv().await {
+                match request {
+                    StateAccessRequest::GetInvoiceStatus(request) => {
+                        request.res.send(state.get_invoice_status(request.order).await);
                     }
-                    StateAccessRequest::CreateInvoice(a) => {}
+                    StateAccessRequest::CreateInvoice(request) => {
+                        request.res.send(state.create_invoice(request.order_query).await);
+                    }
                     StateAccessRequest::ServerStatus(res) => {
-                        let description = ServerInfo {
-                            version: env!("CARGO_PKG_VERSION"),
-                            instance_id: String::new(),
-                            debug,
-                            kalatori_remark: remark.clone(),
-                        };
                         let server_status = ServerStatus {
-                            description,
-                            supported_currencies: currencies.clone(),
+                            description: state.server_info.clone(),
+                            supported_currencies: state.currencies.clone(),
                         };
                         res.send(server_status);
                     }
@@ -146,15 +150,52 @@ struct CreateInvoice {
     pub res: oneshot::Sender<Result<OrderResponse, Error>>,
 }
 
-async fn get_invoice_status(order: String, recipient: String, server_info: ServerInfo, db: &Database) -> Result<OrderResponse, Error> {
-    if let Some(order_info) = db.read_order(order.clone()).await? {
+struct StateData {
+    currencies: HashMap<String, CurrencyProperties>,
+    recipient: String,
+    server_info: ServerInfo,
+    db: Database,
+    seed_entropy: Entropy,
+}
+
+impl StateData {
+    async fn get_invoice_status(&self, order: String) -> Result<OrderResponse, Error> {
+    if let Some(order_info) = self.db.read_order(order.clone()).await? {
         let message = String::new(); //TODO
         Ok(OrderResponse::FoundOrder(OrderStatus {
             order,
             message,
-            recipient,
-            server_info,
+            recipient: self.recipient.clone(),
+            server_info: self.server_info.clone(),
             order_info,
        }))
     } else {Ok(OrderResponse::NotFound)}
 }
+
+    async fn create_invoice(&self, order_query: OrderQuery) -> Result<OrderResponse, Error> {
+    let order = order_query.order.clone();
+    let currency = self.currencies.get(&order_query.currency).ok_or(ErrorOrder::UnknownCurrency)?;
+    let currency = currency.info(order_query.currency.clone());
+    let payment_account = Pair::from_entropy_and_full_derivation(&self.seed_entropy, derivations(&self.recipient, &order_query.order))?.public().to_base58_string(currency.ss58);
+    let order_info = OrderInfo::new(order_query, currency, payment_account);
+    match self.db.create_order(order.clone(), order_info.clone()).await? {
+        OrderCreateResponse::New => 
+            Ok(OrderResponse::NewOrder(self.order_status(order, order_info, String::new()))),
+        OrderCreateResponse::Modified => 
+            Ok(OrderResponse::ModifiedOrder(self.order_status(order, order_info, String::new()))),
+        OrderCreateResponse::Collision(order_status) => Ok(OrderResponse::CollidedOrder(self.order_status(order, order_info, String::from("Order with this ID was already processed"))))
+    }
+    }
+
+    fn order_status(&self, order: String, order_info: OrderInfo, message: String) -> OrderStatus {
+        OrderStatus {
+            order,
+            message,
+            recipient: self.recipient.clone(),
+            server_info: self.server_info.clone(),
+            order_info,
+        }
+    }
+}
+
+

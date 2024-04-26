@@ -14,6 +14,14 @@ use substrate_parser::{
     cards::{ExtendedData, ParsedData},
     decode_all_as_type, AsMetadata, ShortSpecs,
 };
+use substrate_crypto_light::common::{DeriveJunction, FullDerivation};
+
+pub fn derivations<'a>(recipient: &'a str, order: &'a str) -> FullDerivation<'a> {
+    FullDerivation {
+        junctions: vec![DeriveJunction::hard(recipient), DeriveJunction::hard(order)],
+        password: None,
+    }
+}
 
 pub fn hashed_key_element(data: &[u8], hasher: &StorageHasher) -> Vec<u8> {
     match hasher {

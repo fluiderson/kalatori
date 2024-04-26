@@ -11,6 +11,8 @@ pub type PalletIndex = u8;
 
 pub type BlockHash = primitive_types::H256;
 
+pub type Entropy = Vec<u8>; // TODO: maybe enforce something here
+
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Chain {
@@ -109,7 +111,7 @@ pub mod api_v2 {
         pub order_info: OrderInfo,
     }
 
-    #[derive(Debug, Serialize, Encode, Decode)]
+    #[derive(Clone, Debug, Serialize, Encode, Decode)]
     pub struct OrderInfo {
         pub withdrawal_status: WithdrawalStatus,
         pub payment_status: PaymentStatus,
@@ -134,14 +136,20 @@ pub mod api_v2 {
         }
     }
 
-    #[derive(Debug, Serialize, Decode, Encode)]
+    pub enum OrderCreateResponse {
+        New,
+        Modified,
+        Collision(OrderInfo),
+    }
+
+    #[derive(Clone, Debug, Serialize, Decode, Encode)]
     #[serde(rename_all = "lowercase")]
     pub enum PaymentStatus {
         Pending,
         Paid,
     }
 
-    #[derive(Debug, Serialize, Decode, Encode)]
+    #[derive(Clone, Debug, Serialize, Decode, Encode)]
     #[serde(rename_all = "lowercase")]
     pub enum WithdrawalStatus {
         Waiting,
@@ -149,7 +157,7 @@ pub mod api_v2 {
         Completed,
     }
 
-    #[derive(Debug, Serialize)]
+    #[derive(Clone, Debug, Serialize)]
     pub struct ServerStatus {
         pub description: ServerInfo,
         pub supported_currencies: HashMap<std::string::String, CurrencyProperties>,
@@ -177,7 +185,7 @@ pub mod api_v2 {
         Critical,
     }
 
-    #[derive(Debug, Serialize, Decode, Encode)]
+    #[derive(Clone, Debug, Serialize, Decode, Encode)]
     pub struct CurrencyInfo {
         pub currency: String,
         pub chain_name: String,
@@ -186,6 +194,21 @@ pub mod api_v2 {
         pub rpc_url: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub asset_id: Option<AssetId>,
+        #[serde(skip_serializing)]
+        pub ss58: u16,
+    }
+
+    impl CurrencyInfo {
+        pub fn properties(&self) -> CurrencyProperties {
+            CurrencyProperties {
+                chain_name: self.chain_name.clone(),
+                kind: self.kind,
+                decimals: self.decimals,
+                rpc_url: self.rpc_url.clone(),
+                asset_id: self.asset_id,
+                ss58: self.ss58,
+            }
+        }
     }
 
     #[derive(Clone, Debug, Serialize)]
@@ -196,6 +219,22 @@ pub mod api_v2 {
         pub rpc_url: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub asset_id: Option<AssetId>,
+        #[serde(skip_serializing)]
+        pub ss58: u16,
+    }
+
+    impl CurrencyProperties {
+        pub fn info(&self, currency: String) -> CurrencyInfo {
+            CurrencyInfo {
+                currency,
+                chain_name: self.chain_name.clone(),
+                kind: self.kind,
+                decimals: self.decimals,
+                rpc_url: self.rpc_url.clone(),
+                asset_id: self.asset_id,
+                ss58: self.ss58,
+            }
+        }
     }
 
     #[derive(Clone, Copy, Debug, Serialize, Decode, Encode)]
@@ -205,7 +244,7 @@ pub mod api_v2 {
         Balances,
     }
 
-    #[derive(Debug, Serialize)]
+    #[derive(Clone, Debug, Serialize)]
     pub struct ServerInfo {
         pub version: &'static str,
         pub instance_id: String,
@@ -213,7 +252,7 @@ pub mod api_v2 {
         pub kalatori_remark: String,
     }
 
-    #[derive(Debug, Serialize, Decode, Encode)]
+    #[derive(Clone, Debug, Serialize, Decode, Encode)]
     pub struct TransactionInfo {
         #[serde(skip_serializing_if = "Option::is_none", flatten)]
         finalized_tx: Option<FinalizedTx>,
@@ -226,14 +265,14 @@ pub mod api_v2 {
         status: TxStatus,
     }
 
-    #[derive(Debug, Serialize, Decode, Encode)]
+    #[derive(Clone, Debug, Serialize, Decode, Encode)]
     struct FinalizedTx {
         block_number: BlockNumber,
         position_in_block: ExtrinsicIndex,
         timestamp: String,
     }
 
-    #[derive(Debug, Decode, Encode)]
+    #[derive(Clone, Debug, Decode, Encode)]
     enum Amount {
         All,
         Exact(f64),
@@ -246,7 +285,7 @@ pub mod api_v2 {
         }
     }
 
-    #[derive(Debug, Serialize, Decode, Encode)]
+    #[derive(Clone, Debug, Serialize, Decode, Encode)]
     #[serde(rename_all = "lowercase")]
     enum TxStatus {
         Pending,

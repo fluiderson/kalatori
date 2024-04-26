@@ -6,6 +6,7 @@ use primitive_types::H256;
 use serde_json::Value;
 use sled::Error as DatabaseError;
 use substrate_parser::error::*;
+use substrate_crypto_light::error::Error as CryptoError;
 use tokio::task::JoinError;
 
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +29,9 @@ pub enum Error {
     #[error("Database error: {0:?}")]
     ErrorDb(ErrorDb),
 
+    #[error("Order error: {0:?}")]
+    ErrorOrder(ErrorOrder),
+
     #[error("Daemon server error: {0:?}")]
     ErrorServer(ErrorServer),
 
@@ -39,6 +43,9 @@ pub enum Error {
 
     #[error("Seed phrase invalid: {0:?}")]
     InvalidSeed(ErrorWordList),
+
+    #[error("Derivation failed: {0:?}")]
+    InvalidDerivation(CryptoError),
 
     #[error("Fatal error. System is shutting down.")]
     Fatal,
@@ -59,6 +66,12 @@ impl From<ErrorChain> for Error {
     }
 }
 
+impl From<ErrorOrder> for Error {
+    fn from(e: ErrorOrder) -> Error {
+        Error::ErrorOrder(e)
+    }
+}
+
 impl From<ErrorServer> for Error {
     fn from(e: ErrorServer) -> Error {
         Error::ErrorServer(e)
@@ -74,6 +87,12 @@ impl From<std::io::Error> for Error {
 impl From<ErrorWordList> for Error {
     fn from(e: ErrorWordList) -> Self {
         Error::InvalidSeed(e)
+    }
+}
+
+impl From<CryptoError> for Error {
+    fn from(e: CryptoError) -> Self {
+        Error::InvalidDerivation(e)
     }
 }
 

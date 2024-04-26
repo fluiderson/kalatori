@@ -1205,3 +1205,253 @@ where
 //         Ok(())
 //     }
 // }
+//
+//
+
+/*
+pub async fn assets_set_at_block(address: &str, block_hash: &str) -> Vec<Asset> {
+    let metadata_v15 = metadata_v15(address, block_hash).await.unwrap();
+
+    let mut assets_set: Vec<Asset> = Vec::new();
+
+    let mut assets_asset_storage_metadata = None;
+    let mut assets_metadata_storage_metadata = None;
+
+    for pallet in metadata_v15.pallets.iter() {
+        if let Some(storage) = &pallet.storage {
+            if storage.prefix == "Assets" {
+                for entry in storage.entries.iter() {
+                    if entry.name == "Asset" {
+                        assets_asset_storage_metadata = Some(entry);
+                    }
+                    if entry.name == "Metadata" {
+                        assets_metadata_storage_metadata = Some(entry);
+                    }
+                    if assets_asset_storage_metadata.is_some()
+                        && assets_metadata_storage_metadata.is_some()
+                    {
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    let assets_asset_storage_metadata = assets_asset_storage_metadata.unwrap();
+    let assets_metadata_storage_metadata = assets_metadata_storage_metadata.unwrap();
+
+    let available_keys_assets_asset = get_keys_from_storage(address, "Assets", "Asset", block_hash)
+        .await
+        .unwrap();
+    if let Value::Array(ref keys_array) = available_keys_assets_asset {
+        for key in keys_array.iter() {
+            if let Value::String(string_key) = key {
+                let value_fetch = get_value_from_storage(address, string_key, block_hash)
+                    .await
+                    .unwrap();
+                if let Value::String(ref string_value) = value_fetch {
+                    let key_data = hex::decode(string_key.trim_start_matches("0x")).unwrap();
+                    let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
+                    let storage_entry = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
+                        &key_data.as_ref(),
+                        &value_data.as_ref(),
+                        &mut (),
+                        assets_asset_storage_metadata,
+                        &metadata_v15.types,
+                    )
+                    .unwrap();
+                    let asset_id = {
+                        if let KeyData::SingleHash { content } = storage_entry.key {
+                            if let KeyPart::Parsed(extended_data) = content {
+                                if let ParsedData::PrimitiveU32 {
+                                    value,
+                                    specialty: _,
+                                } = extended_data.data
+                                {
+                                    //println!("got asset id: {value}");
+                                    value
+                                } else {
+                                    panic!("asset id not u32")
+                                }
+                            } else {
+                                panic!("assets asset key has no parseable part")
+                            }
+                        } else {
+                            panic!("assets asset key is not a single hash entity")
+                        }
+                    };
+                    let mut verified_sufficient = false;
+                    if let ParsedData::Composite(fields) = storage_entry.value.data {
+                        for field_data in fields.iter() {
+                            if let Some(field_name) = &field_data.field_name {
+                                if field_name == "is_sufficient" {
+                                    if let ParsedData::PrimitiveBool(is_it) = field_data.data.data {
+                                        verified_sufficient = is_it;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if verified_sufficient {
+                        match &assets_metadata_storage_metadata.ty {
+                            StorageEntryType::Plain(_) => {
+                                panic!("expected map with single entry, got plain")
+                            }
+                            StorageEntryType::Map {
+                                hashers,
+                                key: key_ty,
+                                value: value_ty,
+                            } => {
+                                if hashers.len() == 1 {
+                                    let hasher = &hashers[0];
+                                    match metadata_v15.types.resolve(key_ty.id).unwrap().type_def {
+                                        TypeDef::Primitive(TypeDefPrimitive::U32) => {
+                                            let key_assets_metadata = format!(
+                                                "0x{}{}{}",
+                                                hex::encode(twox_128("Assets".as_bytes())),
+                                                hex::encode(twox_128("Metadata".as_bytes())),
+                                                hex::encode(hashed_key_element(
+                                                    &asset_id.encode(),
+                                                    hasher
+                                                ))
+                                            );
+                                            let value_fetch = get_value_from_storage(
+                                                address,
+                                                &key_assets_metadata,
+                                                block_hash,
+                                            )
+                                            .await
+                                            .unwrap();
+                                            if let Value::String(ref string_value) = value_fetch {
+                                                let value_data = hex::decode(
+                                                    string_value.trim_start_matches("0x"),
+                                                )
+                                                .unwrap();
+                                                let value = decode_all_as_type::<
+                                                    &[u8],
+                                                    (),
+                                                    RuntimeMetadataV15,
+                                                >(
+                                                    value_ty,
+                                                    &value_data.as_ref(),
+                                                    &mut (),
+                                                    &metadata_v15.types,
+                                                )
+                                                .unwrap();
+
+                                                let mut name = None;
+                                                let mut symbol = None;
+                                                let mut decimals = None;
+
+                                                if let ParsedData::Composite(fields) = value.data {
+                                                    for field_data in fields.iter() {
+                                                        if let Some(field_name) =
+                                                            &field_data.field_name
+                                                        {
+                                                            match field_name.as_str() {
+                                                                "name" => match &field_data.data.data {
+                                                                    ParsedData::Text{text, specialty: _} => {
+                                                                        name = Some(text.to_owned());
+                                                                    },
+                                                                    ParsedData::Sequence(sequence) => {
+                                                                        if let Sequence::U8(bytes) = &sequence.data {
+                                                                            if let Ok(name_from_bytes) = String::from_utf8(bytes.to_owned()) {
+                                                                                name = Some(name_from_bytes);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    ParsedData::Composite(fields) => {
+                                                                        if fields.len() == 1 {
+                                                                            match &fields[0].data.data {
+                                                                                ParsedData::Text{text, specialty: _} => {
+                                                                                    name = Some(text.to_owned());
+                                                                                },
+                                                                                ParsedData::Sequence(sequence) => {
+                                                                                    if let Sequence::U8(bytes) = &sequence.data {
+                                                                                        if let Ok(name_from_bytes) = String::from_utf8(bytes.to_owned()) {
+                                                                                            name = Some(name_from_bytes);
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                                _ => {},
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    _ => {},
+                                                                },
+                                                                "symbol" => match &field_data.data.data {
+                                                                    ParsedData::Text{text, specialty: _} => {
+                                                                        symbol = Some(text.to_owned());
+                                                                    },
+                                                                    ParsedData::Sequence(sequence) => {
+                                                                        if let Sequence::U8(bytes) = &sequence.data {
+                                                                            if let Ok(symbol_from_bytes) = String::from_utf8(bytes.to_owned()) {
+                                                                                symbol = Some(symbol_from_bytes);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    ParsedData::Composite(fields) => {
+                                                                        if fields.len() == 1 {
+                                                                            match &fields[0].data.data {
+                                                                                ParsedData::Text{text, specialty: _} => {
+                                                                                    symbol = Some(text.to_owned());
+                                                                                },
+                                                                                ParsedData::Sequence(sequence) => {
+                                                                                    if let Sequence::U8(bytes) = &sequence.data {
+                                                                                        if let Ok(symbol_from_bytes) = String::from_utf8(bytes.to_owned()) {
+                                                                                            symbol = Some(symbol_from_bytes);
+                                                                                        }
+                                                                                    }
+                                                                                },
+                                                                                _ => {},
+                                                                            }
+                                                                        }
+                                                                    },
+                                                                    _ => {},
+                                                                },
+                                                                "decimals" => {
+                                                                    if let ParsedData::PrimitiveU8{value, specialty: _} = field_data.data.data {
+                                                                        decimals = Some(value);
+                                                                    }
+                                                                },
+                                                                _ => {},
+                                                            }
+                                                        }
+                                                        if name.is_some()
+                                                            && symbol.is_some()
+                                                            && decimals.is_some()
+                                                        {
+                                                            break;
+                                                        }
+                                                    }
+                                                    let name = name.unwrap();
+                                                    let symbol = symbol.unwrap();
+                                                    let decimals = decimals.unwrap();
+                                                    assets_set.push(Asset {
+                                                        asset_id,
+                                                        name,
+                                                        symbol,
+                                                        decimals,
+                                                    })
+                                                } else {
+                                                    panic!("unexpected assets metadata value structure")
+                                                }
+                                            }
+                                        }
+                                        _ => panic!("wrong data type"),
+                                    }
+                                } else {
+                                    panic!("expected map with single entry, got multiple entries")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assets_set
+}
+*/

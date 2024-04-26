@@ -7,7 +7,7 @@
 use crate::{
     definitions::{
         api_v2::{
-            AssetId, BlockNumber, CurrencyProperties, OrderInfo, OrderQuery, PaymentStatus,
+            AssetId, BlockNumber, CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, PaymentStatus,
             ServerInfo, ServerStatus,
         },
         Balance, Nonce, Timestamp,
@@ -212,7 +212,7 @@ impl Database {
         &self,
         order: String,
         order_info: OrderInfo,
-    ) -> Result<OrderInfo, ErrorDb> {
+    ) -> Result<OrderCreateResponse, ErrorDb> {
         let (res, rx) = oneshot::channel();
         self.tx.send(DbRequest::CreateOrder(CreateOrder {
             order,
@@ -237,7 +237,7 @@ enum DbRequest {
 pub struct CreateOrder {
     pub order: String,
     pub order_info: OrderInfo,
-    pub res: oneshot::Sender<Result<OrderInfo, ErrorDb>>,
+    pub res: oneshot::Sender<Result<OrderCreateResponse, ErrorDb>>,
 }
 
 pub struct ReadOrder {
@@ -249,23 +249,24 @@ fn create_order(
     order: String,
     order_info: OrderInfo,
     orders: &sled::Tree,
-) -> Result<OrderInfo, ErrorDb> {
-    match orders.get(&order)? {
+) -> Result<OrderCreateResponse, ErrorDb> {
+    Ok(
+        match orders.get(&order)? {
         Some(record) => {
             let old_order_info = OrderInfo::decode(&mut &record[..])?;
             match order_info.payment_status {
                 PaymentStatus::Pending => {
                     let _ = orders.insert(order.encode(), order_info.encode())?;
-                    Ok(order_info)
+                    OrderCreateResponse::Modified
                 }
-                PaymentStatus::Paid => Ok(old_order_info),
+                PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info)
             }
         }
         None => {
             orders.insert(order.encode(), order_info.encode())?;
-            Ok(order_info)
+            OrderCreateResponse::New
         }
-    }
+    })
 }
 
 fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, ErrorDb> {
