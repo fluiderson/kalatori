@@ -1,4 +1,4 @@
-//! Utils to process chain data
+//! Utils to process chain data without accessing the chain
 
 //TransactionToFill::init(&mut (), metadata, genesis_hash).unwrap();
 use crate::error::ErrorChain;

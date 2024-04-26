@@ -1,8 +1,8 @@
 use crate::{
-    chain::{base58prefix, pallet_index, storage_key, unit},
+    chain::{base58prefix, hashed_key_element, pallet_index, storage_key, system_properties_to_short_specs, unit},
     definitions::api_v2::CurrencyProperties,
     definitions::{
-        api_v2::{AssetId, BlockNumber, Decimals},
+        api_v2::{AssetId, BlockNumber, CurrencyInfo, Decimals, TokenKind},
         AssetInfo, Balance, BlockHash, Chain, NativeToken, Nonce, PalletIndex, Timestamp,
     },
     error::{Error, ErrorChain, NotHex},
@@ -10,15 +10,16 @@ use crate::{
     utils::unhex,
     TaskTracker,
 };
-use frame_metadata::{v15::RuntimeMetadataV15, RuntimeMetadata};
+use frame_metadata::{v15::{RuntimeMetadataV15, StorageEntryType}, RuntimeMetadata};
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
-use parity_scale_codec::DecodeAll;
+use parity_scale_codec::{Encode, Decode, DecodeAll};
 use primitive_types::H256;
-use scale_info::TypeDef;
+use scale_info::{TypeDef, TypeDefPrimitive};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Number, Value};
+use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
 use std::{
     borrow::Cow,
     collections::{hash_map::Entry, HashMap},
@@ -27,8 +28,9 @@ use std::{
 };
 use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
-    cards::{ExtendedData, ParsedData},
-    decode_all_as_type, AsMetadata, ShortSpecs,
+    cards::{ExtendedData, ParsedData, Sequence},
+    decode_all_as_type, decode_as_storage_entry, AsMetadata, ShortSpecs,
+    storage_data::{KeyData, KeyPart},
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -272,29 +274,37 @@ async fn check_sufficiency_and_fetch_min_balance(
     })
 }*/
 
-pub async fn storage_fetch(
-    client: &WsClient,
-    prefix: &str,
-    storage_name: &str,
-    block: &BlockHash,
-) -> Result<String, ErrorChain> {
-    let key = storage_key(prefix, storage_name);
-    value_by_key_from_storage(client, &key, &hex::encode(block)).await
-}
-
-pub async fn value_by_key_from_storage(
+pub async fn get_value_from_storage(
     client: &WsClient,
     whole_key: &str,
     block_hash: &str,
-) -> Result<String, ErrorChain> {
-    let storage_value = client
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let value: Value = client
         .request("state_getStorage", rpc_params![whole_key, block_hash])
         .await?;
-    if let Value::String(a) = storage_value {
-        Ok(a)
-    } else {
-        Err(ErrorChain::StorageValueFormat(whole_key.to_string()))
-    }
+    Ok(value)
+}
+
+pub async fn get_keys_from_storage(
+    client: &WsClient,
+    prefix: &str,
+    storage_name: &str,
+    block_hash: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let keys: Value = client
+        .request(
+            "state_getKeys",
+            rpc_params![
+                format!(
+                    "0x{}{}",
+                    hex::encode(twox_128(prefix.as_bytes())),
+                    hex::encode(twox_128(storage_name.as_bytes()))
+                ),
+                block_hash
+            ],
+        )
+        .await?;
+    Ok(keys)
 }
 
 /*
@@ -420,7 +430,7 @@ pub async fn prepare(
 
     Ok((connected_chains_jh.await?, currencies_jh.await?))
 }
-
+*/
 /// fetch genesis hash, must be a hexadecimal string transformable into
 /// H256 format
 async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
@@ -515,7 +525,7 @@ async fn specs(client: &WsClient, metadata: &RuntimeMetadataV15, block_hash: &Bl
         }
 }
 
-
+/*
 async fn state_call(client: &WsClient, params: RpcParams) -> Result<String, ErrorChain> {
     let res = client
         .request(
@@ -523,10 +533,9 @@ async fn state_call(client: &WsClient, params: RpcParams) -> Result<String, Erro
             params,
         )
         .await
-        .map_err(ErrorChain::Client)?
+        .map_err(ErrorChain::Client)?;
     if let Value::String(a) = res { Ok(a) } else { Err(ErrorChain::StateCallResponse(res)) }
 }
-
 
 
 #[tracing::instrument(skip_all, fields(chain = chain.name))]
@@ -1208,11 +1217,10 @@ where
 //
 //
 
-/*
-pub async fn assets_set_at_block(address: &str, block_hash: &str) -> Vec<Asset> {
-    let metadata_v15 = metadata_v15(address, block_hash).await.unwrap();
+pub async fn assets_set_at_block(client: &WsClient, block_hash: &str, metadata_v15: RuntimeMetadataV15, rpc_url: String, ss58: u16) -> HashMap<String, CurrencyProperties> {
+    //let metadata_v15 = metadata_v15(address, block_hash).await.unwrap();
 
-    let mut assets_set: Vec<Asset> = Vec::new();
+    let mut assets_set = HashMap::new();
 
     let mut assets_asset_storage_metadata = None;
     let mut assets_metadata_storage_metadata = None;
@@ -1241,13 +1249,13 @@ pub async fn assets_set_at_block(address: &str, block_hash: &str) -> Vec<Asset> 
     let assets_asset_storage_metadata = assets_asset_storage_metadata.unwrap();
     let assets_metadata_storage_metadata = assets_metadata_storage_metadata.unwrap();
 
-    let available_keys_assets_asset = get_keys_from_storage(address, "Assets", "Asset", block_hash)
+    let available_keys_assets_asset = get_keys_from_storage(client, "Assets", "Asset", block_hash)
         .await
         .unwrap();
     if let Value::Array(ref keys_array) = available_keys_assets_asset {
         for key in keys_array.iter() {
             if let Value::String(string_key) = key {
-                let value_fetch = get_value_from_storage(address, string_key, block_hash)
+                let value_fetch = get_value_from_storage(client, string_key, block_hash)
                     .await
                     .unwrap();
                 if let Value::String(ref string_value) = value_fetch {
@@ -1318,7 +1326,7 @@ pub async fn assets_set_at_block(address: &str, block_hash: &str) -> Vec<Asset> 
                                                 ))
                                             );
                                             let value_fetch = get_value_from_storage(
-                                                address,
+                                                client,
                                                 &key_assets_metadata,
                                                 block_hash,
                                             )
@@ -1426,15 +1434,18 @@ pub async fn assets_set_at_block(address: &str, block_hash: &str) -> Vec<Asset> 
                                                             break;
                                                         }
                                                     }
-                                                    let name = name.unwrap();
+                                                    //let name = name.unwrap();
                                                     let symbol = symbol.unwrap();
                                                     let decimals = decimals.unwrap();
-                                                    assets_set.push(Asset {
-                                                        asset_id,
-                                                        name,
-                                                        symbol,
-                                                        decimals,
-                                                    })
+                                                    assets_set.insert(symbol,
+                                                        CurrencyProperties {
+                                                            chain_name: "TODO".into(),
+                                                            kind: TokenKind::Asset,
+                                                            decimals,
+                                                            rpc_url: rpc_url.clone(),
+                                                            asset_id: Some(asset_id),
+                                                            ss58,
+                                                    });
                                                 } else {
                                                     panic!("unexpected assets metadata value structure")
                                                 }
@@ -1454,4 +1465,3 @@ pub async fn assets_set_at_block(address: &str, block_hash: &str) -> Vec<Asset> 
     }
     assets_set
 }
-*/

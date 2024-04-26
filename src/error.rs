@@ -183,9 +183,6 @@ pub enum ErrorChain {
     #[error("Fetched values were not sent through successfully.")]
     NotSent,
 
-    #[error("Received QR payload is not a Substrate one.")]
-    NotSubstrate,
-
     #[error("No unit value is fetched.")]
     NoUnit,
 
@@ -242,6 +239,10 @@ pub enum ErrorChain {
 
     #[error("Aura slot duration could not be parsed as u64")]
     AuraSlotDurationFormat,
+
+    #[error("Internal error: {0:?}")] // TODO this should be replaced by specific errors
+    ErrorUtil(ErrorUtil),
+
 }
 
 impl From<ClientError> for ErrorChain {
@@ -253,6 +254,12 @@ impl From<ClientError> for ErrorChain {
 impl From<JoinError> for ErrorChain {
     fn from(e: JoinError) -> Self {
         ErrorChain::Tokio(e)
+    }
+}
+
+impl From<ErrorUtil> for ErrorChain {
+    fn from(e: ErrorUtil) -> Self {
+        ErrorChain::ErrorUtil(e)
     }
 }
 
