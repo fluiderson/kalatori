@@ -5,7 +5,13 @@
 //! are spawned here other than main database server thread that does everything in series.
 
 use crate::{
-    definitions::{api_v2::{AssetId, BlockNumber, CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus}, Balance, Nonce, Timestamp},
+    definitions::{
+        api_v2::{
+            AssetId, BlockNumber, CurrencyProperties, OrderInfo, OrderQuery, PaymentStatus,
+            ServerInfo, ServerStatus,
+        },
+        Balance, Nonce, Timestamp,
+    },
     error::{Error, ErrorDb},
     TaskTracker,
 };
@@ -45,6 +51,8 @@ const HIT_LIST: &str = "hit_list";
 // database migration logic.
 const DB_VERSION_KEY: &str = "db_version";
 const DAEMON_INFO: &str = "daemon_info";
+
+const ORDERS: &[u8] = b"orders";
 
 // Slots
 
@@ -168,21 +176,29 @@ impl Database {
         let database = if let Some(path) = path_option {
             tracing::info!("Creating/Opening the database at {path:?}.");
 
-            sled::open(path).map_err(ErrorDb::DbStartError)?;
+            sled::open(path).map_err(ErrorDb::DbStartError)?
         } else {
             // TODO
             /*
             tracing::warn!(
                 "The in-memory backend for the database is selected. All saved data will be deleted after the shutdown!"
             );*/
-            let db = sled::open("temp.db").map_err(ErrorDb::DbStartError)?;
+            sled::open("temp.db").map_err(ErrorDb::DbStartError)?
         };
+        let orders = database.open_tree(ORDERS).map_err(ErrorDb::DbStartError)?;
 
         task_tracker.spawn("Database server", async move {
             // No process forking beyond this point!
             while let Some(request) = rx.recv().await {
                 match request {
-                    DbRequest::CreateOrder => {}
+                    DbRequest::CreateOrder(request) => {
+                        request
+                            .res
+                            .send(create_order(request.order, request.order_info, &orders));
+                    }
+                    DbRequest::ReadOrder(request) => {
+                        request.res.send(read_order(request.order, &orders));
+                    }
                 };
             }
 
@@ -192,14 +208,72 @@ impl Database {
         Ok(Self { tx })
     }
 
-    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, ErrorDb> {
+    pub async fn create_order(
+        &self,
+        order: String,
+        order_info: OrderInfo,
+    ) -> Result<OrderInfo, ErrorDb> {
         let (res, rx) = oneshot::channel();
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)
+        self.tx.send(DbRequest::CreateOrder(CreateOrder {
+            order,
+            order_info,
+            res,
+        }));
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+    }
+
+    pub async fn read_order(&self, order: String) -> Result<Option<OrderInfo>, ErrorDb> {
+        let (res, rx) = oneshot::channel();
+        self.tx.send(DbRequest::ReadOrder(ReadOrder { order, res }));
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 }
 
 enum DbRequest {
-    CreateOrder,
+    CreateOrder(CreateOrder),
+    ReadOrder(ReadOrder),
+}
+
+pub struct CreateOrder {
+    pub order: String,
+    pub order_info: OrderInfo,
+    pub res: oneshot::Sender<Result<OrderInfo, ErrorDb>>,
+}
+
+pub struct ReadOrder {
+    pub order: String,
+    pub res: oneshot::Sender<Result<Option<OrderInfo>, ErrorDb>>,
+}
+
+fn create_order(
+    order: String,
+    order_info: OrderInfo,
+    orders: &sled::Tree,
+) -> Result<OrderInfo, ErrorDb> {
+    match orders.get(&order)? {
+        Some(record) => {
+            let old_order_info = OrderInfo::decode(&mut &record[..])?;
+            match order_info.payment_status {
+                PaymentStatus::Pending => {
+                    let _ = orders.insert(order.encode(), order_info.encode())?;
+                    Ok(order_info)
+                }
+                PaymentStatus::Paid => Ok(old_order_info),
+            }
+        }
+        None => {
+            orders.insert(order.encode(), order_info.encode())?;
+            Ok(order_info)
+        }
+    }
+}
+
+fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, ErrorDb> {
+    if let Some(order) = orders.get(order)? {
+        Ok(Some(OrderInfo::decode(&mut &order[..])?))
+    } else {
+        Ok(None)
+    }
 }
 
 //impl StateInterface {
@@ -238,7 +312,7 @@ enum DbRequest {
         OrderStatus {
             order,
             payment_status: PaymentStatus::Unknown,
-            message: String::new(),
+message: String::new(),
             recipient: state.0.recipient.to_ss58check(),
             server_info: state.server_info(),
             order_info: OrderInfo {
@@ -306,7 +380,7 @@ let pay_acc: AccountId = state
             supported_currencies: state.currencies.clone(),
         }
 */
-
+/*
 #[derive(Deserialize, Debug)]
 pub struct Invoicee {
     pub callback: String,
@@ -314,7 +388,7 @@ pub struct Invoicee {
     pub paid: bool,
     pub paym_acc: Account,
 }
-
+*/
 /*
 
 */

@@ -2,7 +2,6 @@ use crate::{
     definitions::api_v2::*,
     error::{Error, ErrorOrder, ErrorServer},
     state::State,
-    definitions::api_v2::{AssetId, BlockNumber, Decimals, ExtrinsicIndex,}
 };
 use axum::{
     extract::{self, rejection::RawPathParamsRejection, MatchedPath, Query, RawPathParams},
@@ -60,7 +59,7 @@ async fn process_order(
     matched_path: &MatchedPath,
     path_result: Result<RawPathParams, RawPathParamsRejection>,
     query: &HashMap<String, String>,
-) -> Result<(OrderStatus, OrderSuccess), ErrorOrder> {
+) -> Result<OrderResponse, ErrorOrder> {
     const ORDER_ID: &str = "order_id";
 
     let path_parameters =
@@ -72,11 +71,10 @@ async fn process_order(
         .to_owned();
 
     if query.is_empty() {
-        let order_status = state
+        state
             .order_status(&order)
             .await
-            .map_err(|_| ErrorOrder::InternalError)?;
-        Ok((order_status, OrderSuccess::Found))
+            .map_err(|_| ErrorOrder::InternalError)
     } else {
         let get_parameter = |parameter: &str| {
             query
@@ -98,7 +96,7 @@ async fn process_order(
             return Err(ErrorOrder::LessThanExistentialDeposit(0.07));
         }
 
-        let order_status = state
+        state
             .create_order(OrderQuery {
                 order,
                 amount,
@@ -106,9 +104,7 @@ async fn process_order(
                 currency,
             })
             .await
-            .map_err(|_| ErrorOrder::InternalError)?;
-
-        Ok((order_status, OrderSuccess::Created))
+            .map_err(|_| ErrorOrder::InternalError)
     }
 }
 
@@ -120,11 +116,13 @@ async fn order(
     query: Query<HashMap<String, String>>,
 ) -> Response {
     match process_order(state, &matched_path, path_result, &query).await {
-        Ok((order_status, order_success)) => match order_success {
-            OrderSuccess::Created => (StatusCode::CREATED, Json(order_status)),
-            OrderSuccess::Found => (StatusCode::OK, Json(order_status)),
-        }
-        .into_response(),
+        Ok(order) => match order {
+            OrderResponse::NewOrder(order_status) => (StatusCode::CREATED, Json(order_status)).into_response(),
+            OrderResponse::FoundOrder(order_status) => (StatusCode::OK, Json(order_status)).into_response(),
+            OrderResponse::ModifiedOrder(order_status) => (StatusCode::OK, Json(order_status)).into_response(),
+            OrderResponse::CollidedOrder(order_status) => (StatusCode::CONFLICT, Json(order_status)).into_response(),
+            OrderResponse::NotFound => (StatusCode::NOT_FOUND, "").into_response(),
+        },
         Err(error) => match error {
             ErrorOrder::LessThanExistentialDeposit(existential_deposit) => (
                 StatusCode::BAD_REQUEST,

@@ -1,14 +1,14 @@
 use crate::{
     database::Database,
-    definitions::api_v2::{CurrencyProperties, OrderQuery, OrderStatus, ServerInfo, ServerStatus},
+    definitions::api_v2::{CurrencyProperties, OrderQuery, OrderResponse, OrderStatus, ServerInfo, ServerStatus},
     error::Error,
     ConfigWoChains, TaskTracker,
 };
 
 use std::collections::HashMap;
 
-use substrate_crypto_light::sr25519::Pair;
 use substrate_crypto_light::common::AccountId32;
+use substrate_crypto_light::sr25519::Pair;
 use tokio::sync::oneshot;
 
 /// Struct to store state of daemon. If something requires cooperation of more than one component,
@@ -32,6 +32,7 @@ impl State {
             rpc,
         }: ConfigWoChains,
         db: Database,
+        instance_id: String,
         task_tracker: TaskTracker,
     ) -> Result<Self, Error> {
         /*
@@ -47,11 +48,22 @@ impl State {
         */
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
 
+        let recipient_ss58 = String::new(); // TODO ASAP
+
         // Remember to always spawn async here or things might deadlock
         task_tracker.spawn("State Handler", async move {
             while let Some(request) = rx.recv().await {
                 match request {
-                    StateAccessRequest::GetInvoiceStatus(a) => {}
+                    StateAccessRequest::GetInvoiceStatus(request) => {
+                        let server_info = ServerInfo { // TODO
+                            version: env!("CARGO_PKG_VERSION"),
+                            instance_id: instance_id.clone(),
+                            debug,
+                            kalatori_remark: remark.clone(),
+                        };
+
+                        request.res.send(get_invoice_status(request.order, recipient_ss58.clone(), server_info, &db).await);
+                    }
                     StateAccessRequest::CreateInvoice(a) => {}
                     StateAccessRequest::ServerStatus(res) => {
                         let description = ServerInfo {
@@ -75,7 +87,7 @@ impl State {
         Ok(Self { tx })
     }
 
-    pub async fn order_status(&self, order: &str) -> Result<OrderStatus, Error> {
+    pub async fn order_status(&self, order: &str) -> Result<OrderResponse, Error> {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(StateAccessRequest::GetInvoiceStatus(GetInvoiceStatus {
@@ -83,7 +95,7 @@ impl State {
                 res,
             }))
             .await;
-        rx.await.map_err(|_| Error::Fatal)
+        rx.await.map_err(|_| Error::Fatal)?
     }
 
     pub async fn server_status(&self) -> Result<ServerStatus, Error> {
@@ -92,7 +104,7 @@ impl State {
         rx.await.map_err(|_| Error::Fatal)
     }
 
-    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderStatus, Error> {
+    pub async fn create_order(&self, order_query: OrderQuery) -> Result<OrderResponse, Error> {
         let (res, rx) = oneshot::channel();
         /*
                 Invoicee {
@@ -108,7 +120,7 @@ impl State {
                 res,
             }))
             .await;
-        rx.await.map_err(|_| Error::Fatal)
+        rx.await.map_err(|_| Error::Fatal)?
     }
 
     pub fn interface(&self) -> Self {
@@ -126,10 +138,23 @@ enum StateAccessRequest {
 
 struct GetInvoiceStatus {
     pub order: String,
-    pub res: oneshot::Sender<OrderStatus>,
+    pub res: oneshot::Sender<Result<OrderResponse, Error>>,
 }
 
 struct CreateInvoice {
     pub order_query: OrderQuery,
-    pub res: oneshot::Sender<OrderStatus>,
+    pub res: oneshot::Sender<Result<OrderResponse, Error>>,
+}
+
+async fn get_invoice_status(order: String, recipient: String, server_info: ServerInfo, db: &Database) -> Result<OrderResponse, Error> {
+    if let Some(order_info) = db.read_order(order.clone()).await? {
+        let message = String::new(); //TODO
+        Ok(OrderResponse::FoundOrder(OrderStatus {
+            order,
+            message,
+            recipient,
+            server_info,
+            order_info,
+       }))
+    } else {Ok(OrderResponse::NotFound)}
 }

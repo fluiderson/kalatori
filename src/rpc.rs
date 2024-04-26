@@ -1,12 +1,14 @@
 use crate::{
     chain::{base58prefix, pallet_index, storage_key, unit},
-    database::Invoicee,
     definitions::api_v2::CurrencyProperties,
+    definitions::{
+        api_v2::{AssetId, BlockNumber, Decimals},
+        AssetInfo, Balance, BlockHash, Chain, NativeToken, Nonce, PalletIndex, Timestamp,
+    },
     error::{Error, ErrorChain, NotHex},
     state::State,
     utils::unhex,
-    definitions::{api_v2::{AssetId, BlockNumber, Decimals,     }, AssetInfo, Balance, BlockHash, Chain, NativeToken, Nonce, PalletIndex, Timestamp},
-TaskTracker, 
+    TaskTracker,
 };
 use frame_metadata::{v15::RuntimeMetadataV15, RuntimeMetadata};
 use jsonrpsee::core::client::ClientT;
@@ -1139,11 +1141,13 @@ fn construct_transfer(to: &AccountId, amount: u128) -> Value {
     .into_value()
 }
 */
+/*
 #[derive(Debug)]
 struct InvoiceChanges {
     invoice: Invoicee,
     incoming: HashMap<AccountId32, Balance>,
 }
+*/
 
 #[derive(Deserialize, Debug)]
 struct Transferred {

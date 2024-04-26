@@ -253,6 +253,21 @@ pub enum ErrorDb {
 
     #[error("Operating system related I/O error {0:?}")]
     IoError(std::io::Error),
+
+    #[error("Database storage decoding error: {0:?}")]
+    CodecError(parity_scale_codec::Error),
+}
+
+impl From<sled::Error> for ErrorDb {
+    fn from(e: sled::Error) -> Self {
+        ErrorDb::DbInternalError(e)
+    }
+}
+
+impl From<parity_scale_codec::Error> for ErrorDb {
+    fn from(e: parity_scale_codec::Error) -> Self {
+        ErrorDb::CodecError(e)
+    }
 }
 
 impl From<std::io::Error> for ErrorDb {

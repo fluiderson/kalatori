@@ -65,7 +65,6 @@ pub fn decimal_exponent_product(decimals: api_v2::Decimals) -> f64 {
     10f64.powi(decimals.into())
 }
 
-
 /// Self-sufficient schemas used by Api v2.0.0
 pub mod api_v2 {
 
@@ -77,7 +76,7 @@ pub mod api_v2 {
     pub const AMOUNT: &str = "amount";
     pub const CURRENCY: &str = "currency";
     pub const CALLBACK: &str = "callback";
-    
+
     pub type AssetId = u32;
     pub type Decimals = u8;
     pub type BlockNumber = u64;
@@ -89,6 +88,15 @@ pub mod api_v2 {
         pub amount: f64,
         pub callback: String,
         pub currency: String,
+    }
+
+    #[derive(Debug)]
+    pub enum OrderResponse {
+        NewOrder(OrderStatus),
+        FoundOrder(OrderStatus),
+        ModifiedOrder(OrderStatus),
+        CollidedOrder(OrderStatus),
+        NotFound,
     }
 
     #[derive(Debug, Serialize)]
@@ -131,7 +139,6 @@ pub mod api_v2 {
     pub enum PaymentStatus {
         Pending,
         Paid,
-        Unknown,
     }
 
     #[derive(Debug, Serialize, Decode, Encode)]
@@ -265,4 +272,3 @@ fn balance_insufficient_precision() {
     assert_eq!(*parsed, 931395_862219815_2);
     assert_eq!(parsed.format(DECIMALS), 931395.862219815_1);
 }
-

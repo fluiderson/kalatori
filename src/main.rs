@@ -1,5 +1,4 @@
 use mnemonic_external::{regular::InternalWordList, WordSet};
-use substrate_crypto_light::{common::cut_path, sr25519::Pair};
 use serde::Deserialize;
 use std::{
     borrow::Cow,
@@ -13,6 +12,7 @@ use std::{
     panic, str,
 };
 use substrate_crypto_light::common::{AccountId32, AsBase58};
+use substrate_crypto_light::{common::cut_path, sr25519::Pair};
 use tokio::{
     signal,
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -32,8 +32,8 @@ mod server;
 mod state;
 mod utils;
 
+use crate::definitions::{Chain, Timestamp, Version};
 use database::ConfigWoChains;
-use crate::definitions::{Chain, Version, Timestamp};
 use error::Error;
 use rpc::Processor;
 use state::State;
@@ -50,7 +50,6 @@ const DB_VERSION: Version = 0;
 const DEFAULT_CONFIG: &str = "configs/polkadot.toml";
 const DEFAULT_SOCKET: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 16726);
 const DEFAULT_DATABASE: &str = "kalatori.db";
-
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -104,6 +103,8 @@ async fn main() -> Result<(), Error> {
         }))
     };
 
+    let instance_id = String::from("TODO: add unique ID and save it in db");
+
     // Start services
 
     tracing::info!(
@@ -144,6 +145,7 @@ async fn main() -> Result<(), Error> {
             rpc: rpc.clone(),
         },
         db,
+        instance_id,
         task_tracker.clone(),
     )?;
 
@@ -425,7 +427,3 @@ impl Config {
         toml::from_str(&unparsed_config).map_err(|_| Error::ConfigFileParse(config_path))
     }
 }
-
-
-
-
