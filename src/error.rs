@@ -5,8 +5,8 @@ use mnemonic_external::error::ErrorWordList;
 use primitive_types::H256;
 use serde_json::Value;
 use sled::Error as DatabaseError;
-use substrate_parser::error::*;
 use substrate_crypto_light::error::Error as CryptoError;
+use substrate_parser::error::*;
 use tokio::task::JoinError;
 
 #[derive(Debug, thiserror::Error)]
@@ -242,7 +242,6 @@ pub enum ErrorChain {
 
     #[error("Internal error: {0:?}")] // TODO this should be replaced by specific errors
     ErrorUtil(ErrorUtil),
-
 }
 
 impl From<ClientError> for ErrorChain {
@@ -282,6 +281,18 @@ pub enum ErrorDb {
 
     #[error("Database storage decoding error: {0:?}")]
     CodecError(parity_scale_codec::Error),
+
+    #[error("Order {0} not found")]
+    OrderNotFound(String),
+
+    #[error("Order {0} was already paid")]
+    AlreadyPaid(String),
+
+    #[error("Order {0} is not paid yet")]
+    NotPaid(String),
+
+    #[error("There was already an attempt to withdraw order {0}")]
+    WithdrawalWasAttempted(String),
 }
 
 impl From<sled::Error> for ErrorDb {

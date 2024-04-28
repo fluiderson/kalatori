@@ -7,8 +7,8 @@
 use crate::{
     definitions::{
         api_v2::{
-            AssetId, BlockNumber, CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, PaymentStatus,
-            ServerInfo, ServerStatus,
+            AssetId, BlockNumber, CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery,
+            PaymentStatus, ServerInfo, ServerStatus, WithdrawalStatus,
         },
         Balance, Nonce, Timestamp,
     },
@@ -199,6 +199,15 @@ impl Database {
                     DbRequest::ReadOrder(request) => {
                         request.res.send(read_order(request.order, &orders));
                     }
+                    DbRequest::MarkPaid(request) => {
+                        request.res.send(mark_paid(request.order, &orders));
+                    }
+                    DbRequest::MarkWithdrawn(request) => {
+                        request.res.send(mark_withdrawn(request.order, &orders));
+                    }
+                    DbRequest::MarkStuck(request) => {
+                        request.res.send(mark_stuck(request.order, &orders));
+                    }
                 };
             }
 
@@ -227,11 +236,35 @@ impl Database {
         self.tx.send(DbRequest::ReadOrder(ReadOrder { order, res }));
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
+
+    pub async fn mark_paid(&self, order: String) -> Result<(), ErrorDb> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(DbRequest::MarkPaid(ModifyOrder { order, res }));
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+    }
+
+    pub async fn mark_withdrawn(&self, order: String) -> Result<(), ErrorDb> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(DbRequest::MarkWithdrawn(ModifyOrder { order, res }));
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+    }
+
+    pub async fn mark_stuck(&self, order: String) -> Result<(), ErrorDb> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(DbRequest::MarkStuck(ModifyOrder { order, res }));
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+    }
 }
 
 enum DbRequest {
     CreateOrder(CreateOrder),
     ReadOrder(ReadOrder),
+    MarkPaid(ModifyOrder),
+    MarkWithdrawn(ModifyOrder),
+    MarkStuck(ModifyOrder),
 }
 
 pub struct CreateOrder {
@@ -245,13 +278,17 @@ pub struct ReadOrder {
     pub res: oneshot::Sender<Result<Option<OrderInfo>, ErrorDb>>,
 }
 
+pub struct ModifyOrder {
+    pub order: String,
+    pub res: oneshot::Sender<Result<(), ErrorDb>>,
+}
+
 fn create_order(
     order: String,
     order_info: OrderInfo,
     orders: &sled::Tree,
 ) -> Result<OrderCreateResponse, ErrorDb> {
-    Ok(
-        match orders.get(&order)? {
+    Ok(match orders.get(&order)? {
         Some(record) => {
             let old_order_info = OrderInfo::decode(&mut &record[..])?;
             match order_info.payment_status {
@@ -259,7 +296,7 @@ fn create_order(
                     let _ = orders.insert(order.encode(), order_info.encode())?;
                     OrderCreateResponse::Modified
                 }
-                PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info)
+                PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info),
             }
         }
         None => {
@@ -277,6 +314,56 @@ fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, E
     }
 }
 
+fn mark_paid(order: String, orders: &sled::Tree) -> Result<(), ErrorDb> {
+    if let Some(order_info) = orders.get(order.clone())? {
+        let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
+        if order_info.payment_status == PaymentStatus::Pending {
+            order_info.payment_status = PaymentStatus::Paid;
+            orders.insert(order.encode(), order_info.encode())?;
+            Ok(())
+        } else {
+            Err(ErrorDb::AlreadyPaid(order))
+        }
+    } else {
+        Err(ErrorDb::OrderNotFound(order))
+    }
+}
+fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), ErrorDb> {
+    if let Some(order_info) = orders.get(order.clone())? {
+        let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
+        if order_info.payment_status == PaymentStatus::Paid {
+            if order_info.withdrawal_status == WithdrawalStatus::Waiting {
+                order_info.withdrawal_status = WithdrawalStatus::Completed;
+                orders.insert(order.encode(), order_info.encode())?;
+                Ok(())
+            } else {
+                Err(ErrorDb::WithdrawalWasAttempted(order))
+            }
+        } else {
+            Err(ErrorDb::NotPaid(order))
+        }
+    } else {
+        Err(ErrorDb::OrderNotFound(order))
+    }
+}
+fn mark_stuck(order: String, orders: &sled::Tree) -> Result<(), ErrorDb> {
+    if let Some(order_info) = orders.get(order.clone())? {
+        let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
+        if order_info.payment_status == PaymentStatus::Paid {
+            if order_info.withdrawal_status == WithdrawalStatus::Waiting {
+                order_info.withdrawal_status = WithdrawalStatus::Failed;
+                orders.insert(order.encode(), order_info.encode())?;
+                Ok(())
+            } else {
+                Err(ErrorDb::WithdrawalWasAttempted(order))
+            }
+        } else {
+            Err(ErrorDb::NotPaid(order))
+        }
+    } else {
+        Err(ErrorDb::OrderNotFound(order))
+    }
+}
 //impl StateInterface {
 /*
     Ok((

@@ -35,7 +35,7 @@ mod utils;
 use crate::definitions::{Chain, Entropy, Timestamp, Version};
 use database::ConfigWoChains;
 use error::Error;
-use rpc::Processor;
+use rpc::ChainManager;
 use state::State;
 
 const CONFIG: &str = "KALATORI_CONFIG";
@@ -132,6 +132,8 @@ async fn main() -> Result<(), Error> {
 
     let db = database::Database::init(database_path, task_tracker.clone())?;
 
+    let chain_manager = ChainManager::ignite(config.chain, task_tracker.clone())?;
+
     let state = State::initialise(
         currencies,
         secret_entropy,
@@ -144,10 +146,12 @@ async fn main() -> Result<(), Error> {
             rpc: rpc.clone(),
         },
         db,
+        chain_manager,
         instance_id,
         task_tracker.clone(),
     )?;
 
+    /*
     task_tracker.spawn(
         "proc",
         Processor::ignite(
@@ -156,7 +160,7 @@ async fn main() -> Result<(), Error> {
             state.clone(),
             shutdown_notification.clone(),
         ),
-    );
+    );*/
 
     let server = server::new(shutdown_notification.clone(), host, state).await?;
 
@@ -299,10 +303,6 @@ pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, Error> {
         word_set.add_word(&word, &InternalWordList)?;
     }
     Ok(word_set.to_entropy()?)
-    /*
-    let derivation = cut_path("").expect("empty derivation is hardcoded");
-    Ok(Pair::from_entropy_and_full_derivation(&entropy, derivation)
-        .expect("empty derivation and password are hardcoded"))*/
 }
 
 #[derive(Clone)]

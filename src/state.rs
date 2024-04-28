@@ -1,8 +1,15 @@
 use crate::{
     chain::derivations,
     database::Database,
-    definitions::{api_v2::{CurrencyProperties, OrderCreateResponse, OrderQuery, OrderInfo, OrderResponse, OrderStatus, ServerInfo, ServerStatus}, Entropy},
+    definitions::{
+        api_v2::{
+            CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse,
+            OrderStatus, ServerInfo, ServerStatus,
+        },
+        Entropy,
+    },
     error::{Error, ErrorOrder},
+    rpc::ChainManager,
     ConfigWoChains, TaskTracker,
 };
 
@@ -32,6 +39,7 @@ impl State {
             rpc,
         }: ConfigWoChains,
         db: Database,
+        chain_manager: ChainManager,
         instance_id: String,
         task_tracker: TaskTracker,
     ) -> Result<Self, Error> {
@@ -50,12 +58,13 @@ impl State {
 
         let recipient_ss58 = recipient.to_base58_string(2); //TODO
 
-        let server_info = ServerInfo { // TODO
-                            version: env!("CARGO_PKG_VERSION"),
-                            instance_id: instance_id.clone(),
-                            debug,
-                            kalatori_remark: remark.clone(),
-                        };
+        let server_info = ServerInfo {
+            // TODO
+            version: env!("CARGO_PKG_VERSION"),
+            instance_id: instance_id.clone(),
+            debug,
+            kalatori_remark: remark.clone(),
+        };
 
         let state = StateData {
             currencies,
@@ -70,10 +79,14 @@ impl State {
             while let Some(request) = rx.recv().await {
                 match request {
                     StateAccessRequest::GetInvoiceStatus(request) => {
-                        request.res.send(state.get_invoice_status(request.order).await);
+                        request
+                            .res
+                            .send(state.get_invoice_status(request.order).await);
                     }
                     StateAccessRequest::CreateInvoice(request) => {
-                        request.res.send(state.create_invoice(request.order_query).await);
+                        request
+                            .res
+                            .send(state.create_invoice(request.order_query).await);
                     }
                     StateAccessRequest::ServerStatus(res) => {
                         let server_status = ServerStatus {
@@ -160,31 +173,57 @@ struct StateData {
 
 impl StateData {
     async fn get_invoice_status(&self, order: String) -> Result<OrderResponse, Error> {
-    if let Some(order_info) = self.db.read_order(order.clone()).await? {
-        let message = String::new(); //TODO
-        Ok(OrderResponse::FoundOrder(OrderStatus {
-            order,
-            message,
-            recipient: self.recipient.clone(),
-            server_info: self.server_info.clone(),
-            order_info,
-       }))
-    } else {Ok(OrderResponse::NotFound)}
-}
+        if let Some(order_info) = self.db.read_order(order.clone()).await? {
+            let message = String::new(); //TODO
+            Ok(OrderResponse::FoundOrder(OrderStatus {
+                order,
+                message,
+                recipient: self.recipient.clone(),
+                server_info: self.server_info.clone(),
+                order_info,
+            }))
+        } else {
+            Ok(OrderResponse::NotFound)
+        }
+    }
 
     async fn create_invoice(&self, order_query: OrderQuery) -> Result<OrderResponse, Error> {
-    let order = order_query.order.clone();
-    let currency = self.currencies.get(&order_query.currency).ok_or(ErrorOrder::UnknownCurrency)?;
-    let currency = currency.info(order_query.currency.clone());
-    let payment_account = Pair::from_entropy_and_full_derivation(&self.seed_entropy, derivations(&self.recipient, &order_query.order))?.public().to_base58_string(currency.ss58);
-    let order_info = OrderInfo::new(order_query, currency, payment_account);
-    match self.db.create_order(order.clone(), order_info.clone()).await? {
-        OrderCreateResponse::New => 
-            Ok(OrderResponse::NewOrder(self.order_status(order, order_info, String::new()))),
-        OrderCreateResponse::Modified => 
-            Ok(OrderResponse::ModifiedOrder(self.order_status(order, order_info, String::new()))),
-        OrderCreateResponse::Collision(order_status) => Ok(OrderResponse::CollidedOrder(self.order_status(order, order_info, String::from("Order with this ID was already processed"))))
-    }
+        let order = order_query.order.clone();
+        let currency = self
+            .currencies
+            .get(&order_query.currency)
+            .ok_or(ErrorOrder::UnknownCurrency)?;
+        let currency = currency.info(order_query.currency.clone());
+        let payment_account = Pair::from_entropy_and_full_derivation(
+            &self.seed_entropy,
+            derivations(&self.recipient, &order_query.order),
+        )?
+        .public()
+        .to_base58_string(currency.ss58);
+        let order_info = OrderInfo::new(order_query, currency, payment_account);
+        match self
+            .db
+            .create_order(order.clone(), order_info.clone())
+            .await?
+        {
+            OrderCreateResponse::New => Ok(OrderResponse::NewOrder(self.order_status(
+                order,
+                order_info,
+                String::new(),
+            ))),
+            OrderCreateResponse::Modified => Ok(OrderResponse::ModifiedOrder(self.order_status(
+                order,
+                order_info,
+                String::new(),
+            ))),
+            OrderCreateResponse::Collision(order_status) => {
+                Ok(OrderResponse::CollidedOrder(self.order_status(
+                    order,
+                    order_info,
+                    String::from("Order with this ID was already processed"),
+                )))
+            }
+        }
     }
 
     fn order_status(&self, order: String, order_info: OrderInfo, message: String) -> OrderStatus {
@@ -197,5 +236,3 @@ impl StateData {
         }
     }
 }
-
-

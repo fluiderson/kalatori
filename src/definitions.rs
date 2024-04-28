@@ -142,14 +142,14 @@ pub mod api_v2 {
         Collision(OrderInfo),
     }
 
-    #[derive(Clone, Debug, Serialize, Decode, Encode)]
+    #[derive(Clone, Debug, Serialize, Decode, Encode, PartialEq)]
     #[serde(rename_all = "lowercase")]
     pub enum PaymentStatus {
         Pending,
         Paid,
     }
 
-    #[derive(Clone, Debug, Serialize, Decode, Encode)]
+    #[derive(Clone, Debug, Serialize, Decode, Encode, PartialEq)]
     #[serde(rename_all = "lowercase")]
     pub enum WithdrawalStatus {
         Waiting,
