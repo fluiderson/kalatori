@@ -15,7 +15,7 @@ use substrate_crypto_light::common::{AccountId32, AsBase58};
 use substrate_crypto_light::{common::cut_path, sr25519::Pair};
 use tokio::{
     signal,
-    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
+    sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 use tokio_util::{sync::CancellationToken, task};
@@ -116,11 +116,6 @@ async fn main() -> Result<(), Error> {
 
     let (task_tracker, error_rx) = TaskTracker::new();
 
-    task_tracker.spawn(
-        "the shutdown listener",
-        shutdown_listener(shutdown_notification.clone()),
-    );
-
     //let (chains, currencies) = rpc::prepare(config.chain, config.account_lifetime, config.depth).await
     let currencies = HashMap::new();
 
@@ -132,7 +127,7 @@ async fn main() -> Result<(), Error> {
 
     let db = database::Database::init(database_path, task_tracker.clone())?;
 
-    let chain_manager = ChainManager::ignite(config.chain, task_tracker.clone())?;
+    let (cm_tx, mut cm_rx) = oneshot::channel();
 
     let state = State::initialise(
         currencies,
@@ -146,10 +141,15 @@ async fn main() -> Result<(), Error> {
             rpc: rpc.clone(),
         },
         db,
-        chain_manager,
+        cm_rx,
         instance_id,
         task_tracker.clone(),
     )?;
+
+    task_tracker.spawn(
+        "the shutdown listener",
+        shutdown_listener(shutdown_notification.clone(), state.interface()),
+    );
 
     /*
     task_tracker.spawn(
@@ -162,7 +162,16 @@ async fn main() -> Result<(), Error> {
         ),
     );*/
 
-    let server = server::new(shutdown_notification.clone(), host, state).await?;
+    cm_tx
+        .send(ChainManager::ignite(
+            config.chain,
+            state.interface(),
+            task_tracker.clone(),
+            shutdown_notification.clone(),
+        )?)
+        .map_err(|_| Error::Fatal)?;
+
+    let server = server::new(shutdown_notification.clone(), host, state.interface()).await?;
 
     // task_tracker.spawn(shutdown(
     //     processor.ignite(last_saved_block, task_tracker.clone(), error_tx.clone()),
@@ -308,11 +317,11 @@ pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, Error> {
 #[derive(Clone)]
 struct TaskTracker {
     inner: task::TaskTracker,
-    error_tx: UnboundedSender<(Cow<'static, str>, Error)>,
+    error_tx: mpsc::UnboundedSender<(Cow<'static, str>, Error)>,
 }
 
 impl TaskTracker {
-    fn new() -> (Self, UnboundedReceiver<(Cow<'static, str>, Error)>) {
+    fn new() -> (Self, mpsc::UnboundedReceiver<(Cow<'static, str>, Error)>) {
         let (error_tx, error_rx) = mpsc::unbounded_channel();
         let inner = task::TaskTracker::new();
 
@@ -341,7 +350,7 @@ impl TaskTracker {
 
     async fn wait_with_notification(
         self,
-        mut error_rx: UnboundedReceiver<(Cow<'static, str>, Error)>,
+        mut error_rx: mpsc::UnboundedReceiver<(Cow<'static, str>, Error)>,
         shutdown_notification: CancellationToken,
     ) {
         drop(self.error_tx);
@@ -361,7 +370,7 @@ impl TaskTracker {
 
     async fn try_wait(
         self,
-        mut error_rx: UnboundedReceiver<(Cow<'static, str>, Error)>,
+        mut error_rx: mpsc::UnboundedReceiver<(Cow<'static, str>, Error)>,
     ) -> Result<(), Error> {
         drop(self.error_tx);
 
@@ -377,6 +386,7 @@ impl TaskTracker {
 
 async fn shutdown_listener(
     shutdown_notification: CancellationToken,
+    state: State,
 ) -> Result<Cow<'static, str>, Error> {
     tokio::select! {
         biased;
@@ -389,6 +399,7 @@ async fn shutdown_listener(
             tracing::info!("Received the shutdown signal. Initialising the shutdown...");
 
             shutdown_notification.cancel();
+            state.shutdown().await;
         }
         () = shutdown_notification.cancelled() => {}
     }

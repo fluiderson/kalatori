@@ -43,12 +43,6 @@ pub async fn new(
 }
 
 #[derive(Debug, Serialize)]
-enum OrderSuccess {
-    Created,
-    Found,
-}
-
-#[derive(Debug, Serialize)]
 struct InvalidParameter {
     parameter: String,
     message: String,

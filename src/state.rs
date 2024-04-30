@@ -39,7 +39,7 @@ impl State {
             rpc,
         }: ConfigWoChains,
         db: Database,
-        chain_manager: ChainManager,
+        chain_manager: oneshot::Receiver<ChainManager>,
         instance_id: String,
         task_tracker: TaskTracker,
     ) -> Result<Self, Error> {
@@ -76,24 +76,31 @@ impl State {
 
         // Remember to always spawn async here or things might deadlock
         task_tracker.spawn("State Handler", async move {
+            let chain_manager = chain_manager.await.map_err(|_| Error::Fatal)?;
             while let Some(request) = rx.recv().await {
                 match request {
                     StateAccessRequest::GetInvoiceStatus(request) => {
                         request
                             .res
-                            .send(state.get_invoice_status(request.order).await);
+                            .send(state.get_invoice_status(request.order).await).map_err(|_| Error::Fatal)?;
                     }
                     StateAccessRequest::CreateInvoice(request) => {
                         request
                             .res
-                            .send(state.create_invoice(request.order_query).await);
+                            .send(state.create_invoice(request.order_query).await).map_err(|_| Error::Fatal)?;
                     }
                     StateAccessRequest::ServerStatus(res) => {
                         let server_status = ServerStatus {
                             description: state.server_info.clone(),
                             supported_currencies: state.currencies.clone(),
                         };
-                        res.send(server_status);
+                        res.send(server_status).map_err(|_| Error::Fatal)?;
+                    }
+                    // Orchestrate shutdown from here
+                    StateAccessRequest::Shutdown => {
+                        chain_manager.shutdown().await;
+                        state.db.shutdown().await;
+                        break;
                     }
                 };
             }
@@ -111,13 +118,13 @@ impl State {
                 order: order.to_string(),
                 res,
             }))
-            .await;
+            .await.map_err(|_| Error::Fatal)?;
         rx.await.map_err(|_| Error::Fatal)?
     }
 
     pub async fn server_status(&self) -> Result<ServerStatus, Error> {
         let (res, rx) = oneshot::channel();
-        self.tx.send(StateAccessRequest::ServerStatus(res)).await;
+        self.tx.send(StateAccessRequest::ServerStatus(res)).await.map_err(|_| Error::Fatal)?;
         rx.await.map_err(|_| Error::Fatal)
     }
 
@@ -136,7 +143,7 @@ impl State {
                 order_query,
                 res,
             }))
-            .await;
+            .await.map_err(|_| Error::Fatal)?;
         rx.await.map_err(|_| Error::Fatal)?
     }
 
@@ -145,12 +152,17 @@ impl State {
             tx: self.tx.clone(),
         }
     }
+
+    pub async fn shutdown(&self) {
+        self.tx.send(StateAccessRequest::Shutdown).await.unwrap();
+    }
 }
 
 enum StateAccessRequest {
     GetInvoiceStatus(GetInvoiceStatus),
     CreateInvoice(CreateInvoice),
     ServerStatus(oneshot::Sender<ServerStatus>),
+    Shutdown,
 }
 
 struct GetInvoiceStatus {

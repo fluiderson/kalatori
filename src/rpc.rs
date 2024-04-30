@@ -3,7 +3,7 @@ use crate::{
         base58prefix, hashed_key_element, pallet_index, storage_key,
         system_properties_to_short_specs, unit,
     },
-    definitions::api_v2::CurrencyProperties,
+    definitions::api_v2::{CurrencyProperties, OrderInfo},
     definitions::{
         api_v2::{AssetId, BlockNumber, CurrencyInfo, Decimals, TokenKind},
         AssetInfo, Balance, BlockHash, Chain, NativeToken, Nonce, PalletIndex, Timestamp,
@@ -32,7 +32,7 @@ use std::{
     fmt::Debug,
     num::NonZeroU64,
 };
-use substrate_crypto_light::common::AccountId32;
+use substrate_crypto_light::common::{AccountId32, AsBase58};
 use substrate_parser::{
     cards::{ExtendedData, ParsedData, Sequence},
     decode_all_as_type, decode_as_storage_entry,
@@ -61,7 +61,6 @@ const BABE: &str = "Babe";
 
 const AURA: &str = "AuraApi";
 
-
 #[derive(Debug)]
 struct ChainProperties {
     specs: ShortSpecs,
@@ -84,7 +83,6 @@ struct AssetProperties {
     min_balance: Balance,
     decimals: Decimals,
 }
-
 
 pub async fn get_value_from_storage(
     client: &WsClient,
@@ -238,36 +236,155 @@ pub struct ChainManager {
 }
 
 impl ChainManager {
+    /// Run once to start all chain connections; this should be very robust, if manager fails
+    /// - all modules should be restarted probably.
     pub fn ignite(
         chain: Vec<Chain>,
+        state: State,
         task_tracker: TaskTracker,
+        cancellation_token: CancellationToken,
     ) -> Result<Self, Error> {
         /*
-        let client = WsClientBuilder::default()
-            .build(rpc.clone())
-            .await
-            .map_err(ErrorChain::Client)?;
-*/
-
+                let client = WsClientBuilder::default()
+                    .build(rpc.clone())
+                    .await
+                    .map_err(ErrorChain::Client)?;
+        */
         let (tx, mut rx) = mpsc::channel(1024);
 
-        //let watch_chain: HashMap<String, Vec<String>> = chain.iter().map(|a| (a.name, a.endpoints)).into()
+        let mut watch_chain = HashMap::new();
 
-        task_tracker.spawn("Blockchain connections manager", async move {
-           
+        let mut currency_map = HashMap::new();
 
-            Ok("Chain manager is shutting down".into())
-        });
+        // start network monitors
+        for c in chain {
+            let (chain_tx, mut chain_rx) = mpsc::channel(1024);
+            watch_chain.insert(c.name.clone(), chain_tx);
+            if let Some(a) = c.native_token {
+                if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
+                    return Err(Error::DuplicateCurrency(a.name));
+                }
+            }
+            for a in c.asset {
+                if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
+                    return Err(Error::DuplicateCurrency(a.name));
+                }
+            }
 
-        Ok(Self{tx})
+            task_tracker.spawn(format!("Chain {} watcher", c.name.clone()), async move {
+                let mut watched_accounts = Vec::new();
+                let mut shutdown = false;
+                for endpoint in c.endpoints.iter().cycle() {
+                    // not restarting chain if shutdown is in progress
+                    if shutdown {
+                        break;
+                    }
+                    if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
+                        while let Some(request) = chain_rx.recv().await {
+                            match request {
+                                ChainTrackerRequest::WatchAccount(request) => {
+                                    watched_accounts.push(request);
+                                }
+                                ChainTrackerRequest::Shutdown(res) => {
+                                    shutdown = true;
+                                    let _ = res.send(());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(format!("Chain {} monitor shut down", c.name).into())
+            });
+        }
 
+        task_tracker
+            .clone()
+            .spawn("Blockchain connections manager", async move {
+                // start requests engine
+                while let Some(request) = rx.recv().await {
+                    match request {
+                        ChainRequest::WatchAccount(request) => {
+                            if let Some(chain) = currency_map.get(&request.currency) {
+                                if let Some(receiver) = watch_chain.get(chain) {
+                                    let _unused = receiver.send(ChainTrackerRequest::WatchAccount(request)).await;
+                                } else {
+                                    let _unused = request
+                                        .res
+                                        .send(Err(ErrorChain::InvalidChain(chain.to_string())));
+                                }
+                            } else {
+                                let _unused = request
+                                    .res
+                                    .send(Err(ErrorChain::InvalidCurrency(request.currency)));
+                            }
+                        }
+                        ChainRequest::Shutdown(res) => {
+
+                            for (name, chain) in watch_chain.drain() {
+                                let (tx, rx) = oneshot::channel();
+                                let _unused = chain.send(ChainTrackerRequest::Shutdown(tx)).await;
+                                let _ = rx.await;
+                            }
+                            let _ = res.send(());
+                            break;
+                        }
+                    }
+                }
+
+                Ok("Chain manager is shutting down".into())
+            });
+
+        Ok(Self { tx })
+    }
+
+    pub async fn add_invoice(&self, order: OrderInfo) -> Result<(), ErrorChain> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(ChainRequest::WatchAccount(WatchAccount::new(order, res)?)).await.map_err(|_| ErrorChain::MessageDropped)?;
+        rx.await.map_err(|_| ErrorChain::MessageDropped)?
+    }
+
+    pub async fn shutdown(&self) -> () {
+        let (tx, rx) = oneshot::channel();
+        let _unused = self.tx.send(ChainRequest::Shutdown(tx)).await;
+        let _ = rx.await;
+        ()
     }
 }
 
 enum ChainRequest {
-
+    WatchAccount(WatchAccount),
+    Shutdown(oneshot::Sender<()>),
 }
 
+enum ChainTrackerRequest {
+    WatchAccount(WatchAccount),
+    Shutdown(oneshot::Sender<()>),
+}
+
+struct WatchAccount {
+    address: AccountId32,
+    currency: String,
+    amount: Balance,
+    res: oneshot::Sender<Result<(), ErrorChain>>,
+}
+
+impl WatchAccount {
+    fn new(
+        order: OrderInfo,
+        res: oneshot::Sender<Result<(), ErrorChain>>,
+    ) -> Result<WatchAccount, ErrorChain> {
+        Ok(WatchAccount {
+            address: AccountId32::from_base58_string(&order.payment_account)
+                .map_err(ErrorChain::InvoiceAccount)?
+                .0,
+            currency: order.currency.currency,
+            amount: Balance::parse(order.amount, order.currency.decimals),
+            res,
+        })
+    }
+}
 
 #[derive(Deserialize, Debug)]
 struct Transferred {

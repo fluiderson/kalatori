@@ -192,24 +192,30 @@ impl Database {
             while let Some(request) = rx.recv().await {
                 match request {
                     DbRequest::CreateOrder(request) => {
-                        request
+                        let _unused = request
                             .res
                             .send(create_order(request.order, request.order_info, &orders));
                     }
                     DbRequest::ReadOrder(request) => {
-                        request.res.send(read_order(request.order, &orders));
+                        let _unused = request.res.send(read_order(request.order, &orders));
                     }
                     DbRequest::MarkPaid(request) => {
-                        request.res.send(mark_paid(request.order, &orders));
+                        let _unused = request.res.send(mark_paid(request.order, &orders));
                     }
                     DbRequest::MarkWithdrawn(request) => {
-                        request.res.send(mark_withdrawn(request.order, &orders));
+                        let _unused = request.res.send(mark_withdrawn(request.order, &orders));
                     }
                     DbRequest::MarkStuck(request) => {
-                        request.res.send(mark_stuck(request.order, &orders));
+                        let _unused = request.res.send(mark_stuck(request.order, &orders));
+                    }
+                    DbRequest::Shutdown(res) => {
+                        let _ = res.send(());
+                        break;
                     }
                 };
             }
+
+            drop(database.flush());
 
             Ok("Database server is shutting down".into())
         });
@@ -223,39 +229,45 @@ impl Database {
         order_info: OrderInfo,
     ) -> Result<OrderCreateResponse, ErrorDb> {
         let (res, rx) = oneshot::channel();
-        self.tx.send(DbRequest::CreateOrder(CreateOrder {
+        let _unused = self.tx.send(DbRequest::CreateOrder(CreateOrder {
             order,
             order_info,
             res,
-        }));
+        })).await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
     pub async fn read_order(&self, order: String) -> Result<Option<OrderInfo>, ErrorDb> {
         let (res, rx) = oneshot::channel();
-        self.tx.send(DbRequest::ReadOrder(ReadOrder { order, res }));
+        let _unused = self.tx.send(DbRequest::ReadOrder(ReadOrder { order, res })).await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
     pub async fn mark_paid(&self, order: String) -> Result<(), ErrorDb> {
         let (res, rx) = oneshot::channel();
-        self.tx
-            .send(DbRequest::MarkPaid(ModifyOrder { order, res }));
+        let _unused = self.tx
+            .send(DbRequest::MarkPaid(ModifyOrder { order, res })).await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
     pub async fn mark_withdrawn(&self, order: String) -> Result<(), ErrorDb> {
         let (res, rx) = oneshot::channel();
-        self.tx
-            .send(DbRequest::MarkWithdrawn(ModifyOrder { order, res }));
+        let _unused = self.tx
+            .send(DbRequest::MarkWithdrawn(ModifyOrder { order, res })).await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
     pub async fn mark_stuck(&self, order: String) -> Result<(), ErrorDb> {
         let (res, rx) = oneshot::channel();
-        self.tx
-            .send(DbRequest::MarkStuck(ModifyOrder { order, res }));
+        let _unused = self.tx
+            .send(DbRequest::MarkStuck(ModifyOrder { order, res })).await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+    }
+
+    pub async fn shutdown(&self) {
+        let (tx, rx) = oneshot::channel();
+        let _unused = self.tx.send(DbRequest::Shutdown(tx)).await;
+        let _ = rx.await;
     }
 }
 
@@ -265,6 +277,7 @@ enum DbRequest {
     MarkPaid(ModifyOrder),
     MarkWithdrawn(ModifyOrder),
     MarkStuck(ModifyOrder),
+    Shutdown(oneshot::Sender<()>),
 }
 
 pub struct CreateOrder {
@@ -293,7 +306,7 @@ fn create_order(
             let old_order_info = OrderInfo::decode(&mut &record[..])?;
             match order_info.payment_status {
                 PaymentStatus::Pending => {
-                    let _ = orders.insert(order.encode(), order_info.encode())?;
+                    drop(orders.insert(order.encode(), order_info.encode())?);
                     OrderCreateResponse::Modified
                 }
                 PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info),

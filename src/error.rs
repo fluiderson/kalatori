@@ -52,6 +52,9 @@ pub enum Error {
 
     #[error("Operating system related I/O error {0:?}")]
     IoError(std::io::Error),
+
+    #[error("Duplicate config record for token {0}")]
+    DuplicateCurrency(String),
 }
 
 impl From<ErrorDb> for Error {
@@ -242,6 +245,18 @@ pub enum ErrorChain {
 
     #[error("Internal error: {0:?}")] // TODO this should be replaced by specific errors
     ErrorUtil(ErrorUtil),
+
+    #[error("Invoice account could not be parsed: {0:?}")]
+    InvoiceAccount(substrate_crypto_light::error::Error),
+
+    #[error("Chain {0} not found")]
+    InvalidChain(String),
+
+    #[error("Currency {0} not found")]
+    InvalidCurrency(String),
+
+    #[error("Chain manager dropped a message, probably due to chain disconnect; maybe it should be sent again")]
+    MessageDropped,
 }
 
 impl From<ClientError> for ErrorChain {
