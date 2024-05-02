@@ -257,6 +257,9 @@ pub enum ErrorChain {
 
     #[error("Chain manager dropped a message, probably due to chain disconnect; maybe it should be sent again")]
     MessageDropped,
+
+    #[error("Block subscription terminated")]
+    BlockSubscriptionTerminated,
 }
 
 impl From<ClientError> for ErrorChain {

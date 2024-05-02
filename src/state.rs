@@ -66,28 +66,32 @@ impl State {
             kalatori_remark: remark.clone(),
         };
 
-        let state = StateData {
-            currencies,
-            recipient: recipient_ss58,
-            server_info,
-            db,
-            seed_entropy,
-        };
 
         // Remember to always spawn async here or things might deadlock
         task_tracker.spawn("State Handler", async move {
             let chain_manager = chain_manager.await.map_err(|_| Error::Fatal)?;
+            let state = StateData {
+                currencies,
+                recipient: recipient_ss58,
+                server_info,
+                db,
+                chain_manager,
+                seed_entropy,
+            };
+
             while let Some(request) = rx.recv().await {
                 match request {
                     StateAccessRequest::GetInvoiceStatus(request) => {
                         request
                             .res
-                            .send(state.get_invoice_status(request.order).await).map_err(|_| Error::Fatal)?;
+                            .send(state.get_invoice_status(request.order).await)
+                            .map_err(|_| Error::Fatal)?;
                     }
                     StateAccessRequest::CreateInvoice(request) => {
                         request
                             .res
-                            .send(state.create_invoice(request.order_query).await).map_err(|_| Error::Fatal)?;
+                            .send(state.create_invoice(request.order_query).await)
+                            .map_err(|_| Error::Fatal)?;
                     }
                     StateAccessRequest::ServerStatus(res) => {
                         let server_status = ServerStatus {
@@ -98,7 +102,7 @@ impl State {
                     }
                     // Orchestrate shutdown from here
                     StateAccessRequest::Shutdown => {
-                        chain_manager.shutdown().await;
+                        state.chain_manager.shutdown().await;
                         state.db.shutdown().await;
                         break;
                     }
@@ -118,13 +122,17 @@ impl State {
                 order: order.to_string(),
                 res,
             }))
-            .await.map_err(|_| Error::Fatal)?;
+            .await
+            .map_err(|_| Error::Fatal)?;
         rx.await.map_err(|_| Error::Fatal)?
     }
 
     pub async fn server_status(&self) -> Result<ServerStatus, Error> {
         let (res, rx) = oneshot::channel();
-        self.tx.send(StateAccessRequest::ServerStatus(res)).await.map_err(|_| Error::Fatal)?;
+        self.tx
+            .send(StateAccessRequest::ServerStatus(res))
+            .await
+            .map_err(|_| Error::Fatal)?;
         rx.await.map_err(|_| Error::Fatal)
     }
 
@@ -143,7 +151,8 @@ impl State {
                 order_query,
                 res,
             }))
-            .await.map_err(|_| Error::Fatal)?;
+            .await
+            .map_err(|_| Error::Fatal)?;
         rx.await.map_err(|_| Error::Fatal)?
     }
 
@@ -180,6 +189,7 @@ struct StateData {
     recipient: String,
     server_info: ServerInfo,
     db: Database,
+    chain_manager: ChainManager,
     seed_entropy: Entropy,
 }
 
@@ -218,16 +228,21 @@ impl StateData {
             .create_order(order.clone(), order_info.clone())
             .await?
         {
-            OrderCreateResponse::New => Ok(OrderResponse::NewOrder(self.order_status(
-                order,
-                order_info,
-                String::new(),
-            ))),
-            OrderCreateResponse::Modified => Ok(OrderResponse::ModifiedOrder(self.order_status(
-                order,
-                order_info,
-                String::new(),
-            ))),
+            OrderCreateResponse::New => {
+
+                Ok(OrderResponse::NewOrder(self.order_status(
+                    order,
+                    order_info,
+                    String::new(),
+                )))
+            },
+            OrderCreateResponse::Modified => {
+                Ok(OrderResponse::ModifiedOrder(self.order_status(
+                    order,
+                    order_info,
+                    String::new(),
+                )))
+            },
             OrderCreateResponse::Collision(order_status) => {
                 Ok(OrderResponse::CollidedOrder(self.order_status(
                     order,

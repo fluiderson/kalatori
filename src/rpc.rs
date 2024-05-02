@@ -1,6 +1,6 @@
 use crate::{
     chain::{
-        base58prefix, hashed_key_element, pallet_index, storage_key,
+        base58prefix, balance_queries, hashed_key_element, pallet_index, storage_key,
         system_properties_to_short_specs, unit,
     },
     definitions::api_v2::{CurrencyProperties, OrderInfo},
@@ -17,7 +17,7 @@ use frame_metadata::{
     v15::{RuntimeMetadataV15, StorageEntryType},
     RuntimeMetadata,
 };
-use jsonrpsee::core::client::ClientT;
+use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use parity_scale_codec::{Decode, DecodeAll, Encode};
@@ -36,10 +36,14 @@ use substrate_crypto_light::common::{AccountId32, AsBase58};
 use substrate_parser::{
     cards::{ExtendedData, ParsedData, Sequence},
     decode_all_as_type, decode_as_storage_entry,
+    special_indicators::SpecialtyUnsignedInteger,
     storage_data::{KeyData, KeyPart},
     AsMetadata, ShortSpecs,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{timeout, Duration},
+};
 use tokio_util::sync::CancellationToken;
 
 pub const MODULE: &str = module_path!();
@@ -88,7 +92,7 @@ pub async fn get_value_from_storage(
     client: &WsClient,
     whole_key: &str,
     block_hash: &str,
-) -> Result<Value, Box<dyn std::error::Error>> {
+) -> Result<Value, ErrorChain> {
     let value: Value = client
         .request("state_getStorage", rpc_params![whole_key, block_hash])
         .await?;
@@ -100,7 +104,7 @@ pub async fn get_keys_from_storage(
     prefix: &str,
     storage_name: &str,
     block_hash: &str,
-) -> Result<Value, Box<dyn std::error::Error>> {
+) -> Result<Value, ErrorChain> {
     let keys: Value = client
         .request(
             "state_getKeys",
@@ -142,9 +146,9 @@ async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
 
 /// fetch current block hash, to request later the metadata and specs for
 /// the same block
-async fn block_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
+async fn block_hash(client: &WsClient, number: String) -> Result<BlockHash, ErrorChain> {
     let block_hash_request: Value = client
-        .request("chain_getBlockHash", rpc_params![])
+        .request("chain_getBlockHash", rpc_params![number])
         .await
         .map_err(ErrorChain::Client)?;
     match block_hash_request {
@@ -259,43 +263,25 @@ impl ChainManager {
         // start network monitors
         for c in chain {
             let (chain_tx, mut chain_rx) = mpsc::channel(1024);
-            watch_chain.insert(c.name.clone(), chain_tx);
-            if let Some(a) = c.native_token {
+            watch_chain.insert(c.name.clone(), chain_tx.clone());
+            if let Some(ref a) = c.native_token {
                 if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
-                    return Err(Error::DuplicateCurrency(a.name));
+                    return Err(Error::DuplicateCurrency(a.name.clone()));
                 }
             }
-            for a in c.asset {
+            for a in &c.asset {
                 if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
-                    return Err(Error::DuplicateCurrency(a.name));
+                    return Err(Error::DuplicateCurrency(a.name.clone()));
                 }
             }
 
-            task_tracker.spawn(format!("Chain {} watcher", c.name.clone()), async move {
-                let mut watched_accounts = Vec::new();
-                let mut shutdown = false;
-                for endpoint in c.endpoints.iter().cycle() {
-                    // not restarting chain if shutdown is in progress
-                    if shutdown {
-                        break;
-                    }
-                    if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
-                        while let Some(request) = chain_rx.recv().await {
-                            match request {
-                                ChainTrackerRequest::WatchAccount(request) => {
-                                    watched_accounts.push(request);
-                                }
-                                ChainTrackerRequest::Shutdown(res) => {
-                                    shutdown = true;
-                                    let _ = res.send(());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(format!("Chain {} monitor shut down", c.name).into())
-            });
+            start_chain_watch(
+                c,
+                chain_tx.clone(),
+                chain_rx,
+                task_tracker.clone(),
+                cancellation_token.clone(),
+            )?;
         }
 
         task_tracker
@@ -307,7 +293,9 @@ impl ChainManager {
                         ChainRequest::WatchAccount(request) => {
                             if let Some(chain) = currency_map.get(&request.currency) {
                                 if let Some(receiver) = watch_chain.get(chain) {
-                                    let _unused = receiver.send(ChainTrackerRequest::WatchAccount(request)).await;
+                                    let _unused = receiver
+                                        .send(ChainTrackerRequest::WatchAccount(request))
+                                        .await;
                                 } else {
                                     let _unused = request
                                         .res
@@ -320,7 +308,6 @@ impl ChainManager {
                             }
                         }
                         ChainRequest::Shutdown(res) => {
-
                             for (name, chain) in watch_chain.drain() {
                                 let (tx, rx) = oneshot::channel();
                                 let _unused = chain.send(ChainTrackerRequest::Shutdown(tx)).await;
@@ -341,7 +328,9 @@ impl ChainManager {
     pub async fn add_invoice(&self, order: OrderInfo) -> Result<(), ErrorChain> {
         let (res, rx) = oneshot::channel();
         self.tx
-            .send(ChainRequest::WatchAccount(WatchAccount::new(order, res)?)).await.map_err(|_| ErrorChain::MessageDropped)?;
+            .send(ChainRequest::WatchAccount(WatchAccount::new(order, res)?))
+            .await
+            .map_err(|_| ErrorChain::MessageDropped)?;
         rx.await.map_err(|_| ErrorChain::MessageDropped)?
     }
 
@@ -361,6 +350,7 @@ enum ChainRequest {
 enum ChainTrackerRequest {
     WatchAccount(WatchAccount),
     Shutdown(oneshot::Sender<()>),
+    NewBlock(String),
 }
 
 struct WatchAccount {
@@ -384,6 +374,131 @@ impl WatchAccount {
             res,
         })
     }
+
+    async fn check(&mut self, client: &WsClient, metadata: &RuntimeMetadataV15, block: &H256, currency: &CurrencyProperties) -> Result<bool, ErrorChain> {
+        let balance = balances_at_account(client, &block, &metadata, &self.address, currency.asset_id).await?;
+        Ok( balance >= self.amount )
+    }
+}
+
+fn start_chain_watch(
+    c: Chain,
+    chain_tx: mpsc::Sender<ChainTrackerRequest>,
+    mut chain_rx: mpsc::Receiver<ChainTrackerRequest>,
+    task_tracker: TaskTracker,
+    cancellation_token: CancellationToken,
+) -> Result<(), ErrorChain> {
+    //let (block_source_tx, mut block_source_rx) = mpsc::channel(16);
+    task_tracker
+        .clone()
+        .spawn(format!("Chain {} watcher", c.name.clone()), async move {
+            let watchdog = 30000;
+            let mut watched_accounts = Vec::new();
+            let mut shutdown = false;
+            for endpoint in c.endpoints.iter().cycle() {
+                // not restarting chain if shutdown is in progress
+                if shutdown || cancellation_token.is_cancelled() {
+                    break;
+                }
+                if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
+                    // prepare chain
+                    match prepare_chain(&client, endpoint, chain_tx.clone(), task_tracker.clone())
+                        .await
+                    {
+                        Ok(_) => (),
+                        Err(e) => {
+                            tracing::info!(
+                                "Failed to connect to chain {}, due to {:?} switching RPC server...",
+                                c.name,
+                                e
+                            );
+                            continue;
+                        }
+                    }
+
+                    // fulfill requests
+                    while let Ok(Some(request)) =
+                        timeout(Duration::from_millis(watchdog), chain_rx.recv()).await
+                    {
+                        match request {
+                            ChainTrackerRequest::NewBlock(block) => {
+                                let block = block_hash(&client, block);
+                            }
+                            ChainTrackerRequest::WatchAccount(request) => {
+                                watched_accounts.push(request);
+                            }
+                            ChainTrackerRequest::Shutdown(res) => {
+                                shutdown = true;
+                                let _ = res.send(());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(format!("Chain {} monitor shut down", c.name).into())
+        });
+    Ok(())
+}
+
+async fn prepare_chain(
+    client: &WsClient,
+    rpc_url: &str,
+    chain_tx: mpsc::Sender<ChainTrackerRequest>,
+    task_tracker: TaskTracker,
+) -> Result<(), ErrorChain> {
+    let genesis_hash = genesis_hash(&client).await?;
+    let mut blocks: Subscription<BlockHead> = client
+        .subscribe(
+            "chain_subscribeFinalizedHeads",
+            rpc_params![],
+            "unsubscribe blocks",
+        )
+        .await?;
+    let block = next_block(client, &mut blocks).await?;
+    let metadata = metadata(&client, &block).await?;
+    let specs = specs(&client, &metadata, &block).await?;
+    let assets =
+        assets_set_at_block(&client, &block, &metadata, rpc_url, specs.base58prefix).await?;
+    task_tracker.spawn("watching blocks at {rpc_url}", async move {
+        while let Ok(block) = next_block_number(&mut blocks).await {
+            if chain_tx
+                .send(ChainTrackerRequest::NewBlock(block))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        Ok("Block watch at {rpc_url} stopped".into())
+    });
+
+    Ok(())
+}
+
+async fn next_block_number(blocks: &mut Subscription<BlockHead>) -> Result<String, ErrorChain> {
+    match blocks.next().await {
+        Some(Ok(a)) => Ok(a.number),
+        Some(Err(e)) => Err(e.into()),
+        None => Err(ErrorChain::BlockSubscriptionTerminated),
+    }
+}
+
+async fn next_block(
+    client: &WsClient,
+    blocks: &mut Subscription<BlockHead>,
+) -> Result<H256, ErrorChain> {
+    block_hash(&client, next_block_number(blocks).await?).await
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+struct BlockHead {
+    //digest: Value,
+    //extrinsics_root: String,
+    pub number: String,
+    //parent_hash: String,
+    //state_root: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -411,13 +526,12 @@ where
 /// Get all sufficient assets from a chain
 pub async fn assets_set_at_block(
     client: &WsClient,
-    block_hash: &str,
-    metadata_v15: RuntimeMetadataV15,
-    rpc_url: String,
+    block_hash: &H256,
+    metadata_v15: &RuntimeMetadataV15,
+    rpc_url: &str,
     ss58: u16,
-) -> HashMap<String, CurrencyProperties> {
-    //let metadata_v15 = metadata_v15(address, block_hash).await.unwrap();
-
+) -> Result<HashMap<String, CurrencyProperties>, ErrorChain> {
+    let block_hash = &hex::encode(&block_hash.0);
     let mut assets_set = HashMap::new();
 
     let mut assets_asset_storage_metadata = None;
@@ -447,9 +561,8 @@ pub async fn assets_set_at_block(
     let assets_asset_storage_metadata = assets_asset_storage_metadata.unwrap();
     let assets_metadata_storage_metadata = assets_metadata_storage_metadata.unwrap();
 
-    let available_keys_assets_asset = get_keys_from_storage(client, "Assets", "Asset", block_hash)
-        .await
-        .unwrap();
+    let available_keys_assets_asset =
+        get_keys_from_storage(client, "Assets", "Asset", block_hash).await?;
     if let Value::Array(ref keys_array) = available_keys_assets_asset {
         for key in keys_array.iter() {
             if let Value::String(string_key) = key {
@@ -641,7 +754,7 @@ pub async fn assets_set_at_block(
                                                             chain_name: "TODO".into(),
                                                             kind: TokenKind::Asset,
                                                             decimals,
-                                                            rpc_url: rpc_url.clone(),
+                                                            rpc_url: rpc_url.to_string(),
                                                             asset_id: Some(asset_id),
                                                             ss58,
                                                         },
@@ -663,5 +776,98 @@ pub async fn assets_set_at_block(
             }
         }
     }
-    assets_set
+    Ok(assets_set)
 }
+
+pub async fn balances_at_account(
+    client: &WsClient,
+    block_hash: &H256,
+    metadata_v15: &RuntimeMetadataV15,
+    account_id: &AccountId32,
+    asset_id: Option<AssetId>,
+) -> Result<Balance, ErrorChain> {
+    let block_hash = &hex::encode(&block_hash.0);
+    if let Some(asset_id) = asset_id {
+        let queries = balance_queries(metadata_v15, account_id, asset_id);
+
+    let value_fetch = get_value_from_storage(client, &queries.system_account.key, block_hash)
+        .await
+        .unwrap();
+    if let Value::String(ref string_value) = value_fetch {
+        let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
+        let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
+            &queries.system_account.value_ty,
+            &value_data.as_ref(),
+            &mut (),
+            &metadata_v15.types,
+        )
+        .unwrap();
+        if let ParsedData::Composite(fields) = value.data {
+            for field in fields.iter() {
+                if field.field_name == Some("data".to_string()) {
+                    if let ParsedData::Composite(inner_fields) = &field.data.data {
+                        for inner_field in inner_fields.iter() {
+                            if inner_field.field_name == Some("free".to_string()) {
+                                if let ParsedData::PrimitiveU128 {
+                                    value,
+                                    specialty: SpecialtyUnsignedInteger::Balance,
+                                } = inner_field.data.data
+                                {
+                                    println!("free balance in system: {value}")
+                                }
+                            }
+                            if inner_field.field_name == Some("reserved".to_string()) {
+                                if let ParsedData::PrimitiveU128 {
+                                    value,
+                                    specialty: SpecialtyUnsignedInteger::Balance,
+                                } = inner_field.data.data
+                                {
+                                    println!("reserved balance in system: {value}")
+                                }
+                            }
+                            if inner_field.field_name == Some("frozen".to_string()) {
+                                if let ParsedData::PrimitiveU128 {
+                                    value,
+                                    specialty: SpecialtyUnsignedInteger::Balance,
+                                } = inner_field.data.data
+                                {
+                                    println!("frozen balance in system: {value}")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let value_fetch = get_value_from_storage(client, &queries.assets_account.key, block_hash)
+        .await
+        .unwrap();
+    if let Value::String(ref string_value) = value_fetch {
+        let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
+        let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
+            &queries.assets_account.value_ty,
+            &value_data.as_ref(),
+            &mut (),
+            &metadata_v15.types,
+        )
+        .unwrap();
+        if let ParsedData::Composite(fields) = value.data {
+            for field in fields.iter() {
+                if let ParsedData::PrimitiveU128 {
+                    value,
+                    specialty: SpecialtyUnsignedInteger::Balance,
+                } = field.data.data
+                {
+                    return Ok(Balance(value))
+                }
+            };
+            panic!();
+        } else { panic!() }
+    } else { panic!() }
+    } else {
+panic!("native tokens not implemented");
+    }
+}
+

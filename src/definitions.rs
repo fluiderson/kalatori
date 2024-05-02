@@ -37,8 +37,8 @@ pub struct AssetInfo {
     pub id: api_v2::AssetId,
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
-pub struct Balance(u128);
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Balance(pub u128);
 
 impl Deref for Balance {
     type Target = u128;

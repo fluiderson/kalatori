@@ -10,11 +10,176 @@ use parity_scale_codec::{Decode, Encode};
 use scale_info::{TypeDef, TypeDefPrimitive};
 use serde_json::{Map, Number, Value};
 use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
-use substrate_crypto_light::common::{DeriveJunction, FullDerivation};
+use substrate_crypto_light::common::{AccountId32, DeriveJunction, FullDerivation};
 use substrate_parser::{
     cards::{ExtendedData, ParsedData},
     decode_all_as_type, AsMetadata, ShortSpecs,
 };
+use substrate_constructor::{fill_prepare::{PrimitiveToFill, SpecialTypeToFill, TypeContentToFill, UnsignedToFill}, storage_query::{EntrySelector, EntrySelectorFunctional, FinalizedStorageQuery, StorageEntryTypeToFill, StorageSelector, StorageSelectorFunctional}};
+
+#[derive(Clone, Debug)]
+pub struct FinalizedQueries {
+    pub system_account: FinalizedStorageQuery,
+    pub assets_account: FinalizedStorageQuery,
+}
+
+pub fn balance_queries(
+    metadata_v15: &RuntimeMetadataV15,
+    account_id: &AccountId32,
+    asset_id: u32,
+) -> FinalizedQueries {
+    let storage_selector = StorageSelector::init(&mut (), metadata_v15).unwrap();
+
+    if let StorageSelector::Functional(mut storage_selector_functional) = storage_selector {
+        let mut index_system_in_pallet_selector = None;
+        let mut index_assets_in_pallet_selector = None;
+
+        for (index, pallet) in storage_selector_functional
+            .available_pallets
+            .iter()
+            .enumerate()
+        {
+            match pallet.prefix.as_str() {
+                "System" => index_system_in_pallet_selector = Some(index),
+                "Assets" => index_assets_in_pallet_selector = Some(index),
+                _ => {}
+            }
+            if index_system_in_pallet_selector.is_some()
+                && index_assets_in_pallet_selector.is_some()
+            {
+                break;
+            }
+        }
+        let index_system_in_pallet_selector = index_system_in_pallet_selector.unwrap();
+        let index_assets_in_pallet_selector = index_assets_in_pallet_selector.unwrap();
+
+        let mut system_account_query = None;
+        let mut assets_account_query = None;
+
+        // System - Account
+        storage_selector_functional = StorageSelectorFunctional::new_at::<(), RuntimeMetadataV15>(
+            &storage_selector_functional.available_pallets,
+            &mut (),
+            &metadata_v15.types,
+            index_system_in_pallet_selector,
+        )
+        .unwrap();
+
+        if let EntrySelector::Functional(ref mut entry_selector_functional) =
+            storage_selector_functional.query.entry_selector
+        {
+            let mut entry_index = None;
+            for (index, entry) in entry_selector_functional
+                .available_entries
+                .iter()
+                .enumerate()
+            {
+                if entry.name == "Account" {
+                    entry_index = Some(index);
+                    break;
+                }
+            }
+            let entry_index = entry_index.unwrap();
+            *entry_selector_functional = EntrySelectorFunctional::new_at::<(), RuntimeMetadataV15>(
+                &entry_selector_functional.available_entries,
+                &mut (),
+                &metadata_v15.types,
+                entry_index,
+            )
+            .unwrap();
+            if let StorageEntryTypeToFill::Map {
+                hashers: _,
+                ref mut key_to_fill,
+                value: _,
+            } = entry_selector_functional.selected_entry.type_to_fill
+            {
+                if let TypeContentToFill::SpecialType(SpecialTypeToFill::AccountId32(
+                    ref mut account_to_fill,
+                )) = key_to_fill.content
+                {
+                    *account_to_fill = Some(substrate_parser::additional_types::AccountId32(account_id.0))
+                }
+            }
+
+            system_account_query = storage_selector_functional.query.finalize().unwrap();
+        }
+
+        // Assets - Account
+        storage_selector_functional = StorageSelectorFunctional::new_at::<(), RuntimeMetadataV15>(
+            &storage_selector_functional.available_pallets,
+            &mut (),
+            &metadata_v15.types,
+            index_assets_in_pallet_selector,
+        )
+        .unwrap();
+        if let EntrySelector::Functional(ref mut entry_selector_functional) =
+            storage_selector_functional.query.entry_selector
+        {
+            let mut entry_index = None;
+            for (index, entry) in entry_selector_functional
+                .available_entries
+                .iter()
+                .enumerate()
+            {
+                if entry.name == "Account" {
+                    entry_index = Some(index);
+                    break;
+                }
+            }
+            let entry_index = entry_index.unwrap();
+            *entry_selector_functional = EntrySelectorFunctional::new_at::<(), RuntimeMetadataV15>(
+                &entry_selector_functional.available_entries,
+                &mut (),
+                &metadata_v15.types,
+                entry_index,
+            )
+            .unwrap();
+            if let StorageEntryTypeToFill::Map {
+                hashers: _,
+                ref mut key_to_fill,
+                value: _,
+            } = entry_selector_functional.selected_entry.type_to_fill
+            {
+                if let TypeContentToFill::Tuple(ref mut set) = key_to_fill.content {
+                    for ty in set.iter_mut() {
+                        match ty.content {
+                            TypeContentToFill::SpecialType(SpecialTypeToFill::AccountId32(
+                                ref mut account_to_fill,
+                            )) => *account_to_fill = Some(substrate_parser::additional_types::AccountId32(account_id.0)),
+                            TypeContentToFill::Primitive(PrimitiveToFill::CompactUnsigned(
+                                ref mut specialty_unsigned_to_fill,
+                            )) => {
+                                if let UnsignedToFill::U32(ref mut u) =
+                                    specialty_unsigned_to_fill.content
+                                {
+                                    *u = Some(asset_id);
+                                }
+                            }
+                            TypeContentToFill::Primitive(PrimitiveToFill::Unsigned(
+                                ref mut specialty_unsigned_to_fill,
+                            )) => {
+                                if let UnsignedToFill::U32(ref mut u) =
+                                    specialty_unsigned_to_fill.content
+                                {
+                                    *u = Some(asset_id);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            assets_account_query = storage_selector_functional.query.finalize().unwrap();
+        }
+
+        return FinalizedQueries {
+            system_account: system_account_query.unwrap(),
+            assets_account: assets_account_query.unwrap(),
+        };
+    }
+    panic!("was unable to find something");
+}
 
 pub fn derivations<'a>(recipient: &'a str, order: &'a str) -> FullDerivation<'a> {
     FullDerivation {

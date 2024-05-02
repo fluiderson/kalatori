@@ -192,9 +192,11 @@ impl Database {
             while let Some(request) = rx.recv().await {
                 match request {
                     DbRequest::CreateOrder(request) => {
-                        let _unused = request
-                            .res
-                            .send(create_order(request.order, request.order_info, &orders));
+                        let _unused = request.res.send(create_order(
+                            request.order,
+                            request.order_info,
+                            &orders,
+                        ));
                     }
                     DbRequest::ReadOrder(request) => {
                         let _unused = request.res.send(read_order(request.order, &orders));
@@ -229,38 +231,50 @@ impl Database {
         order_info: OrderInfo,
     ) -> Result<OrderCreateResponse, ErrorDb> {
         let (res, rx) = oneshot::channel();
-        let _unused = self.tx.send(DbRequest::CreateOrder(CreateOrder {
-            order,
-            order_info,
-            res,
-        })).await;
+        let _unused = self
+            .tx
+            .send(DbRequest::CreateOrder(CreateOrder {
+                order,
+                order_info,
+                res,
+            }))
+            .await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
     pub async fn read_order(&self, order: String) -> Result<Option<OrderInfo>, ErrorDb> {
         let (res, rx) = oneshot::channel();
-        let _unused = self.tx.send(DbRequest::ReadOrder(ReadOrder { order, res })).await;
+        let _unused = self
+            .tx
+            .send(DbRequest::ReadOrder(ReadOrder { order, res }))
+            .await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
     pub async fn mark_paid(&self, order: String) -> Result<(), ErrorDb> {
         let (res, rx) = oneshot::channel();
-        let _unused = self.tx
-            .send(DbRequest::MarkPaid(ModifyOrder { order, res })).await;
+        let _unused = self
+            .tx
+            .send(DbRequest::MarkPaid(ModifyOrder { order, res }))
+            .await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
     pub async fn mark_withdrawn(&self, order: String) -> Result<(), ErrorDb> {
         let (res, rx) = oneshot::channel();
-        let _unused = self.tx
-            .send(DbRequest::MarkWithdrawn(ModifyOrder { order, res })).await;
+        let _unused = self
+            .tx
+            .send(DbRequest::MarkWithdrawn(ModifyOrder { order, res }))
+            .await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
     pub async fn mark_stuck(&self, order: String) -> Result<(), ErrorDb> {
         let (res, rx) = oneshot::channel();
-        let _unused = self.tx
-            .send(DbRequest::MarkStuck(ModifyOrder { order, res })).await;
+        let _unused = self
+            .tx
+            .send(DbRequest::MarkStuck(ModifyOrder { order, res }))
+            .await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
