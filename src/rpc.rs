@@ -1,16 +1,9 @@
 use crate::{
-    asset::Asset,
-    database::{Invoicee, State},
-    server::{
-        CurrencyInfo, OrderInfo, OrderStatus, PaymentStatus, ServerInfo, TokenKind,
-        WithdrawalStatus,
-    },
-    AccountId, AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
-    Nonce, OnlineClient, PalletIndex, RuntimeConfig, TaskTracker, Timestamp,
+    AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
+    OnlineClient, PalletIndex, RuntimeConfig, TaskTracker, Timestamp,
 };
 use anyhow::{Context, Result};
 use scale_info::TypeDef;
-use serde::{Deserialize, Deserializer};
 use std::{
     borrow::Cow,
     collections::{hash_map::Entry, HashMap},
@@ -21,49 +14,39 @@ use std::{
 use subxt::{
     backend::{
         legacy::{LegacyBackend, LegacyRpcMethods},
-        rpc::{reconnecting_rpc_client::Client, RpcClient, RpcSubscription},
+        rpc::{reconnecting_rpc_client::Client, RpcClient},
         Backend, BackendExt, RuntimeVersion,
     },
-    blocks::Block,
-    config::{DefaultExtrinsicParamsBuilder, Header},
     constants::ConstantsClient,
-    dynamic::{self, At, DecodedValueThunk, Value},
+    dynamic::{self, At},
     error::{MetadataError, RpcError},
-    ext::{
-        futures::TryFutureExt,
-        scale_decode::DecodeAsType,
-        scale_value,
-        sp_core::{
-            crypto::{Ss58AddressFormat, Ss58Codec},
-            sr25519::Pair,
-        },
-    },
-    runtime_api::RuntimeApiClient,
+    ext::{futures::TryFutureExt, scale_decode::DecodeAsType, sp_core::crypto::Ss58AddressFormat},
     storage::{Storage, StorageClient},
-    tx::{PairSigner, SubmittableExtrinsic},
-    Config, Metadata,
+    Metadata,
 };
 use tokio::sync::{
     mpsc::{self, UnboundedSender},
     oneshot::{self, Sender},
 };
-use tokio_util::sync::CancellationToken;
 
 pub const MODULE: &str = module_path!();
 
-const MAX_BLOCK_NUMBER_ERROR: &str = "block number type overflow is occurred";
-const BLOCK_NONCE_ERROR: &str = "failed to fetch an account nonce by the scanner client";
+// const MAX_BLOCK_NUMBER_ERROR: &str = "block number type overflow is occurred";
+// const BLOCK_NONCE_ERROR: &str = "failed to fetch an account nonce by the scanner client";
 
 // Pallets
 
 const SYSTEM: &str = "System";
 const BALANCES: &str = "Balances";
-const UTILITY: &str = "Utility";
 const ASSETS: &str = "Assets";
 const BABE: &str = "Babe";
+// const UTILITY: &str = "Utility";
 
-type ConnectedChainsChannel = (Sender<bool>, (Arc<String>, ConnectedChain));
-type CurrenciesChannel = (Sender<Option<(String, Currency)>>, (String, Currency));
+type ConnectedChainsChannel = (Sender<bool>, (String, ConnectedChain));
+type CurrenciesChannel = (
+    Sender<Option<(Arc<String>, Option<AssetId>)>>,
+    (Arc<String>, Option<AssetId>),
+);
 
 // Rather used to check whether the `ChargeAssetTxPayment` has `MultiLocation` in the asset ID type.
 fn fetch_assets_pallet_index(metadata: &Metadata) -> Result<Option<PalletIndex>> {
@@ -247,6 +230,32 @@ struct AssetProperties {
     decimals: Decimals,
 }
 
+async fn try_add_currency(
+    all_currencies: &UnboundedSender<CurrenciesChannel>,
+    name: String,
+    asset: Option<AssetId>,
+    chain_currencies: &mut Vec<Arc<String>>,
+) -> Result<()> {
+    let (tx, rx) = oneshot::channel();
+    let arc_name = Arc::new(name);
+
+    all_currencies
+        .send((tx, (arc_name.clone(), asset)))
+        .unwrap();
+
+    if let Some((same_name, _)) = rx.await.unwrap() {
+        Err(anyhow::anyhow!(
+            "config already has the native token or an asset with the name {same_name:?}, all currency names must be unique"
+        ))
+    } else {
+        tracing::info!(?asset, "Registered the currency {:?}.", arc_name);
+
+        chain_currencies.push(arc_name);
+
+        Ok(())
+    }
+}
+
 async fn try_add_asset(
     assets: &mut HashMap<AssetId, AssetProperties>,
     id: AssetId,
@@ -267,6 +276,18 @@ async fn try_add_asset(
     }
 }
 
+struct ChainPropertiesParameters<'a> {
+    all_currencies: &'a UnboundedSender<CurrenciesChannel>,
+    storage_client: &'a StorageClient<RuntimeConfig, OnlineClient>,
+    finalized_hash: BlockHash,
+    metadata: &'a Metadata,
+    constants: &'a ConstantsClient<RuntimeConfig, OnlineClient>,
+    native_token_option: Option<NativeToken>,
+    assets_option: Option<Vec<AssetInfo>>,
+    account_lifetime: BlockNumber,
+    chain_currencies: &'a mut Vec<Arc<String>>,
+}
+
 #[derive(Debug)]
 struct ChainProperties {
     address_format: Ss58AddressFormat,
@@ -277,54 +298,22 @@ struct ChainProperties {
 }
 
 impl ChainProperties {
-    #[allow(clippy::too_many_arguments)]
     async fn fetch(
-        chain: Arc<String>,
-        currencies: UnboundedSender<CurrenciesChannel>,
-        storage_client: &StorageClient<RuntimeConfig, OnlineClient>,
-        finalized_hash: BlockHash,
-        metadata: &Metadata,
-        constants: &ConstantsClient<RuntimeConfig, OnlineClient>,
-        native_token_option: Option<NativeToken>,
-        assets_option: Option<Vec<AssetInfo>>,
-        account_lifetime: BlockNumber,
+        ChainPropertiesParameters {
+            all_currencies,
+            storage_client,
+            finalized_hash,
+            metadata,
+            constants,
+            native_token_option,
+            assets_option,
+            account_lifetime,
+            chain_currencies,
+        }: ChainPropertiesParameters<'_>,
     ) -> Result<(Self, Option<Decimals>)> {
         const ADDRESS_PREFIX: (&str, &str) = (SYSTEM, "SS58Prefix");
         const EXISTENTIAL_DEPOSIT: (&str, &str) = (BALANCES, "ExistentialDeposit");
         const BLOCK_HASH_COUNT: (&str, &str) = (SYSTEM, "BlockHashCount");
-
-        let chain_clone = chain.clone();
-
-        let try_add_currency = |name, asset| async move {
-            let (tx, rx) = oneshot::channel();
-
-            currencies
-                .send((
-                    tx,
-                    (
-                        name,
-                        Currency {
-                            chain: chain_clone,
-                            asset,
-                        },
-                    ),
-                ))
-                .unwrap();
-
-            if let Some((
-                same_name,
-                Currency {
-                    chain: other_chain, ..
-                },
-            )) = rx.await.unwrap()
-            {
-                Err(anyhow::anyhow!(
-                        "chain {other_chain:?} already has the native token or an asset with the name {same_name:?}, all currency names must be unique"
-                    ))
-            } else {
-                Ok(())
-            }
-        };
 
         let assets_pallet = if let Some((last_asset_info, assets_info)) =
             assets_option.and_then(|mut assets| assets.pop().map(|last| (last, assets)))
@@ -333,11 +322,23 @@ impl ChainProperties {
             let storage = storage_client.at(finalized_hash);
 
             for asset_info in assets_info {
-                try_add_currency.clone()(asset_info.name, Some(asset_info.id)).await?;
+                try_add_currency(
+                    all_currencies,
+                    asset_info.name,
+                    Some(asset_info.id),
+                    chain_currencies,
+                )
+                .await?;
                 try_add_asset(&mut assets, asset_info.id, &storage).await?;
             }
 
-            try_add_currency.clone()(last_asset_info.name, Some(last_asset_info.id)).await?;
+            try_add_currency(
+                all_currencies,
+                last_asset_info.name,
+                Some(last_asset_info.id),
+                chain_currencies,
+            )
+            .await?;
             try_add_asset(&mut assets, last_asset_info.id, &storage).await?;
 
             Some(AssetsPallet {
@@ -352,7 +353,13 @@ impl ChainProperties {
         let block_hash_count = fetch_constant(constants, BLOCK_HASH_COUNT)?;
 
         Ok(if let Some(native_token) = native_token_option {
-            try_add_currency(native_token.native_token, None).await?;
+            try_add_currency(
+                all_currencies,
+                native_token.native_token,
+                None,
+                chain_currencies,
+            )
+            .await?;
 
             (
                 Self {
@@ -405,7 +412,7 @@ async fn check_sufficiency_and_fetch_min_balance(
 
     if !encoded_is_sufficient.as_bool().with_context(|| {
         format!(
-            "expected `bool` as the type of {IS_SUFFICIENT:?} in asset {asset} info, got `{:?}`",
+            "expected `bool` as the type of the {IS_SUFFICIENT:?} field in asset {asset} info, got `{:?}`",
             encoded_is_sufficient.value
         )
     })? {
@@ -418,7 +425,7 @@ async fn check_sufficiency_and_fetch_min_balance(
 
     encoded_min_balance.as_u128().map(Balance).with_context(|| {
         format!(
-            "expected `u128` as the type of {MIN_BALANCE:?} in asset {asset} info, got `{:?}`",
+            "expected `u128` as the type of the {MIN_BALANCE:?} field in asset {asset} info, got `{:?}`",
             encoded_min_balance.value
         )
     })
@@ -446,34 +453,41 @@ async fn fetch_asset_decimals(
 
     let decimals = encoded_decimals.as_u128().with_context(|| {
         format!(
-            "expected `u128` as the type of asset {asset} {DECIMALS:?}, got `{:?}`",
+            "expected `u128` as the type of the {DECIMALS:?} field of asset {asset} info, got `{:?}`",
             encoded_decimals.value
         )
     })?;
 
     decimals.try_into().with_context(|| {
-        format!("asset {asset} {DECIMALS:?} must be less than 256, got {decimals}")
+        format!("{DECIMALS:?} field of asset {asset} info must be less than 256, got {decimals}")
     })
 }
 
 pub async fn prepare(
     chains: Vec<Chain>,
     account_lifetime: Timestamp,
-) -> Result<(HashMap<Arc<String>, ConnectedChain>, HashMap<String, Currency>)> {
+) -> Result<(
+    HashMap<String, ConnectedChain>,
+    HashMap<Arc<String>, Option<AssetId>>,
+)> {
     let mut connected_chains = HashMap::with_capacity(chains.len());
-    let mut currencies = HashMap::with_capacity(
-        chains
-            .iter()
-            .map(|chain| {
-                chain
-                    .asset
-                    .as_ref()
-                    .map(Vec::len)
-                    .unwrap_or_default()
-                    .saturating_add(chain.native_token.is_some().into())
-            })
-            .sum(),
-    );
+    let mut currencies_length: usize = 0;
+    let chains_with_their_currencies: Vec<_> = chains
+        .into_iter()
+        .map(|chain| {
+            let chain_currencies_length = chain
+                .asset
+                .as_ref()
+                .map(Vec::len)
+                .unwrap_or_default()
+                .saturating_add(chain.native_token.is_some().into());
+
+            currencies_length = currencies_length.saturating_add(chain_currencies_length);
+
+            (chain, Vec::with_capacity(chain_currencies_length))
+        })
+        .collect();
+    let mut currencies = HashMap::with_capacity(currencies_length);
 
     let (connected_chains_tx, mut connected_chains_rx) =
         mpsc::unbounded_channel::<ConnectedChainsChannel>();
@@ -484,7 +498,8 @@ pub async fn prepare(
             tx.send(match connected_chains.entry(name) {
                 Entry::Occupied(_) => true,
                 Entry::Vacant(entry) => {
-                    tracing::info!("Prepared the {:?} chain:\n{:#?}", entry.key(), chain);
+                    tracing::info!("Prepared the {:?} chain.", entry.key());
+                    tracing::debug!("{:?} properties:\n{:#?}", entry.key(), chain);
 
                     entry.insert(chain);
 
@@ -498,17 +513,11 @@ pub async fn prepare(
     });
 
     let currencies_jh = tokio::spawn(async move {
-        while let Some((tx, (name, currency))) = currencies_rx.recv().await {
+        while let Some((tx, (name, asset))) = currencies_rx.recv().await {
             tx.send(match currencies.entry(name) {
                 Entry::Occupied(entry) => Some(entry.remove_entry()),
                 Entry::Vacant(entry) => {
-                    tracing::info!(
-                        %currency.chain, ?currency.asset,
-                        "Registered the currency {:?}.",
-                        entry.key(),
-                    );
-
-                    entry.insert(currency);
+                    entry.insert(asset);
 
                     None
                 }
@@ -521,11 +530,12 @@ pub async fn prepare(
 
     let (task_tracker, error_rx) = TaskTracker::new();
 
-    for chain in chains {
+    for (chain, chain_currencies) in chains_with_their_currencies {
         task_tracker.spawn(
             format!("the {:?} chain preparator", chain.name),
             prepare_chain(
                 chain,
+                chain_currencies,
                 connected_chains_tx.clone(),
                 currencies_tx.clone(),
                 account_lifetime,
@@ -545,7 +555,6 @@ async fn fetch_block_time(
     client: &OnlineClient,
     finalized_hash: BlockHash,
     is_metadata_legacy: bool,
-    metadata: &Metadata,
 ) -> Result<Timestamp> {
     const EXPECTED_BLOCK_TIME: (&str, &str) = (BABE, "ExpectedBlockTime");
     const MOONBEAM_BLOCK_TIME: (&str, &str) = ("ParachainStaking", "BlockTime");
@@ -556,7 +565,9 @@ async fn fetch_block_time(
     let error_matches = |error: anyhow::Error| {
         if matches!(
             error.downcast_ref(),
-            Some(subxt::Error::Metadata(MetadataError::PalletNameNotFound(_) | MetadataError::ConstantNameNotFound(_)))
+            Some(subxt::Error::Metadata(
+                MetadataError::PalletNameNotFound(_) | MetadataError::ConstantNameNotFound(_)
+            ))
         ) {
             Ok(())
         } else {
@@ -590,11 +601,10 @@ async fn fetch_block_time(
                 .context("failed to decode Aura's slot duration");
         }
         Err(error) => {
-            if !matches!(
+            if !(matches!(
                 error,
                 subxt::Error::Metadata(MetadataError::RuntimeTraitNotFound(_))
-            ) & is_metadata_legacy
-                && metadata.runtime_api_traits().len() == 0
+            ) || is_metadata_legacy)
             {
                 return Err(error).context("failed to fetch Aura's slot duration");
             }
@@ -612,17 +622,19 @@ async fn fetch_block_time(
 #[tracing::instrument(skip_all, fields(chain = chain.name))]
 async fn prepare_chain(
     chain: Chain,
+    mut chain_currencies: Vec<Arc<String>>,
     connected_chains: UnboundedSender<ConnectedChainsChannel>,
     currencies: UnboundedSender<CurrenciesChannel>,
     account_lifetime: Timestamp,
 ) -> Result<Cow<'static, str>> {
     let endpoint = chain
         .endpoints
-        .first()
+        .into_iter()
+        .next()
         .context("chain doesn't have any `endpoints` in the config")?;
     let rpc_client = RpcClient::new(
         Client::builder()
-            .build(endpoint.into())
+            .build(endpoint.clone())
             .await
             .context("failed to construct the RPC client")?,
     );
@@ -647,14 +659,8 @@ async fn prepare_chain(
     .context("failed to construct the API client")?;
     let constants = client.constants();
 
-    let block_time = fetch_block_time(
-        &constants,
-        &client,
-        finalized_hash,
-        is_metadata_legacy,
-        &metadata,
-    )
-    .await?;
+    let block_time =
+        fetch_block_time(&constants, &client, finalized_hash, is_metadata_legacy).await?;
     let account_lifetime_in_blocks = account_lifetime
         .checked_div(block_time)
         .context("block interval can't be 0")?;
@@ -663,20 +669,18 @@ async fn prepare_chain(
         anyhow::bail!("block interval is longer than the given `account-lifetime`");
     }
 
-    let rpc = endpoint.into();
     let storage = client.storage();
-    let chain_name: Arc<String> = chain.name.into();
-    let (properties, decimals) = ChainProperties::fetch(
-        chain_name.clone(),
-        currencies,
-        &storage,
+    let (properties, decimals) = ChainProperties::fetch(ChainPropertiesParameters {
+        all_currencies: &currencies,
+        storage_client: &storage,
         finalized_hash,
-        &metadata,
-        &constants,
-        chain.native_token,
-        chain.asset,
+        metadata: &metadata,
+        constants: &constants,
+        native_token_option: chain.native_token,
+        assets_option: chain.asset,
         account_lifetime,
-    )
+        chain_currencies: &mut chain_currencies,
+    })
     .await?;
     let (tx, rx) = oneshot::channel();
 
@@ -688,17 +692,20 @@ async fn prepare_chain(
         .send((
             tx,
             (
-                chain_name,
+                chain.name,
                 ConnectedChain {
-                    rpc,
-                    methods,
-                    backend,
-                    client,
+                    rpc: endpoint,
                     genesis,
-                    properties,
-                    constants,
-                    storage,
-                    decimals,
+                    currencies: chain_currencies,
+                    inner: InnerConnectedChain {
+                        methods,
+                        backend,
+                        client,
+                        properties,
+                        constants,
+                        storage,
+                        decimals,
+                    },
                 },
             ),
         ))
@@ -713,18 +720,17 @@ async fn prepare_chain(
     Ok("".into())
 }
 
-#[derive(Debug)]
-pub struct Currency {
-    chain: Arc<String>,
-    asset: Option<AssetId>,
+pub struct ConnectedChain {
+    pub rpc: String,
+    pub genesis: BlockHash,
+    pub currencies: Vec<Arc<String>>,
+    pub inner: InnerConnectedChain,
 }
 
-pub struct ConnectedChain {
-    rpc: String,
+pub struct InnerConnectedChain {
     methods: LegacyRpcMethods<RuntimeConfig>,
     backend: Arc<LegacyBackend<RuntimeConfig>>,
     client: OnlineClient,
-    pub genesis: BlockHash,
     properties: ChainProperties,
     constants: ConstantsClient<RuntimeConfig, OnlineClient>,
     storage: StorageClient<RuntimeConfig, OnlineClient>,
@@ -736,8 +742,8 @@ impl Debug for ConnectedChain {
         f.debug_struct(stringify!(ConnectedChain))
             .field("rpc", &self.rpc)
             .field("genesis", &self.genesis)
-            .field("properties", &self.properties)
-            .field("decimals", &self.decimals)
+            .field("properties", &self.inner.properties)
+            .field("decimals", &self.inner.decimals)
             .finish_non_exhaustive()
     }
 }
@@ -754,359 +760,362 @@ impl Display for Shutdown {
     }
 }
 
-// pub struct Processor {
-//     state: Arc<State>,
-//     backend: Arc<LegacyBackend<RuntimeConfig>>,
-//     shutdown_notification: CancellationToken,
-//     methods: LegacyRpcMethods<RuntimeConfig>,
-//     client: OnlineClient,
-//     storage: StorageClient<RuntimeConfig, OnlineClient>,
-// }
+pub struct Processor {
+    // state: Arc<State>,
+    // backend: Arc<LegacyBackend<RuntimeConfig>>,
+    // shutdown_notification: CancellationToken,
+    // methods: LegacyRpcMethods<RuntimeConfig>,
+    // client: OnlineClient,
+    // storage: StorageClient<RuntimeConfig, OnlineClient>,
+}
 
-// impl Processor {
-//     pub async fn ignite(state: Arc<State>, notif: CancellationToken) -> Result<Cow<'static, str>> {
-//         let client = Client::builder().build(state.rpc.clone()).await.unwrap();
-//         let rpc_c = RpcClient::new(client);
-//         let methods = LegacyRpcMethods::new(rpc_c.clone());
-//         let backend = Arc::new(LegacyBackend::builder().build(rpc_c));
-//         let onl = OnlineClient::from_backend(backend.clone()).await.unwrap();
-//         let st = onl.storage();
+impl Processor {
+    // #[tracing::instrument(skip_all, fields(chain = chain.name))]
+    // pub async fn ignite()
 
-//         Processor {
-//             state,
-//             backend,
-//             shutdown_notification: notif,
-//             methods,
-//             client: onl,
-//             storage: st,
-//         }
-//         .execute()
-//         .await
-//         .or_else(|error| {
-//             error
-//                 .downcast()
-//                 .map(|Shutdown| "The RPC module is shut down.".into())
-//         })
-//     }
+    //     pub async fn ignite(state: Arc<State>, notif: CancellationToken) -> Result<Cow<'static, str>> {
+    //         let client = Client::builder().build(state.rpc.clone()).await.unwrap();
+    //         let rpc_c = RpcClient::new(client);
+    //         let methods = LegacyRpcMethods::new(rpc_c.clone());
+    //         let backend = Arc::new(LegacyBackend::builder().build(rpc_c));
+    //         let onl = OnlineClient::from_backend(backend.clone()).await.unwrap();
+    //         let st = onl.storage();
 
-//     async fn execute(mut self) -> Result<Cow<'static, str>> {
-//         let (head_number, head_hash) = self
-//             .finalized_head_number_and_hash()
-//             .await
-//             .context("failed to get the chain head")?;
+    //         Processor {
+    //             state,
+    //             backend,
+    //             shutdown_notification: notif,
+    //             methods,
+    //             client: onl,
+    //             storage: st,
+    //         }
+    //         .execute()
+    //         .await
+    //         .or_else(|error| {
+    //             error
+    //                 .downcast()
+    //                 .map(|Shutdown| "The RPC module is shut down.".into())
+    //         })
+    //     }
 
-//         let mut next_unscanned_number;
-//         let mut subscription;
+    //     async fn execute(mut self) -> Result<Cow<'static, str>> {
+    //         let (head_number, head_hash) = self
+    //             .finalized_head_number_and_hash()
+    //             .await
+    //             .context("failed to get the chain head")?;
 
-//         next_unscanned_number = head_number.checked_add(1).context(MAX_BLOCK_NUMBER_ERROR)?;
-//         subscription = self.finalized_heads().await?;
+    //         let mut next_unscanned_number;
+    //         let mut subscription;
 
-//         loop {
-//             self.process_finalized_heads(subscription, &mut next_unscanned_number)
-//                 .await?;
+    //         next_unscanned_number = head_number.checked_add(1).context(MAX_BLOCK_NUMBER_ERROR)?;
+    //         subscription = self.finalized_heads().await?;
 
-//             tracing::warn!("Lost the connection while processing finalized heads. Retrying...");
+    //         loop {
+    //             self.process_finalized_heads(subscription, &mut next_unscanned_number)
+    //                 .await?;
 
-//             subscription = self
-//                 .finalized_heads()
-//                 .await
-//                 .context("failed to update the subscription while processing finalized heads")?;
-//         }
-//     }
+    //             tracing::warn!("Lost the connection while processing finalized heads. Retrying...");
 
-//     async fn finalized_head_number_and_hash(&self) -> Result<(BlockNumber, BlockHash)> {
-//         let head_hash = self
-//             .methods
-//             .chain_get_finalized_head()
-//             .await
-//             .context("failed to get the finalized head hash")?;
-//         let head = self
-//             .methods
-//             .chain_get_block(Some(head_hash))
-//             .await
-//             .context("failed to get the finalized head")?
-//             .context("received nothing after requesting the finalized head")?;
+    //             subscription = self
+    //                 .finalized_heads()
+    //                 .await
+    //                 .context("failed to update the subscription while processing finalized heads")?;
+    //         }
+    //     }
 
-//         Ok((head.block.header.number, head_hash))
-//     }
+    //     async fn finalized_head_number_and_hash(&self) -> Result<(BlockNumber, BlockHash)> {
+    //         let head_hash = self
+    //             .methods
+    //             .chain_get_finalized_head()
+    //             .await
+    //             .context("failed to get the finalized head hash")?;
+    //         let head = self
+    //             .methods
+    //             .chain_get_block(Some(head_hash))
+    //             .await
+    //             .context("failed to get the finalized head")?
+    //             .context("received nothing after requesting the finalized head")?;
 
-//     async fn finalized_heads(&self) -> Result<RpcSubscription<<RuntimeConfig as Config>::Header>> {
-//         self.methods
-//             .chain_subscribe_finalized_heads()
-//             .await
-//             .context("failed to subscribe to finalized heads")
-//     }
+    //         Ok((head.block.header.number, head_hash))
+    //     }
 
-//     async fn process_skipped(
-//         &self,
-//         next_unscanned: &mut BlockNumber,
-//         head: BlockNumber,
-//     ) -> Result<()> {
-//         for skipped_number in *next_unscanned..head {
-//             if self.shutdown_notification.is_cancelled() {
-//                 return Err(Shutdown.into());
-//             }
+    //     async fn finalized_heads(&self) -> Result<RpcSubscription<<RuntimeConfig as Config>::Header>> {
+    //         self.methods
+    //             .chain_subscribe_finalized_heads()
+    //             .await
+    //             .context("failed to subscribe to finalized heads")
+    //     }
 
-//             let skipped_hash = self
-//                 .methods
-//                 .chain_get_block_hash(Some(skipped_number.into()))
-//                 .await
-//                 .context("failed to get the hash of a skipped block")?
-//                 .context("received nothing after requesting the hash of a skipped block")?;
+    //     async fn process_skipped(
+    //         &self,
+    //         next_unscanned: &mut BlockNumber,
+    //         head: BlockNumber,
+    //     ) -> Result<()> {
+    //         for skipped_number in *next_unscanned..head {
+    //             if self.shutdown_notification.is_cancelled() {
+    //                 return Err(Shutdown.into());
+    //             }
 
-//             self.process_block(skipped_number, skipped_hash).await?;
-//         }
+    //             let skipped_hash = self
+    //                 .methods
+    //                 .chain_get_block_hash(Some(skipped_number.into()))
+    //                 .await
+    //                 .context("failed to get the hash of a skipped block")?
+    //                 .context("received nothing after requesting the hash of a skipped block")?;
 
-//         *next_unscanned = head;
+    //             self.process_block(skipped_number, skipped_hash).await?;
+    //         }
 
-//         Ok(())
-//     }
+    //         *next_unscanned = head;
 
-//     async fn process_finalized_heads(
-//         &mut self,
-//         mut subscription: RpcSubscription<<RuntimeConfig as Config>::Header>,
-//         next_unscanned: &mut BlockNumber,
-//     ) -> Result<()> {
-//         loop {
-//             tokio::select! {
-//                 biased;
-//                 () = self.shutdown_notification.cancelled() => {
-//                     return Err(Shutdown.into());
-//                 }
-//                 head_result_option = subscription.next() => {
-//                     if let Some(head_result) = head_result_option {
-//                         let head = head_result.context(
-//                             "received an error from the RPC client while processing finalized heads"
-//                         )?;
+    //         Ok(())
+    //     }
 
-//                         self
-//                             .process_skipped(next_unscanned, head.number)
-//                             .await
-//                             .context("failed to process a skipped gap in the listening mode")?;
-//                         self.process_block(head.number, head.hash()).await?;
+    //     async fn process_finalized_heads(
+    //         &mut self,
+    //         mut subscription: RpcSubscription<<RuntimeConfig as Config>::Header>,
+    //         next_unscanned: &mut BlockNumber,
+    //     ) -> Result<()> {
+    //         loop {
+    //             tokio::select! {
+    //                 biased;
+    //                 () = self.shutdown_notification.cancelled() => {
+    //                     return Err(Shutdown.into());
+    //                 }
+    //                 head_result_option = subscription.next() => {
+    //                     if let Some(head_result) = head_result_option {
+    //                         let head = head_result.context(
+    //                             "received an error from the RPC client while processing finalized heads"
+    //                         )?;
 
-//                         *next_unscanned = head.number
-//                             .checked_add(1)
-//                             .context(MAX_BLOCK_NUMBER_ERROR)?;
-//                     } else {
-//                         break;
-//                     }
-//                 }
-//             }
-//         }
+    //                         self
+    //                             .process_skipped(next_unscanned, head.number)
+    //                             .await
+    //                             .context("failed to process a skipped gap in the listening mode")?;
+    //                         self.process_block(head.number, head.hash()).await?;
 
-//         Ok(())
-//     }
+    //                         *next_unscanned = head.number
+    //                             .checked_add(1)
+    //                             .context(MAX_BLOCK_NUMBER_ERROR)?;
+    //                     } else {
+    //                         break;
+    //                     }
+    //                 }
+    //             }
+    //         }
 
-//     async fn process_block(&self, number: BlockNumber, hash: BlockHash) -> Result<()> {
-//         tracing::debug!("Processing the block: {number}.");
+    //         Ok(())
+    //     }
 
-//         let block = self
-//             .client
-//             .blocks()
-//             .at(hash)
-//             .await
-//             .context("failed to obtain a block for processing")?;
-//         let events = block
-//             .events()
-//             .await
-//             .context("failed to obtain block events")?;
+    //     async fn process_block(&self, number: BlockNumber, hash: BlockHash) -> Result<()> {
+    //         tracing::debug!("Processing the block: {number}.");
 
-//         let invoices = &mut *self.state.invoices.write().await;
+    //         let block = self
+    //             .client
+    //             .blocks()
+    //             .at(hash)
+    //             .await
+    //             .context("failed to obtain a block for processing")?;
+    //         let events = block
+    //             .events()
+    //             .await
+    //             .context("failed to obtain block events")?;
 
-//         // let mut update = false;
-//         // let mut invoices_changes = HashMap::new();
+    //         let invoices = &mut *self.state.invoices.write().await;
 
-//         for event_result in events.iter() {
-//             const UPDATE: &str = "CodeUpdated";
-//             const TRANSFERRED: &str = "Transferred";
-//             let event = event_result.context("failed to decode an event")?;
-//             let metadata = event.event_metadata();
+    //         // let mut update = false;
+    //         // let mut invoices_changes = HashMap::new();
 
-//             #[allow(clippy::single_match)]
-//             match (metadata.pallet.name(), &*metadata.variant.name) {
-//                 // (SYSTEM, UPDATE) => update = true,
-//                 (ASSETS, TRANSFERRED) => {
-//                     let tr = Transferred::deserialize(
-//                         event
-//                             .field_values()
-//                             .context("failed to decode event's fields")?,
-//                     )
-//                     .context("failed to deserialize a transfer event")?;
+    //         for event_result in events.iter() {
+    //             const UPDATE: &str = "CodeUpdated";
+    //             const TRANSFERRED: &str = "Transferred";
+    //             let event = event_result.context("failed to decode an event")?;
+    //             let metadata = event.event_metadata();
 
-//                     tracing::info!("{tr:?}");
+    //             #[allow(clippy::single_match)]
+    //             match (metadata.pallet.name(), &*metadata.variant.name) {
+    //                 // (SYSTEM, UPDATE) => update = true,
+    //                 (ASSETS, TRANSFERRED) => {
+    //                     let tr = Transferred::deserialize(
+    //                         event
+    //                             .field_values()
+    //                             .context("failed to decode event's fields")?,
+    //                     )
+    //                     .context("failed to deserialize a transfer event")?;
 
-//                     #[allow(clippy::unnecessary_find_map)]
-//                     if let Some(invoic) = invoices.iter().find_map(|invoic| {
-//                         tracing::info!("{tr:?} {invoic:?}");
-//                         tracing::info!("{}", tr.to == invoic.1.paym_acc);
-//                         tracing::info!("{}", *invoic.1.amount >= tr.amount);
+    //                     tracing::info!("{tr:?}");
 
-//                         if tr.to == invoic.1.paym_acc && *invoic.1.amount <= tr.amount {
-//                             Some(invoic)
-//                         } else {
-//                             None
-//                         }
-//                     }) {
-//                         tracing::info!("{invoic:?}");
+    //                     #[allow(clippy::unnecessary_find_map)]
+    //                     if let Some(invoic) = invoices.iter().find_map(|invoic| {
+    //                         tracing::info!("{tr:?} {invoic:?}");
+    //                         tracing::info!("{}", tr.to == invoic.1.paym_acc);
+    //                         tracing::info!("{}", *invoic.1.amount >= tr.amount);
 
-//                         if !invoic.1.callback.is_empty() {
-//                             tracing::info!("{:?}", invoic.1.callback);
+    //                         if tr.to == invoic.1.paym_acc && *invoic.1.amount <= tr.amount {
+    //                             Some(invoic)
+    //                         } else {
+    //                             None
+    //                         }
+    //                     }) {
+    //                         tracing::info!("{invoic:?}");
 
-//                             crate::callback::callback(
-//                                 invoic.1.callback.clone(),
-//                                 invoic.0.to_string(),
-//                                 self.state.recipient.clone(),
-//                                 self.state.debug,
-//                                 self.state.remark.clone(),
-//                                 invoic.1.amount,
-//                                 self.state.rpc.clone(),
-//                                 invoic.1.paym_acc.clone(),
-//                             )
-//                             .await;
-//                         }
+    //                         if !invoic.1.callback.is_empty() {
+    //                             tracing::info!("{:?}", invoic.1.callback);
 
-//                         invoices.insert(
-//                             invoic.0.clone(),
-//                             Invoicee {
-//                                 callback: invoic.1.callback.clone(),
-//                                 amount: Balance(*invoic.1.amount),
-//                                 paid: true,
-//                                 paym_acc: invoic.1.paym_acc.clone(),
-//                             },
-//                         );
-//                     }
-//                 }
-//                 _ => {}
-//             }
-//         }
+    //                             crate::callback::callback(
+    //                                 invoic.1.callback.clone(),
+    //                                 invoic.0.to_string(),
+    //                                 self.state.recipient.clone(),
+    //                                 self.state.debug,
+    //                                 self.state.remark.clone(),
+    //                                 invoic.1.amount,
+    //                                 self.state.rpc.clone(),
+    //                                 invoic.1.paym_acc.clone(),
+    //                             )
+    //                             .await;
+    //                         }
 
-//         // for (invoice, changes) in invoices_changes {
-//         //     let price = match changes.invoice.status {
-//         //         InvoiceStatus::Unpaid(price) | InvoiceStatus::Paid(price) => price,
-//         //     };
+    //                         invoices.insert(
+    //                             invoic.0.clone(),
+    //                             Invoicee {
+    //                                 callback: invoic.1.callback.clone(),
+    //                                 amount: Balance(*invoic.1.amount),
+    //                                 paid: true,
+    //                                 paym_acc: invoic.1.paym_acc.clone(),
+    //                             },
+    //                         );
+    //                     }
+    //                 }
+    //                 _ => {}
+    //             }
+    //         }
 
-//         //     self.process_unpaid(&block, changes, hash, invoice, price)
-//         //         .await
-//         //         .context("failed to process an unpaid invoice")?;
-//         // }
+    //         // for (invoice, changes) in invoices_changes {
+    //         //     let price = match changes.invoice.status {
+    //         //         InvoiceStatus::Unpaid(price) | InvoiceStatus::Paid(price) => price,
+    //         //     };
 
-//         Ok(())
-//     }
+    //         //     self.process_unpaid(&block, changes, hash, invoice, price)
+    //         //         .await
+    //         //         .context("failed to process an unpaid invoice")?;
+    //         // }
 
-//     async fn balance(&self, hash: BlockHash, account: &AccountId) -> Result<Balance> {
-//         const ACCOUNT: &str = "Account";
-//         const BALANCE: &str = "balance";
+    //         Ok(())
+    //     }
 
-//         if let Some(account_info) = self
-//             .storage
-//             .at(hash)
-//             .fetch(&dynamic::storage(
-//                 ASSETS,
-//                 ACCOUNT,
-//                 vec![
-//                     Value::from(1337u32),
-//                     Value::from_bytes(AsRef::<[u8; 32]>::as_ref(account)),
-//                 ],
-//             ))
-//             .await
-//             .context("failed to fetch account info from the chain")?
-//         {
-//             let decoded_account_info = account_info
-//                 .to_value()
-//                 .context("failed to decode account info")?;
-//             let encoded_balance = decoded_account_info
-//                 .at(BALANCE)
-//                 .with_context(|| format!("{BALANCE} field wasn't found in account info"))?;
+    //     async fn balance(&self, hash: BlockHash, account: &AccountId) -> Result<Balance> {
+    //         const ACCOUNT: &str = "Account";
+    //         const BALANCE: &str = "balance";
 
-//             encoded_balance.as_u128().map(Balance).with_context(|| {
-//                 format!("expected `u128` as the type of a balance, got {encoded_balance}")
-//             })
-//         } else {
-//             Ok(Balance(0))
-//         }
-//     }
+    //         if let Some(account_info) = self
+    //             .storage
+    //             .at(hash)
+    //             .fetch(&dynamic::storage(
+    //                 ASSETS,
+    //                 ACCOUNT,
+    //                 vec![
+    //                     Value::from(1337u32),
+    //                     Value::from_bytes(AsRef::<[u8; 32]>::as_ref(account)),
+    //                 ],
+    //             ))
+    //             .await
+    //             .context("failed to fetch account info from the chain")?
+    //         {
+    //             let decoded_account_info = account_info
+    //                 .to_value()
+    //                 .context("failed to decode account info")?;
+    //             let encoded_balance = decoded_account_info
+    //                 .at(BALANCE)
+    //                 .with_context(|| format!("{BALANCE} field wasn't found in account info"))?;
 
-//     async fn batch_transfer(
-//         &self,
-//         nonce: Nonce,
-//         block_hash_count: BlockNumber,
-//         signer: &PairSigner<RuntimeConfig, Pair>,
-//         transfers: Vec<Value>,
-//     ) -> Result<SubmittableExtrinsic<RuntimeConfig, OnlineClient>> {
-//         const FORCE_BATCH: &str = "force_batch";
+    //             encoded_balance.as_u128().map(Balance).with_context(|| {
+    //                 format!("expected `u128` as the type of a balance, got {encoded_balance}")
+    //             })
+    //         } else {
+    //             Ok(Balance(0))
+    //         }
+    //     }
 
-//         let call = dynamic::tx(UTILITY, FORCE_BATCH, vec![Value::from(transfers)]);
-//         let (number, hash) = self
-//             .finalized_head_number_and_hash()
-//             .await
-//             .context("failed to get the chain head while constructing a transaction")?;
-//         let extensions = DefaultExtrinsicParamsBuilder::new()
-//             .mortal_unchecked(number.into(), hash, block_hash_count.into())
-//             .tip_of(0, Asset::Id(1337));
+    //     async fn batch_transfer(
+    //         &self,
+    //         nonce: Nonce,
+    //         block_hash_count: BlockNumber,
+    //         signer: &PairSigner<RuntimeConfig, Pair>,
+    //         transfers: Vec<Value>,
+    //     ) -> Result<SubmittableExtrinsic<RuntimeConfig, OnlineClient>> {
+    //         const FORCE_BATCH: &str = "force_batch";
 
-//         self.client
-//             .tx()
-//             .create_signed(&call, signer, extensions.build())
-//             .await
-//             .context("failed to create a transfer transaction")
-//     }
+    //         let call = dynamic::tx(UTILITY, FORCE_BATCH, vec![Value::from(transfers)]);
+    //         let (number, hash) = self
+    //             .finalized_head_number_and_hash()
+    //             .await
+    //             .context("failed to get the chain head while constructing a transaction")?;
+    //         let extensions = DefaultExtrinsicParamsBuilder::new()
+    //             .mortal_unchecked(number.into(), hash, block_hash_count.into())
+    //             .tip_of(0, Asset::Id(1337));
 
-//     // async fn current_nonce(&self, account: &AccountId) -> Result<Nonce> {
-//     //     self.api
-//     //         .blocks
-//     //         .at(self.finalized_head_number_and_hash().await?.0)
-//     //         .await
-//     //         .context("failed to obtain the best block for fetching an account nonce")?
-//     //         .account_nonce(account)
-//     //         .await
-//     //         .context("failed to fetch an account nonce by the API client")
-//     // }
+    //         self.client
+    //             .tx()
+    //             .create_signed(&call, signer, extensions.build())
+    //             .await
+    //             .context("failed to create a transfer transaction")
+    //     }
 
-//     // async fn process_unpaid(
-//     //     &self,
-//     //     block: &Block<RuntimeConfig, OnlineClient>,
-//     //     mut changes: InvoiceChanges,
-//     //     hash: BlockHash,
-//     //     invoice: AccountId,
-//     //     price: Balance,
-//     // ) -> Result<()> {
-//     //     let balance = self.balance(hash, &invoice).await?;
+    //     // async fn current_nonce(&self, account: &AccountId) -> Result<Nonce> {
+    //     //     self.api
+    //     //         .blocks
+    //     //         .at(self.finalized_head_number_and_hash().await?.0)
+    //     //         .await
+    //     //         .context("failed to obtain the best block for fetching an account nonce")?
+    //     //         .account_nonce(account)
+    //     //         .await
+    //     //         .context("failed to fetch an account nonce by the API client")
+    //     // }
 
-//     //     if let Some(_remaining) = balance.checked_sub(*price) {
-//     //         changes.invoice.status = InvoiceStatus::Paid(price);
+    //     // async fn process_unpaid(
+    //     //     &self,
+    //     //     block: &Block<RuntimeConfig, OnlineClient>,
+    //     //     mut changes: InvoiceChanges,
+    //     //     hash: BlockHash,
+    //     //     invoice: AccountId,
+    //     //     price: Balance,
+    //     // ) -> Result<()> {
+    //     //     let balance = self.balance(hash, &invoice).await?;
 
-//     //         let block_nonce = block
-//     //             .account_nonce(&invoice)
-//     //             .await
-//     //             .context(BLOCK_NONCE_ERROR)?;
-//     //         let current_nonce = self.current_nonce(&invoice).await?;
+    //     //     if let Some(_remaining) = balance.checked_sub(*price) {
+    //     //         changes.invoice.status = InvoiceStatus::Paid(price);
 
-//     //         if current_nonce <= block_nonce {
-//     //             let properties = self.database.properties().await;
-//     //             let block_hash_count = properties.block_hash_count;
-//     //             let signer = changes.invoice.signer(self.database.pair())?;
+    //     //         let block_nonce = block
+    //     //             .account_nonce(&invoice)
+    //     //             .await
+    //     //             .context(BLOCK_NONCE_ERROR)?;
+    //     //         let current_nonce = self.current_nonce(&invoice).await?;
 
-//     //             let transfers = vec![construct_transfer(
-//     //                 &changes.invoice.recipient,
-//     //                 price - EXPECTED_USDX_FEE,
-//     //                 self.database.properties().await.usd_asset,
-//     //             )];
-//     //             let tx = self
-//     //                 .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
-//     //                 .await?;
+    //     //         if current_nonce <= block_nonce {
+    //     //             let properties = self.database.properties().await;
+    //     //             let block_hash_count = properties.block_hash_count;
+    //     //             let signer = changes.invoice.signer(self.database.pair())?;
 
-//     //             self.methods
-//     //                 .author_submit_extrinsic(tx.encoded())
-//     //                 .await
-//     //                 .context("failed to submit an extrinsic")
-//     //                 .unwrap();
-//     //         }
-//     //     }
+    //     //             let transfers = vec![construct_transfer(
+    //     //                 &changes.invoice.recipient,
+    //     //                 price - EXPECTED_USDX_FEE,
+    //     //                 self.database.properties().await.usd_asset,
+    //     //             )];
+    //     //             let tx = self
+    //     //                 .batch_transfer(current_nonce, block_hash_count, &signer, transfers.clone())
+    //     //                 .await?;
 
-//     //     Ok(())
-//     // }
-// }
+    //     //             self.methods
+    //     //                 .author_submit_extrinsic(tx.encoded())
+    //     //                 .await
+    //     //                 .context("failed to submit an extrinsic")
+    //     //                 .unwrap();
+    //     //         }
+    //     //     }
+
+    //     //     Ok(())
+    //     // }
+}
 
 // fn construct_transfer(to: &AccountId, amount: u128) -> Value {
 //     const TRANSFER_KEEP_ALIVE: &str = "transfer";

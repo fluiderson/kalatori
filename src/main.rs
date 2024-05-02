@@ -1,11 +1,13 @@
 use anyhow::{Context, Error, Result};
+use hex_simd::AsciiCase;
 use serde::Deserialize;
 use std::{
-    any::Any,
     borrow::Cow,
     collections::HashMap,
     env::{self, VarError},
     error::Error as _,
+    ffi::OsString,
+    fmt::{self, Debug, Formatter},
     fs,
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -16,7 +18,8 @@ use subxt::{
     config::{substrate::SubstrateHeader, PolkadotExtrinsicParams},
     ext::sp_core::{
         crypto::{AccountId32, Ss58Codec},
-        sr25519::{Pair, Public},
+        paste,
+        sr25519::Pair,
         Pair as _,
     },
     PolkadotConfig,
@@ -37,14 +40,30 @@ mod rpc;
 mod server;
 
 use asset::Asset;
-use database::{ConfigWoChains, PublicSlot, State};
+use database::{PublicSlot, State, StateParameters};
 
-const CONFIG: &str = "KALATORI_CONFIG";
-const LOG: &str = "KALATORI_LOG";
-const SEED: &str = "KALATORI_SEED";
-const RECIPIENT: &str = "KALATORI_RECIPIENT";
-const REMARK: &str = "KALATORI_REMARK";
-const OLD_SEED: &str = "KALATORI_OLD_SEED_";
+macro_rules! env_vars_inner {
+    ($prefix:literal, $env_name:ident) => {
+        env_vars_inner!($prefix, $env_name, stringify!($env_name));
+    };
+    ($prefix:literal, $env_name:ident, $env_key:expr) => {
+        const $env_name: &str = concat!($prefix, "_", $env_key);
+
+        paste::paste! {
+            const [<$env_name _BYTES>]: &[u8] = $env_name.as_bytes();
+        }
+    };
+}
+
+macro_rules! env_vars {
+    ($prefix:literal: $( $env_name:ident $( => $env_key:literal )? ),*) => {
+        $(
+            env_vars_inner!($prefix, $env_name $( , $env_key )?);
+        )*
+    };
+}
+
+env_vars!("KALATORI": CONFIG, LOG, SEED, RECIPIENT, REMARK, OLD_SEED => "OLD_SEED_");
 
 const DB_VERSION: Version = 0;
 
@@ -93,16 +112,32 @@ async fn try_main() -> Result<()> {
     set_panic_hook(shutdown_notification.clone());
     initialize_logger()?;
 
-    let (pair, old_pairs) = parse_seeds()?;
-    let recipient = env::var(RECIPIENT).with_context(|| format!("failed to read {RECIPIENT}"))?;
+    let env_vars = EnvVars::parse()?;
 
-    let remark = match env::var(REMARK) {
-        Ok(remark) => Some(remark),
-        Err(VarError::NotPresent) => None,
-        Err(error) => Err(error).with_context(|| format!("failed to read {REMARK}"))?,
-    };
+    if let Some(remark) = &env_vars.remark {
+        tracing::info!("`{REMARK}`: {remark:?}.");
+    } else {
+        tracing::info!("`{REMARK}` isn't set.");
+    }
 
-    let config = Config::parse()?;
+    let (pair, old_pairs) = (
+        env_vars
+            .pair
+            .with_context(|| format!("`{SEED}` isn't set"))?,
+        env_vars.old_pairs,
+    );
+    let recipient = env_vars
+        .recipient
+        .with_context(|| format!("`{RECIPIENT}` isn't set"))?;
+
+    let config = Config::parse(env_vars.config)?;
+
+    if let Some(bugde) = config.debug {
+        // For some reason, "`{debug}`" here results into a compilation error, don't change "bugde".
+        tracing::info!("\"debug\": `{bugde}`.");
+    } else {
+        tracing::info!("\"debug\" isn't set.");
+    }
 
     let host = if let Some(unparsed_host) = &config.host {
         unparsed_host
@@ -121,13 +156,13 @@ async fn try_main() -> Result<()> {
 
         None
     } else {
-        Some(config.database.unwrap_or_else(|| {
+        Some(config.database.map_or_else(|| {
             tracing::debug!(
                 "`database` isn't present in the config, using the default value instead: {DEFAULT_DATABASE:?}."
             );
 
             DEFAULT_DATABASE.into()
-        }))
+        }, Into::into))
     };
 
     tracing::info!(
@@ -136,9 +171,10 @@ async fn try_main() -> Result<()> {
         env!("CARGO_PKG_AUTHORS")
     );
 
-    let (chains, currencies) = rpc::prepare(config.chain, config.account_lifetime)
-        .await
-        .context("failed to prepare the RPC module")?;
+    let (chains, currencies) =
+        rpc::prepare(config.chain.unwrap_or_default(), config.account_lifetime)
+            .await
+            .context("failed to prepare the RPC module")?;
 
     tracing::info!(
         "The number of served chains: {}. With the total number of currencies: {}.",
@@ -146,16 +182,17 @@ async fn try_main() -> Result<()> {
         currencies.len()
     );
 
-    let (state, checked_chains) = State::initialize(
-        database_path,
-        config.debug,
-        &recipient,
-        remark,
+    let (state, checked_chains) = State::initialize(StateParameters {
+        path_option: database_path,
+        debug: config.debug,
+        recipient,
+        remark: env_vars.remark,
         pair,
         old_pairs,
-        config.account_lifetime,
+        account_lifetime: config.account_lifetime,
         chains,
-    )
+        currencies,
+    })
     .context("failed to initialize the database module")?;
 
     let (task_tracker, error_rx) = TaskTracker::new();
@@ -164,6 +201,10 @@ async fn try_main() -> Result<()> {
         "the shutdown listener",
         shutdown_listener(shutdown_notification.clone()),
     );
+
+    for (chain_hash, chain) in checked_chains {
+        // task_tracker.spawn(name, task)
+    }
 
     // task_tracker.spawn(
     //     "proc",
@@ -193,7 +234,7 @@ fn set_panic_hook(shutdown_notification: CancellationToken) {
     panic::set_hook(Box::new(move |panic_info| {
         let at = panic_info
             .location()
-            .map(|location| format!(" at `{location}`"))
+            .map(|location| format!(" at {location}"))
             .unwrap_or_default();
         let payload = panic_info.payload();
 
@@ -216,25 +257,26 @@ fn set_panic_hook(shutdown_notification: CancellationToken) {
 }
 
 fn initialize_logger() -> Result<()> {
-    let filter = match EnvFilter::try_from_env(LOG) {
-        Err(error) => {
-            let Some(VarError::NotPresent) = error
-                .source()
-                .expect("should always be `Some`")
-                .downcast_ref()
-            else {
-                return Err(error).with_context(|| format!("failed to parse `{LOG}`"));
-            };
-
-            if cfg!(debug_assertions) {
-                EnvFilter::try_new("debug")
-            } else {
-                EnvFilter::try_new(default_filter())
-            }
-            .unwrap()
+    let filter = EnvFilter::try_from_env(LOG).or_else(|error| {
+        if *error
+            .source()
+            .expect("should always be `Some`")
+            .downcast_ref::<VarError>()
+            .expect("`EnvFilter::try_from_env()` error should downcast to `VarError`")
+            != VarError::NotPresent
+        {
+            return Err(error).with_context(|| format!("failed to parse `{LOG}`"));
         }
-        Ok(filter) => filter,
-    };
+
+        let predefined = if cfg!(debug_assertions) {
+            EnvFilter::try_new("debug")
+        } else {
+            EnvFilter::try_new(default_filter())
+        }
+        .expect("predefined log directives should be valid");
+
+        Ok(predefined)
+    })?;
 
     tracing_subscriber::fmt()
         .with_timer(UtcTime::rfc_3339())
@@ -242,6 +284,71 @@ fn initialize_logger() -> Result<()> {
         .init();
 
     Ok(())
+}
+
+#[derive(Default)]
+struct EnvVars {
+    config: Option<String>,
+    pair: Option<Pair>,
+    recipient: Option<AccountId>,
+    remark: Option<String>,
+    old_pairs: HashMap<PublicSlot, (Pair, String)>,
+}
+
+impl EnvVars {
+    fn parse() -> Result<Self> {
+        let mut this = Self::default();
+
+        for (raw_key, raw_value) in env::vars_os() {
+            match raw_key.as_encoded_bytes() {
+                CONFIG_BYTES => {
+                    this.config = Some(os_string_to_string(raw_value, CONFIG)?);
+                }
+                SEED_BYTES => {
+                    this.pair = Some(
+                        Pair::from_string(&os_string_to_string(raw_value, SEED)?, None)
+                            .with_context(|| format!("failed to parse `{SEED}`"))?,
+                    );
+                }
+                RECIPIENT_BYTES => {
+                    let recipient =
+                        AccountId::from_string(&os_string_to_string(raw_value, RECIPIENT)?)
+                            .with_context(|| format!("failed to parse `{RECIPIENT}`"))?;
+
+                    tracing::info!("Recipient: {}.", encode_to_hex(&recipient));
+
+                    this.recipient = Some(recipient);
+                }
+                REMARK_BYTES => {
+                    this.remark = Some(os_string_to_string(raw_value, REMARK)?);
+                }
+                raw_key_bytes => {
+                    if let Some(stripped_raw_key) = raw_key_bytes.strip_prefix(OLD_SEED_BYTES) {
+                        let key = str::from_utf8(stripped_raw_key).with_context(|| {
+                            format!("failed to read one of the `{OLD_SEED}*` variables")
+                        })?;
+                        let value = raw_value.to_str().with_context(|| {
+                            format!("seed phrase from `{OLD_SEED}{key}` contains invalid Unicode")
+                        })?;
+                        let old_pair = Pair::from_string(value, None).with_context(|| {
+                            format!("failed to generate a key pair from `{OLD_SEED}{key}`")
+                        })?;
+
+                        this.old_pairs
+                            .insert(old_pair.public().0, (old_pair, key.to_owned()));
+                    }
+                }
+            }
+        }
+
+        Ok(this)
+    }
+}
+
+fn os_string_to_string(os_string: OsString, env_name: &str) -> Result<String> {
+    os_string
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("`{env_name}` contains invalid Unicode"))
 }
 
 fn default_filter() -> String {
@@ -279,34 +386,6 @@ fn default_filter() -> String {
     }
 
     filter
-}
-
-fn parse_seeds() -> Result<(Pair, HashMap<PublicSlot, (Pair, String)>)> {
-    let pair = Pair::from_string(
-        &env::var(SEED).with_context(|| format!("failed to read `{SEED}`"))?,
-        None,
-    )
-    .with_context(|| format!("failed to generate a key pair from `{SEED}`"))?;
-
-    let mut old_pairs = HashMap::new();
-
-    for (raw_key, raw_value) in env::vars_os() {
-        let raw_key_bytes = raw_key.as_encoded_bytes();
-
-        if let Some(stripped_raw_key) = raw_key_bytes.strip_prefix(OLD_SEED.as_bytes()) {
-            let key = str::from_utf8(stripped_raw_key)
-                .context("failed to read an old seed environment variable name")?;
-            let value = raw_value
-                .to_str()
-                .with_context(|| format!("failed to read a seed phrase from `{OLD_SEED}{key}`"))?;
-            let old_pair = Pair::from_string(value, None)
-                .with_context(|| format!("failed to generate a key pair from `{OLD_SEED}{key}`"))?;
-
-            old_pairs.insert(old_pair.public().0, (old_pair, key.to_owned()));
-        }
-    }
-
-    Ok((pair, old_pairs))
 }
 
 #[derive(Clone)]
@@ -406,37 +485,44 @@ async fn shutdown_listener(shutdown_notification: CancellationToken) -> Result<C
     Ok("The shutdown signal listener is shut down.".into())
 }
 
+fn encode_to_hex(data: impl AsRef<[u8]>) -> String {
+    const PREFIX: &str = "0x";
+
+    let data_bytes = data.as_ref();
+    let mut string = String::with_capacity(PREFIX.len().saturating_add(data_bytes.len()));
+
+    string.push_str(PREFIX);
+
+    hex_simd::encode_append(data, &mut string, AsciiCase::Lower);
+
+    string
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct Config {
     account_lifetime: Timestamp,
-    depth: Option<Timestamp>,
     host: Option<String>,
     database: Option<String>,
     debug: Option<bool>,
     in_memory_db: Option<bool>,
-    chain: Vec<Chain>,
+    chain: Option<Vec<Chain>>,
 }
 
 impl Config {
-    fn parse() -> Result<Self> {
-        let config_path = env::var(CONFIG).or_else(|error| match error {
-            VarError::NotUnicode(_) => {
-                Err(error).with_context(|| format!("failed to read `{CONFIG}`"))
-            }
-            VarError::NotPresent => {
-                tracing::debug!(
-                    "`{CONFIG}` isn't present, using the default value instead: {DEFAULT_CONFIG:?}."
-                );
+    fn parse(path_option: Option<String>) -> Result<Self> {
+        let (config, path): (_, Cow<'_, _>) = if let Some(path) = path_option {
+            (fs::read_to_string(&path), path.into())
+        } else {
+            tracing::debug!("`{CONFIG}` isn't present, using the default value instead.");
 
-                Ok(DEFAULT_CONFIG.into())
-            }
-        })?;
-        let unparsed_config = fs::read_to_string(&config_path)
-            .with_context(|| format!("failed to read a config file at {config_path:?}"))?;
+            (fs::read_to_string(DEFAULT_CONFIG), DEFAULT_CONFIG.into())
+        };
 
-        de::from_str(&unparsed_config)
-            .with_context(|| format!("failed to parse the config at {config_path:?}"))
+        tracing::info!("`{CONFIG}`: {path}.");
+
+        de::from_str(&config.with_context(|| format!("failed to read a config file at {path:?}"))?)
+            .with_context(|| format!("failed to parse the config at {path:?}"))
     }
 }
 
@@ -463,8 +549,13 @@ struct AssetInfo {
     id: AssetId,
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
 struct Balance(u128);
+
+impl Debug for Balance {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 impl Deref for Balance {
     type Target = u128;

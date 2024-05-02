@@ -1,6 +1,4 @@
-use crate::{
-    database::{Invoicee, State}, AccountId, AssetId, Balance, BlockNumber, Decimals, ExtrinsicIndex
-};
+use crate::{database::State, AccountId, AssetId, Balance, BlockNumber, Decimals, ExtrinsicIndex};
 use anyhow::{Context, Result};
 use axum::{
     extract::{self, rejection::RawPathParamsRejection, MatchedPath, Query, RawPathParams},
@@ -153,28 +151,28 @@ enum TxStatus {
     Failed,
 }
 
-pub async fn new(
-    shutdown_notification: CancellationToken,
-    host: SocketAddr,
-    state: Arc<State>,
-) -> Result<impl Future<Output = Result<Cow<'static, str>>>> {
-    let v2 = Router::new()
-        .route("/order/:order_id", routing::post(order))
-        .route("/status", routing::get(status));
-    let app = Router::new().nest("/v2", v2).with_state(state);
+// pub async fn new(
+//     shutdown_notification: CancellationToken,
+//     host: SocketAddr,
+//     state: Arc<State>,
+// ) -> Result<impl Future<Output = Result<Cow<'static, str>>>> {
+//     let v2 = Router::new()
+//         .route("/order/:order_id", routing::post(order))
+//         .route("/status", routing::get(status));
+//     let app = Router::new().nest("/v2", v2).with_state(state);
 
-    let listener = TcpListener::bind(host)
-        .await
-        .with_context(|| format!("failed to bind the TCP listener to {host:?}"))?;
+//     let listener = TcpListener::bind(host)
+//         .await
+//         .with_context(|| format!("failed to bind the TCP listener to {host:?}"))?;
 
-    Ok(async {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_notification.cancelled_owned())
-            .await?;
+//     Ok(async {
+//         axum::serve(listener, app)
+//             .with_graceful_shutdown(shutdown_notification.cancelled_owned())
+//             .await?;
 
-        Ok("The server module is shut down.".into())
-    })
-}
+//         Ok("The server module is shut down.".into())
+//     })
+// }
 
 enum OrderSuccess {
     Created,
@@ -425,6 +423,6 @@ async fn status(
         //     }],
         // }
         // .into(),
-        todo!()
+        todo!(),
     )
 }
