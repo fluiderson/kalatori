@@ -36,17 +36,15 @@ pub enum Error {
     #[error("Daemon server error: {0:?}")]
     ErrorServer(ErrorServer),
 
+    #[error("Signer error: {0:?}")]
+    ErrorSigner(ErrorSigner),
+
     #[error("Failed to listen to shutdown signal")]
     ShutdownSignal,
 
     #[error("Receiver account could not be parsed: {0:?}")]
     RecipientAccount(substrate_crypto_light::error::Error),
 
-    #[error("Seed phrase invalid: {0:?}")]
-    InvalidSeed(ErrorWordList),
-
-    #[error("Derivation failed: {0:?}")]
-    InvalidDerivation(CryptoError),
 
     #[error("Fatal error. System is shutting down.")]
     Fatal,
@@ -82,23 +80,18 @@ impl From<ErrorServer> for Error {
     }
 }
 
+impl From<ErrorSigner> for Error {
+    fn from(e: ErrorSigner) -> Error {
+        Error::ErrorSigner(e)
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::IoError(e)
     }
 }
 
-impl From<ErrorWordList> for Error {
-    fn from(e: ErrorWordList) -> Self {
-        Error::InvalidSeed(e)
-    }
-}
-
-impl From<CryptoError> for Error {
-    fn from(e: CryptoError) -> Self {
-        Error::InvalidDerivation(e)
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ErrorChain {
@@ -399,6 +392,34 @@ pub enum ErrorServer {
 pub enum ErrorUtil {
     #[error("{0}")]
     NotHex(NotHex),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ErrorSigner {
+    #[error("failed to read `{0}`")]
+    Env(String),
+
+    #[error("Signer is down")]
+    SignerDown,
+
+    #[error("Seed phrase invalid: {0:?}")]
+    InvalidSeed(ErrorWordList),
+
+    #[error("Derivation failed: {0:?}")]
+    InvalidDerivation(CryptoError),
+
+}
+
+impl From<ErrorWordList> for ErrorSigner {
+    fn from(e: ErrorWordList) -> Self {
+        ErrorSigner::InvalidSeed(e)
+    }
+}
+
+impl From<CryptoError> for ErrorSigner {
+    fn from(e: CryptoError) -> Self {
+        ErrorSigner::InvalidDerivation(e)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]

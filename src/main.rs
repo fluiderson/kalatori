@@ -1,4 +1,3 @@
-use mnemonic_external::{regular::InternalWordList, WordSet};
 use serde::Deserialize;
 use std::{
     borrow::Cow,
@@ -29,6 +28,7 @@ mod definitions;
 mod error;
 mod rpc;
 mod server;
+mod signer;
 mod state;
 mod utils;
 
@@ -36,11 +36,11 @@ use crate::definitions::{Chain, Entropy, Timestamp, Version};
 use database::ConfigWoChains;
 use error::Error;
 use rpc::ChainManager;
+use signer::Signer;
 use state::State;
 
 const CONFIG: &str = "KALATORI_CONFIG";
 const LOG: &str = "KALATORI_LOG";
-const SEED: &str = "KALATORI_SEED";
 const RECIPIENT: &str = "KALATORI_RECIPIENT";
 const REMARK: &str = "KALATORI_REMARK";
 const OLD_SEED: &str = "KALATORI_OLD_SEED_";
@@ -60,7 +60,6 @@ async fn main() -> Result<(), Error> {
 
     // Read env
 
-    let secret_entropy = parse_seeds()?;
     let recipient = env::var(RECIPIENT).map_err(|_| Error::Env(RECIPIENT.to_string()))?;
 
     let remark = env::var(REMARK).map_err(|_| Error::Env(REMARK.to_string()))?;
@@ -125,13 +124,15 @@ async fn main() -> Result<(), Error> {
         .map_err(Error::RecipientAccount)?
         .0;
 
+    let signer = Signer::init(recipient.clone(), task_tracker.clone())?;
+
     let db = database::Database::init(database_path, task_tracker.clone())?;
 
     let (cm_tx, mut cm_rx) = oneshot::channel();
 
     let state = State::initialise(
         currencies,
-        secret_entropy,
+        signer,
         ConfigWoChains {
             recipient: recipient.clone(),
             debug: config.debug,
@@ -284,35 +285,6 @@ fn default_filter() -> String {
     filter
 }
 
-fn parse_seeds() -> Result<Entropy, Error> {
-    entropy_from_phrase(&env::var(SEED).map_err(|_| Error::Env(SEED.to_string()))?)
-
-    //let mut old_pairs = HashMap::new();
-    /* TODO: add this at least when you do something about these
-        for (raw_key, raw_value) in env::vars_os() {
-            let raw_key_bytes = raw_key.as_encoded_bytes();
-
-            if let Some(stripped_raw_key) = raw_key_bytes.strip_prefix(OLD_SEED.as_bytes()) {
-                let key = str::from_utf8(stripped_raw_key)
-                    .context("failed to read an old seed environment variable name")?;
-                let value = raw_value
-                    .to_str()
-                    .with_context(|| format!("failed to read a seed phrase from `{OLD_SEED}{key}`"))?;
-                let old_pair = seed_from_phrase(value)?;
-
-                old_pairs.insert(key.to_owned(), old_pair);
-            }
-        }
-    */
-}
-
-pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, Error> {
-    let mut word_set = WordSet::new();
-    for word in seed.split(' ') {
-        word_set.add_word(&word, &InternalWordList)?;
-    }
-    Ok(word_set.to_entropy()?)
-}
 
 #[derive(Clone)]
 struct TaskTracker {

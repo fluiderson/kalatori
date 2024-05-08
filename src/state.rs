@@ -1,5 +1,4 @@
 use crate::{
-    chain::derivations,
     database::Database,
     definitions::{
         api_v2::{
@@ -10,13 +9,13 @@ use crate::{
     },
     error::{Error, ErrorOrder},
     rpc::ChainManager,
+    signer::Signer,
     ConfigWoChains, TaskTracker,
 };
 
 use std::collections::HashMap;
 
 use substrate_crypto_light::common::{AccountId32, AsBase58};
-use substrate_crypto_light::sr25519::Pair;
 use tokio::sync::oneshot;
 
 /// Struct to store state of daemon. If something requires cooperation of more than one component,
@@ -29,7 +28,7 @@ pub struct State {
 impl State {
     pub fn initialise(
         currencies: HashMap<String, CurrencyProperties>,
-        seed_entropy: Entropy,
+        signer: Signer,
         ConfigWoChains {
             recipient,
             debug,
@@ -75,7 +74,7 @@ impl State {
                 server_info,
                 db,
                 chain_manager,
-                seed_entropy,
+                signer,
             };
 
             while let Some(request) = rx.recv().await {
@@ -102,13 +101,15 @@ impl State {
                     StateAccessRequest::OrderPaid(id) => {
                         // Only perform actions if the record is saved in ledger
                         match state.db.mark_paid(id.clone()).await {
-                            Ok(order) => { 
+                            Ok(order) => {
                                 // TODO: callback here
                                 state.chain_manager.reap(id, order).await;
-                            },
+                            }
                             Err(e) => {
-                                tracing::error!("Order was paid but this could not be recorded! {e:?}")
-                            },
+                                tracing::error!(
+                                    "Order was paid but this could not be recorded! {e:?}"
+                                )
+                            }
                         }
                     }
                     // Orchestrate shutdown from here
@@ -174,7 +175,12 @@ impl State {
     }
 
     pub async fn order_paid(&self, order: String) {
-        if self.tx.send(StateAccessRequest::OrderPaid(order)).await.is_err() {
+        if self
+            .tx
+            .send(StateAccessRequest::OrderPaid(order))
+            .await
+            .is_err()
+        {
             tracing::warn!("Data race on shutdown; please restart the daemon for cleaning up");
         };
     }
@@ -214,7 +220,7 @@ struct StateData {
     server_info: ServerInfo,
     db: Database,
     chain_manager: ChainManager,
-    seed_entropy: Entropy,
+    signer: Signer,
 }
 
 impl StateData {
@@ -240,12 +246,7 @@ impl StateData {
             .get(&order_query.currency)
             .ok_or(ErrorOrder::UnknownCurrency)?;
         let currency = currency.info(order_query.currency.clone());
-        let payment_account = Pair::from_entropy_and_full_derivation(
-            &self.seed_entropy,
-            derivations(&self.recipient, &order_query.order),
-        )?
-        .public()
-        .to_base58_string(currency.ss58);
+        let payment_account = self.signer.public(order.clone(), currency.ss58).await?;
         let order_info = OrderInfo::new(order_query, currency, payment_account);
         match self
             .db
@@ -253,13 +254,15 @@ impl StateData {
             .await?
         {
             OrderCreateResponse::New => {
-                self.chain_manager.add_invoice(order.clone(), order_info.clone()).await?;
+                self.chain_manager
+                    .add_invoice(order.clone(), order_info.clone())
+                    .await?;
                 Ok(OrderResponse::NewOrder(self.order_status(
-                order,
-                order_info,
-                String::new(),
-            )))
-            },
+                    order,
+                    order_info,
+                    String::new(),
+                )))
+            }
             OrderCreateResponse::Modified => Ok(OrderResponse::ModifiedOrder(self.order_status(
                 order,
                 order_info,

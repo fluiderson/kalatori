@@ -1130,7 +1130,7 @@ dependencies = [
  "sp-crypto-hashing",
  "substrate-constructor",
  "substrate-crypto-light",
- "substrate_parser",
+ "substrate_parser 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -1138,6 +1138,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "zeroize",
 ]
 
 [[package]]
@@ -2188,7 +2189,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "substrate-constructor"
 version = "0.1.0"
-source = "git+https://github.com/Alzymologist/substrate-constructor#09decf076dfca2e1c4934e76ed34ac8cf59b2f23"
+source = "git+https://github.com/Alzymologist/substrate-constructor#391e0760cde6eb88e787207f5c6b43f1f1c33caf"
 dependencies = [
  "bitvec",
  "external-memory-tools",
@@ -2200,7 +2201,8 @@ dependencies = [
  "scale-info",
  "sp-arithmetic 25.0.0",
  "sp-crypto-hashing",
- "substrate_parser",
+ "substrate-crypto-light",
+ "substrate_parser 0.6.1 (git+https://github.com/Alzymologist/substrate-parser)",
 ]
 
 [[package]]
@@ -2242,6 +2244,24 @@ dependencies = [
  "scale-info",
  "sp-arithmetic 24.0.0",
  "sp-core-hashing",
+]
+
+[[package]]
+name = "substrate_parser"
+version = "0.6.1"
+source = "git+https://github.com/Alzymologist/substrate-parser#c227d40952e3d11b384d30e294f08be2abd1ad43"
+dependencies = [
+ "bitvec",
+ "external-memory-tools",
+ "frame-metadata",
+ "hex",
+ "num-bigint",
+ "parity-scale-codec",
+ "primitive-types",
+ "scale-info",
+ "sp-arithmetic 25.0.0",
+ "sp-crypto-hashing",
+ "substrate-crypto-light",
 ]
 
 [[package]]

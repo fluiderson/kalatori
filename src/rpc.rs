@@ -1,7 +1,7 @@
 use crate::{
     chain::{
-        asset_balance_query, base58prefix, events_entry_metadata, hashed_key_element, pallet_index, storage_key,
-        system_balance_query, system_properties_to_short_specs, unit,
+        asset_balance_query, base58prefix, events_entry_metadata, hashed_key_element, pallet_index,
+        storage_key, system_balance_query, system_properties_to_short_specs, unit,
     },
     definitions::api_v2::{CurrencyProperties, OrderInfo},
     definitions::{
@@ -316,7 +316,9 @@ impl ChainManager {
                                     .send(Err(ErrorChain::InvalidCurrency(request.currency)));
                             }
                         }
-                        ChainRequest::Reap(request) => {todo!()}
+                        ChainRequest::Reap(request) => {
+                            todo!()
+                        }
                         ChainRequest::Shutdown(res) => {
                             for (name, chain) in watch_chain.drain() {
                                 let (tx, rx) = oneshot::channel();
@@ -338,20 +340,21 @@ impl ChainManager {
     pub async fn add_invoice(&self, id: String, order: OrderInfo) -> Result<(), ErrorChain> {
         let (res, rx) = oneshot::channel();
         self.tx
-            .send(ChainRequest::WatchAccount(WatchAccount::new(id, order, res)?))
+            .send(ChainRequest::WatchAccount(WatchAccount::new(
+                id, order, res,
+            )?))
             .await
             .map_err(|_| ErrorChain::MessageDropped)?;
         rx.await.map_err(|_| ErrorChain::MessageDropped)?
     }
 
     pub async fn reap(&self, id: String, order: OrderInfo) -> Result<(), ErrorChain> {
-         let (res, rx) = oneshot::channel();
+        let (res, rx) = oneshot::channel();
         self.tx
             .send(ChainRequest::Reap(WatchAccount::new(id, order, res)?))
             .await
             .map_err(|_| ErrorChain::MessageDropped)?;
         rx.await.map_err(|_| ErrorChain::MessageDropped)?
-
     }
 
     pub async fn shutdown(&self) -> () {
@@ -390,7 +393,7 @@ impl WatchAccount {
         res: oneshot::Sender<Result<(), ErrorChain>>,
     ) -> Result<WatchAccount, ErrorChain> {
         Ok(WatchAccount {
-            id: id,
+            id,
             address: AccountId32::from_base58_string(&order.payment_account)
                 .map_err(ErrorChain::InvoiceAccount)?
                 .0,
@@ -586,7 +589,7 @@ struct BlockHead {
     //parent_hash: String,
     //state_root: String,
 }
- /*
+/*
 #[derive(Deserialize, Debug)]
 struct Transferred {
     asset_id: u32,
@@ -964,7 +967,11 @@ async fn system_balance_at_account(
     Err(ErrorChain::BalanceNotFound)
 }
 
-async fn transfer_events(client: &WsClient, block: &H256, metadata_v15: &RuntimeMetadataV15) -> Result<Vec<Event>, ErrorChain> {
+async fn transfer_events(
+    client: &WsClient,
+    block: &H256,
+    metadata_v15: &RuntimeMetadataV15,
+) -> Result<Vec<Event>, ErrorChain> {
     let events_entry_metadata = events_entry_metadata(&metadata_v15)?;
 
     events_at_block(
@@ -991,51 +998,55 @@ pub async fn events_at_block(
     let keys_from_storage = get_keys_from_storage(client, "System", "Events", block_hash).await?;
     let mut out = Vec::new();
     if let Value::Array(ref keys_array) = keys_from_storage {
-    for key in keys_array {
-        if let Value::String(key) = key {
-        let data_from_storage = get_value_from_storage(client, &key, block_hash).await?;
-        let key_bytes = unhex(&key, NotHex::StorageValue)?;
-        let value_bytes = if let Value::String(data_from_storage) = data_from_storage {
-        unhex(&data_from_storage, NotHex::StorageValue)?
-        } else { return Err(ErrorChain::StorageFormatError) };
-        let storage_data = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
-            &key_bytes.as_ref(),
-            &value_bytes.as_ref(),
-            &mut (),
-            events_entry_metadata,
-            types,
-        ).expect("RAM stored metadata access");
-        if let ParsedData::SequenceRaw(sequence_raw) = storage_data.value.data {
-            for sequence_element in sequence_raw.data {
-                if let ParsedData::Composite(event_record) = sequence_element {
-                    for event_record_element in event_record {
-                        if event_record_element.field_name == Some("event".to_string()) {
-                            if let ParsedData::Event(Event(ref event)) =
-                                event_record_element.data.data
-                            {
-                                if let Some(ref filter) = optional_filter {
-                                    if let Some(event_variant) = filter.optional_event_variant {
-                                        if event.pallet_name == filter.pallet
-                                            && event.variant_name == event_variant
-                                        {
+        for key in keys_array {
+            if let Value::String(key) = key {
+                let data_from_storage = get_value_from_storage(client, &key, block_hash).await?;
+                let key_bytes = unhex(&key, NotHex::StorageValue)?;
+                let value_bytes = if let Value::String(data_from_storage) = data_from_storage {
+                    unhex(&data_from_storage, NotHex::StorageValue)?
+                } else {
+                    return Err(ErrorChain::StorageFormatError);
+                };
+                let storage_data = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
+                    &key_bytes.as_ref(),
+                    &value_bytes.as_ref(),
+                    &mut (),
+                    events_entry_metadata,
+                    types,
+                )
+                .expect("RAM stored metadata access");
+                if let ParsedData::SequenceRaw(sequence_raw) = storage_data.value.data {
+                    for sequence_element in sequence_raw.data {
+                        if let ParsedData::Composite(event_record) = sequence_element {
+                            for event_record_element in event_record {
+                                if event_record_element.field_name == Some("event".to_string()) {
+                                    if let ParsedData::Event(Event(ref event)) =
+                                        event_record_element.data.data
+                                    {
+                                        if let Some(ref filter) = optional_filter {
+                                            if let Some(event_variant) =
+                                                filter.optional_event_variant
+                                            {
+                                                if event.pallet_name == filter.pallet
+                                                    && event.variant_name == event_variant
+                                                {
+                                                    out.push(Event(event.to_owned()));
+                                                }
+                                            } else if event.pallet_name == filter.pallet {
+                                                out.push(Event(event.to_owned()));
+                                            }
+                                        } else {
                                             out.push(Event(event.to_owned()));
                                         }
-                                    } else if event.pallet_name == filter.pallet {
-                                        out.push(Event(event.to_owned()));
                                     }
-                                } else {
-                                    out.push(Event(event.to_owned()));
                                 }
                             }
                         }
                     }
                 }
+                return Ok(out);
             }
         }
-    return Ok(out);
-        }
-    }
     }
     Err(ErrorChain::EventsMissing)
 }
-

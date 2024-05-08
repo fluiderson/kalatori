@@ -136,11 +136,7 @@ pub fn asset_balance_query(
                         match ty.content {
                             TypeContentToFill::SpecialType(SpecialTypeToFill::AccountId32(
                                 ref mut account_to_fill,
-                            )) => {
-                                *account_to_fill = Some(
-                                    substrate_parser::additional_types::AccountId32(account_id.0),
-                                )
-                            }
+                            )) => *account_to_fill = Some(*account_id),
                             TypeContentToFill::Primitive(PrimitiveToFill::CompactUnsigned(
                                 ref mut specialty_unsigned_to_fill,
                             )) => {
@@ -238,9 +234,7 @@ pub fn system_balance_query(
                     ref mut account_to_fill,
                 )) = key_to_fill.content
                 {
-                    *account_to_fill = Some(substrate_parser::additional_types::AccountId32(
-                        account_id.0,
-                    ))
+                    *account_to_fill = Some(*account_id)
                 }
             }
         }
@@ -253,12 +247,6 @@ pub fn system_balance_query(
     }
 }
 
-pub fn derivations<'a>(recipient: &'a str, order: &'a str) -> FullDerivation<'a> {
-    FullDerivation {
-        junctions: vec![DeriveJunction::hard(recipient), DeriveJunction::hard(order)],
-        password: None,
-    }
-}
 
 pub fn hashed_key_element(data: &[u8], hasher: &StorageHasher) -> Vec<u8> {
     match hasher {
