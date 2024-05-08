@@ -1,7 +1,7 @@
 use crate::{
     chain::{
-        base58prefix, balance_queries, hashed_key_element, pallet_index, storage_key,
-        system_properties_to_short_specs, unit,
+        asset_balance_query, base58prefix, events_entry_metadata, hashed_key_element, pallet_index, storage_key,
+        system_balance_query, system_properties_to_short_specs, unit,
     },
     definitions::api_v2::{CurrencyProperties, OrderInfo},
     definitions::{
@@ -14,7 +14,7 @@ use crate::{
     TaskTracker,
 };
 use frame_metadata::{
-    v15::{RuntimeMetadataV15, StorageEntryType},
+    v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
     RuntimeMetadata,
 };
 use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
@@ -22,7 +22,7 @@ use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use parity_scale_codec::{Decode, DecodeAll, Encode};
 use primitive_types::H256;
-use scale_info::{TypeDef, TypeDefPrimitive};
+use scale_info::{form::PortableForm, PortableRegistry, TypeDef, TypeDefPrimitive};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Number, Value};
 use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
@@ -34,7 +34,7 @@ use std::{
 };
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use substrate_parser::{
-    cards::{ExtendedData, ParsedData, Sequence},
+    cards::{Event, ExtendedData, FieldData, ParsedData, Sequence},
     decode_all_as_type, decode_as_storage_entry,
     special_indicators::SpecialtyUnsignedInteger,
     storage_data::{KeyData, KeyPart},
@@ -60,10 +60,17 @@ const BALANCES: &str = "Balances";
 const UTILITY: &str = "Utility";
 const ASSETS: &str = "Assets";
 const BABE: &str = "Babe";
+const TRANSFER: &str = "Transfer";
 
 // Runtime APIs
 
 const AURA: &str = "AuraApi";
+
+#[derive(Debug)]
+pub struct EventFilter<'a> {
+    pub pallet: &'a str,
+    pub optional_event_variant: Option<&'a str>,
+}
 
 #[derive(Debug)]
 struct ChainProperties {
@@ -277,8 +284,10 @@ impl ChainManager {
 
             start_chain_watch(
                 c,
+                &currency_map,
                 chain_tx.clone(),
                 chain_rx,
+                state.interface(),
                 task_tracker.clone(),
                 cancellation_token.clone(),
             )?;
@@ -307,6 +316,7 @@ impl ChainManager {
                                     .send(Err(ErrorChain::InvalidCurrency(request.currency)));
                             }
                         }
+                        ChainRequest::Reap(request) => {todo!()}
                         ChainRequest::Shutdown(res) => {
                             for (name, chain) in watch_chain.drain() {
                                 let (tx, rx) = oneshot::channel();
@@ -325,13 +335,23 @@ impl ChainManager {
         Ok(Self { tx })
     }
 
-    pub async fn add_invoice(&self, order: OrderInfo) -> Result<(), ErrorChain> {
+    pub async fn add_invoice(&self, id: String, order: OrderInfo) -> Result<(), ErrorChain> {
         let (res, rx) = oneshot::channel();
         self.tx
-            .send(ChainRequest::WatchAccount(WatchAccount::new(order, res)?))
+            .send(ChainRequest::WatchAccount(WatchAccount::new(id, order, res)?))
             .await
             .map_err(|_| ErrorChain::MessageDropped)?;
         rx.await.map_err(|_| ErrorChain::MessageDropped)?
+    }
+
+    pub async fn reap(&self, id: String, order: OrderInfo) -> Result<(), ErrorChain> {
+         let (res, rx) = oneshot::channel();
+        self.tx
+            .send(ChainRequest::Reap(WatchAccount::new(id, order, res)?))
+            .await
+            .map_err(|_| ErrorChain::MessageDropped)?;
+        rx.await.map_err(|_| ErrorChain::MessageDropped)?
+
     }
 
     pub async fn shutdown(&self) -> () {
@@ -345,6 +365,7 @@ impl ChainManager {
 enum ChainRequest {
     WatchAccount(WatchAccount),
     Shutdown(oneshot::Sender<()>),
+    Reap(WatchAccount),
 }
 
 enum ChainTrackerRequest {
@@ -353,7 +374,9 @@ enum ChainTrackerRequest {
     NewBlock(String),
 }
 
+#[derive(Debug)]
 struct WatchAccount {
+    id: String,
     address: AccountId32,
     currency: String,
     amount: Balance,
@@ -362,10 +385,12 @@ struct WatchAccount {
 
 impl WatchAccount {
     fn new(
+        id: String,
         order: OrderInfo,
         res: oneshot::Sender<Result<(), ErrorChain>>,
     ) -> Result<WatchAccount, ErrorChain> {
         Ok(WatchAccount {
+            id: id,
             address: AccountId32::from_base58_string(&order.payment_account)
                 .map_err(ErrorChain::InvoiceAccount)?
                 .0,
@@ -374,17 +399,56 @@ impl WatchAccount {
             res,
         })
     }
+}
 
-    async fn check(&mut self, client: &WsClient, metadata: &RuntimeMetadataV15, block: &H256, currency: &CurrencyProperties) -> Result<bool, ErrorChain> {
-        let balance = balances_at_account(client, &block, &metadata, &self.address, currency.asset_id).await?;
-        Ok( balance >= self.amount )
+#[derive(Clone, Debug)]
+struct Invoice {
+    id: String,
+    address: AccountId32,
+    currency: String,
+    amount: Balance,
+}
+
+impl Invoice {
+    fn from_request(watch_account: WatchAccount) -> Self {
+        drop(watch_account.res.send(Ok(())));
+        Invoice {
+            id: watch_account.id,
+            address: watch_account.address,
+            currency: watch_account.currency,
+            amount: watch_account.amount,
+        }
+    }
+
+    async fn check(
+        &self,
+        client: &WsClient,
+        metadata: &RuntimeMetadataV15,
+        block: &H256,
+        currency: &HashMap<String, CurrencyProperties>,
+    ) -> Result<bool, ErrorChain> {
+        let currency = currency
+            .get(&self.currency)
+            .ok_or(ErrorChain::InvalidCurrency(self.currency.clone()))?;
+        if let Some(asset_id) = currency.asset_id {
+            let balance =
+                asset_balance_at_account(client, &block, &metadata, &self.address, asset_id)
+                    .await?;
+            Ok(balance >= self.amount)
+        } else {
+            let balance =
+                system_balance_at_account(client, &block, &metadata, &self.address).await?;
+            Ok(balance >= self.amount)
+        }
     }
 }
 
 fn start_chain_watch(
     c: Chain,
+    currency_map: &HashMap<String, String>,
     chain_tx: mpsc::Sender<ChainTrackerRequest>,
     mut chain_rx: mpsc::Receiver<ChainTrackerRequest>,
+    state: State,
     task_tracker: TaskTracker,
     cancellation_token: CancellationToken,
 ) -> Result<(), ErrorChain> {
@@ -402,7 +466,7 @@ fn start_chain_watch(
                 }
                 if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
                     // prepare chain
-                    match prepare_chain(&client, endpoint, chain_tx.clone(), task_tracker.clone())
+                    match prepare_chain(&client, &mut watched_accounts, endpoint, chain_tx.clone(), state.interface(), task_tracker.clone())
                         .await
                     {
                         Ok(_) => (),
@@ -416,6 +480,7 @@ fn start_chain_watch(
                         }
                     }
 
+
                     // fulfill requests
                     while let Ok(Some(request)) =
                         timeout(Duration::from_millis(watchdog), chain_rx.recv()).await
@@ -423,9 +488,10 @@ fn start_chain_watch(
                         match request {
                             ChainTrackerRequest::NewBlock(block) => {
                                 let block = block_hash(&client, block);
+                                
                             }
                             ChainTrackerRequest::WatchAccount(request) => {
-                                watched_accounts.push(request);
+                                watched_accounts.push(Invoice::from_request(request));
                             }
                             ChainTrackerRequest::Shutdown(res) => {
                                 shutdown = true;
@@ -443,8 +509,10 @@ fn start_chain_watch(
 
 async fn prepare_chain(
     client: &WsClient,
+    watched_accounts: &mut Vec<Invoice>,
     rpc_url: &str,
     chain_tx: mpsc::Sender<ChainTrackerRequest>,
+    state: State,
     task_tracker: TaskTracker,
 ) -> Result<(), ErrorChain> {
     let genesis_hash = genesis_hash(&client).await?;
@@ -458,8 +526,24 @@ async fn prepare_chain(
     let block = next_block(client, &mut blocks).await?;
     let metadata = metadata(&client, &block).await?;
     let specs = specs(&client, &metadata, &block).await?;
-    let assets =
-        assets_set_at_block(&client, &block, &metadata, rpc_url, specs.base58prefix).await?;
+    let assets = assets_set_at_block(&client, &block, &metadata, rpc_url, specs).await?;
+
+    // check monitored accounts
+    let mut new_accounts = Vec::new();
+    for invoice in watched_accounts.iter() {
+        match invoice.check(client, &metadata, &block, &assets).await {
+            Ok(true) => {
+                state.order_paid(invoice.id.clone());
+            }
+            Ok(false) => new_accounts.push(invoice.to_owned()),
+            Err(e) => {
+                tracing::warn!("account fetch error: {0:?}", e);
+                new_accounts.push(invoice.to_owned());
+            }
+        }
+    }
+    *watched_accounts = new_accounts;
+
     task_tracker.spawn("watching blocks at {rpc_url}", async move {
         while let Ok(block) = next_block_number(&mut blocks).await {
             if chain_tx
@@ -470,6 +554,8 @@ async fn prepare_chain(
                 break;
             }
         }
+        // this should reset chain monitor on timeout;
+        // but if this breaks, it meand that the latter is already down either way
         Ok("Block watch at {rpc_url} stopped".into())
     });
 
@@ -500,7 +586,7 @@ struct BlockHead {
     //parent_hash: String,
     //state_root: String,
 }
-
+ /*
 #[derive(Deserialize, Debug)]
 struct Transferred {
     asset_id: u32,
@@ -510,14 +596,14 @@ struct Transferred {
     #[serde(deserialize_with = "account_deserializer")]
     to: AccountId32,
     amount: u128,
-}
-
+}*/
+/*
 fn account_deserializer<'de, D>(deserializer: D) -> Result<AccountId32, D::Error>
 where
     D: Deserializer<'de>,
 {
     <([u8; 32],)>::deserialize(deserializer).map(|address| AccountId32(address.0))
-}
+}*/
 
 // TODO: add proper errors
 //
@@ -529,10 +615,23 @@ pub async fn assets_set_at_block(
     block_hash: &H256,
     metadata_v15: &RuntimeMetadataV15,
     rpc_url: &str,
-    ss58: u16,
+    specs: ShortSpecs,
 ) -> Result<HashMap<String, CurrencyProperties>, ErrorChain> {
     let block_hash = &hex::encode(&block_hash.0);
     let mut assets_set = HashMap::new();
+    let chain_name =
+        <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(metadata_v15)?.spec_name;
+    assets_set.insert(
+        specs.unit,
+        CurrencyProperties {
+            chain_name: chain_name.clone(),
+            kind: TokenKind::Balances,
+            decimals: specs.decimals,
+            rpc_url: rpc_url.to_owned(),
+            asset_id: None,
+            ss58: specs.base58prefix,
+        },
+    );
 
     let mut assets_asset_storage_metadata = None;
     let mut assets_metadata_storage_metadata = None;
@@ -751,12 +850,12 @@ pub async fn assets_set_at_block(
                                                     assets_set.insert(
                                                         symbol,
                                                         CurrencyProperties {
-                                                            chain_name: "TODO".into(),
+                                                            chain_name: chain_name.clone(),
                                                             kind: TokenKind::Asset,
                                                             decimals,
                                                             rpc_url: rpc_url.to_string(),
                                                             asset_id: Some(asset_id),
-                                                            ss58,
+                                                            ss58: specs.base58prefix,
                                                         },
                                                     );
                                                 } else {
@@ -779,24 +878,63 @@ pub async fn assets_set_at_block(
     Ok(assets_set)
 }
 
-pub async fn balances_at_account(
+pub async fn asset_balance_at_account(
     client: &WsClient,
     block_hash: &H256,
     metadata_v15: &RuntimeMetadataV15,
     account_id: &AccountId32,
-    asset_id: Option<AssetId>,
+    asset_id: AssetId,
 ) -> Result<Balance, ErrorChain> {
     let block_hash = &hex::encode(&block_hash.0);
-    if let Some(asset_id) = asset_id {
-        let queries = balance_queries(metadata_v15, account_id, asset_id);
+    let query = asset_balance_query(metadata_v15, account_id, asset_id)?;
 
-    let value_fetch = get_value_from_storage(client, &queries.system_account.key, block_hash)
+    let value_fetch = get_value_from_storage(client, &query.key, block_hash)
         .await
         .unwrap();
     if let Value::String(ref string_value) = value_fetch {
         let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
-            &queries.system_account.value_ty,
+            &query.value_ty,
+            &value_data.as_ref(),
+            &mut (),
+            &metadata_v15.types,
+        )
+        .unwrap();
+        if let ParsedData::Composite(fields) = value.data {
+            for field in fields.iter() {
+                if let ParsedData::PrimitiveU128 {
+                    value,
+                    specialty: SpecialtyUnsignedInteger::Balance,
+                } = field.data.data
+                {
+                    return Ok(Balance(value));
+                }
+            }
+            panic!();
+        } else {
+            panic!()
+        }
+    } else {
+        panic!()
+    }
+}
+
+async fn system_balance_at_account(
+    client: &WsClient,
+    block_hash: &H256,
+    metadata_v15: &RuntimeMetadataV15,
+    account_id: &AccountId32,
+) -> Result<Balance, ErrorChain> {
+    let block_hash = &hex::encode(&block_hash.0);
+    let query = system_balance_query(metadata_v15, account_id)?;
+
+    let value_fetch = get_value_from_storage(client, &query.key, block_hash)
+        .await
+        .unwrap();
+    if let Value::String(ref string_value) = value_fetch {
+        let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
+        let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
+            &query.value_ty,
             &value_data.as_ref(),
             &mut (),
             &metadata_v15.types,
@@ -813,25 +951,7 @@ pub async fn balances_at_account(
                                     specialty: SpecialtyUnsignedInteger::Balance,
                                 } = inner_field.data.data
                                 {
-                                    println!("free balance in system: {value}")
-                                }
-                            }
-                            if inner_field.field_name == Some("reserved".to_string()) {
-                                if let ParsedData::PrimitiveU128 {
-                                    value,
-                                    specialty: SpecialtyUnsignedInteger::Balance,
-                                } = inner_field.data.data
-                                {
-                                    println!("reserved balance in system: {value}")
-                                }
-                            }
-                            if inner_field.field_name == Some("frozen".to_string()) {
-                                if let ParsedData::PrimitiveU128 {
-                                    value,
-                                    specialty: SpecialtyUnsignedInteger::Balance,
-                                } = inner_field.data.data
-                                {
-                                    println!("frozen balance in system: {value}")
+                                    return Ok(Balance(value));
                                 }
                             }
                         }
@@ -841,33 +961,81 @@ pub async fn balances_at_account(
         }
     }
 
-    let value_fetch = get_value_from_storage(client, &queries.assets_account.key, block_hash)
-        .await
-        .unwrap();
-    if let Value::String(ref string_value) = value_fetch {
-        let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
-        let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
-            &queries.assets_account.value_ty,
-            &value_data.as_ref(),
+    Err(ErrorChain::BalanceNotFound)
+}
+
+async fn transfer_events(client: &WsClient, block: &H256, metadata_v15: &RuntimeMetadataV15) -> Result<Vec<Event>, ErrorChain> {
+    let events_entry_metadata = events_entry_metadata(&metadata_v15)?;
+
+    events_at_block(
+        &client,
+        block,
+        Some(EventFilter {
+            pallet: BALANCES,
+            optional_event_variant: Some(TRANSFER),
+        }),
+        events_entry_metadata,
+        &metadata_v15.types,
+    )
+    .await
+}
+
+pub async fn events_at_block(
+    client: &WsClient,
+    block_hash: &H256,
+    optional_filter: Option<EventFilter<'_>>,
+    events_entry_metadata: &StorageEntryMetadata<PortableForm>,
+    types: &PortableRegistry,
+) -> Result<Vec<Event>, ErrorChain> {
+    let block_hash = &hex::encode(&block_hash.0);
+    let keys_from_storage = get_keys_from_storage(client, "System", "Events", block_hash).await?;
+    let mut out = Vec::new();
+    if let Value::Array(ref keys_array) = keys_from_storage {
+    for key in keys_array {
+        if let Value::String(key) = key {
+        let data_from_storage = get_value_from_storage(client, &key, block_hash).await?;
+        let key_bytes = unhex(&key, NotHex::StorageValue)?;
+        let value_bytes = if let Value::String(data_from_storage) = data_from_storage {
+        unhex(&data_from_storage, NotHex::StorageValue)?
+        } else { return Err(ErrorChain::StorageFormatError) };
+        let storage_data = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
+            &key_bytes.as_ref(),
+            &value_bytes.as_ref(),
             &mut (),
-            &metadata_v15.types,
-        )
-        .unwrap();
-        if let ParsedData::Composite(fields) = value.data {
-            for field in fields.iter() {
-                if let ParsedData::PrimitiveU128 {
-                    value,
-                    specialty: SpecialtyUnsignedInteger::Balance,
-                } = field.data.data
-                {
-                    return Ok(Balance(value))
+            events_entry_metadata,
+            types,
+        ).expect("RAM stored metadata access");
+        if let ParsedData::SequenceRaw(sequence_raw) = storage_data.value.data {
+            for sequence_element in sequence_raw.data {
+                if let ParsedData::Composite(event_record) = sequence_element {
+                    for event_record_element in event_record {
+                        if event_record_element.field_name == Some("event".to_string()) {
+                            if let ParsedData::Event(Event(ref event)) =
+                                event_record_element.data.data
+                            {
+                                if let Some(ref filter) = optional_filter {
+                                    if let Some(event_variant) = filter.optional_event_variant {
+                                        if event.pallet_name == filter.pallet
+                                            && event.variant_name == event_variant
+                                        {
+                                            out.push(Event(event.to_owned()));
+                                        }
+                                    } else if event.pallet_name == filter.pallet {
+                                        out.push(Event(event.to_owned()));
+                                    }
+                                } else {
+                                    out.push(Event(event.to_owned()));
+                                }
+                            }
+                        }
+                    }
                 }
-            };
-            panic!();
-        } else { panic!() }
-    } else { panic!() }
-    } else {
-panic!("native tokens not implemented");
+            }
+        }
+    return Ok(out);
+        }
     }
+    }
+    Err(ErrorChain::EventsMissing)
 }
 

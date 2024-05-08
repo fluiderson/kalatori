@@ -251,11 +251,11 @@ impl Database {
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
-    pub async fn mark_paid(&self, order: String) -> Result<(), ErrorDb> {
+    pub async fn mark_paid(&self, order: String) -> Result<OrderInfo, ErrorDb> {
         let (res, rx) = oneshot::channel();
         let _unused = self
             .tx
-            .send(DbRequest::MarkPaid(ModifyOrder { order, res }))
+            .send(DbRequest::MarkPaid(MarkPaid { order, res }))
             .await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
@@ -288,7 +288,7 @@ impl Database {
 enum DbRequest {
     CreateOrder(CreateOrder),
     ReadOrder(ReadOrder),
-    MarkPaid(ModifyOrder),
+    MarkPaid(MarkPaid),
     MarkWithdrawn(ModifyOrder),
     MarkStuck(ModifyOrder),
     Shutdown(oneshot::Sender<()>),
@@ -308,6 +308,11 @@ pub struct ReadOrder {
 pub struct ModifyOrder {
     pub order: String,
     pub res: oneshot::Sender<Result<(), ErrorDb>>,
+}
+
+pub struct MarkPaid {
+    pub order: String,
+    pub res: oneshot::Sender<Result<OrderInfo, ErrorDb>>,
 }
 
 fn create_order(
@@ -341,13 +346,13 @@ fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, E
     }
 }
 
-fn mark_paid(order: String, orders: &sled::Tree) -> Result<(), ErrorDb> {
+fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, ErrorDb> {
     if let Some(order_info) = orders.get(order.clone())? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
         if order_info.payment_status == PaymentStatus::Pending {
             order_info.payment_status = PaymentStatus::Paid;
             orders.insert(order.encode(), order_info.encode())?;
-            Ok(())
+            Ok(order_info)
         } else {
             Err(ErrorDb::AlreadyPaid(order))
         }

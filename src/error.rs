@@ -5,6 +5,7 @@ use mnemonic_external::error::ErrorWordList;
 use primitive_types::H256;
 use serde_json::Value;
 use sled::Error as DatabaseError;
+use substrate_constructor::error::*;
 use substrate_crypto_light::error::Error as CryptoError;
 use substrate_parser::error::*;
 use tokio::task::JoinError;
@@ -260,6 +261,27 @@ pub enum ErrorChain {
 
     #[error("Block subscription terminated")]
     BlockSubscriptionTerminated,
+
+    #[error("Metadata error: {0:?}")]
+    MetaVersionErrorPallets(MetaVersionErrorPallets),
+
+    #[error("Storage registry error: {0:?}")]
+    StorageRegistryError(StorageRegistryError),
+
+    #[error("Balance was not found")]
+    BalanceNotFound,
+
+    #[error("Storage query could not be formed")]
+    StorageQuery,
+
+    #[error("Storage format error")]
+    StorageFormatError,
+
+    #[error("Events could not be fetched")]
+    EventsMissing,
+
+    #[error("Events do not exist in this chain")]
+    EventsNonexistant,
 }
 
 impl From<ClientError> for ErrorChain {
@@ -277,6 +299,18 @@ impl From<JoinError> for ErrorChain {
 impl From<ErrorUtil> for ErrorChain {
     fn from(e: ErrorUtil) -> Self {
         ErrorChain::ErrorUtil(e)
+    }
+}
+
+impl From<MetaVersionErrorPallets> for ErrorChain {
+    fn from(e: MetaVersionErrorPallets) -> Self {
+        ErrorChain::MetaVersionErrorPallets(e)
+    }
+}
+
+impl From<StorageRegistryError> for ErrorChain {
+    fn from(e: StorageRegistryError) -> Self {
+        ErrorChain::StorageRegistryError(e)
     }
 }
 

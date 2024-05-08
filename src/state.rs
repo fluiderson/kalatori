@@ -56,7 +56,7 @@ impl State {
         */
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
 
-        let recipient_ss58 = recipient.to_base58_string(2); //TODO
+        let recipient_ss58 = recipient.to_base58_string(2); // TODO maybe but spec says use "2"
 
         let server_info = ServerInfo {
             // TODO
@@ -65,7 +65,6 @@ impl State {
             debug,
             kalatori_remark: remark.clone(),
         };
-
 
         // Remember to always spawn async here or things might deadlock
         task_tracker.spawn("State Handler", async move {
@@ -100,9 +99,27 @@ impl State {
                         };
                         res.send(server_status).map_err(|_| Error::Fatal)?;
                     }
+                    StateAccessRequest::OrderPaid(id) => {
+                        // Only perform actions if the record is saved in ledger
+                        match state.db.mark_paid(id.clone()).await {
+                            Ok(order) => { 
+                                // TODO: callback here
+                                state.chain_manager.reap(id, order).await;
+                            },
+                            Err(e) => {
+                                tracing::error!("Order was paid but this could not be recorded! {e:?}")
+                            },
+                        }
+                    }
                     // Orchestrate shutdown from here
                     StateAccessRequest::Shutdown => {
+                        // Web server shuts down on its own; it does not matter what it sends now.
+
+                        // First shut down active actions for external world. If something yet
+                        // happens, we should record it in db.
                         state.chain_manager.shutdown().await;
+
+                        // Now that nothing happens we can wind down the ledger and shut down
                         state.db.shutdown().await;
                         break;
                     }
@@ -156,6 +173,12 @@ impl State {
         rx.await.map_err(|_| Error::Fatal)?
     }
 
+    pub async fn order_paid(&self, order: String) {
+        if self.tx.send(StateAccessRequest::OrderPaid(order)).await.is_err() {
+            tracing::warn!("Data race on shutdown; please restart the daemon for cleaning up");
+        };
+    }
+
     pub fn interface(&self) -> Self {
         State {
             tx: self.tx.clone(),
@@ -171,6 +194,7 @@ enum StateAccessRequest {
     GetInvoiceStatus(GetInvoiceStatus),
     CreateInvoice(CreateInvoice),
     ServerStatus(oneshot::Sender<ServerStatus>),
+    OrderPaid(String),
     Shutdown,
 }
 
@@ -229,20 +253,18 @@ impl StateData {
             .await?
         {
             OrderCreateResponse::New => {
-
+                self.chain_manager.add_invoice(order.clone(), order_info.clone()).await?;
                 Ok(OrderResponse::NewOrder(self.order_status(
-                    order,
-                    order_info,
-                    String::new(),
-                )))
+                order,
+                order_info,
+                String::new(),
+            )))
             },
-            OrderCreateResponse::Modified => {
-                Ok(OrderResponse::ModifiedOrder(self.order_status(
-                    order,
-                    order_info,
-                    String::new(),
-                )))
-            },
+            OrderCreateResponse::Modified => Ok(OrderResponse::ModifiedOrder(self.order_status(
+                order,
+                order_info,
+                String::new(),
+            ))),
             OrderCreateResponse::Collision(order_status) => {
                 Ok(OrderResponse::CollidedOrder(self.order_status(
                     order,

@@ -1,38 +1,85 @@
 //! Utils to process chain data without accessing the chain
 
 //TransactionToFill::init(&mut (), metadata, genesis_hash).unwrap();
-use crate::error::ErrorChain;
+use crate::{definitions::api_v2::AssetId, error::ErrorChain};
 use frame_metadata::{
     v14::StorageHasher,
-    v15::{RuntimeMetadataV15, StorageEntryType},
+    v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
 };
 use parity_scale_codec::{Decode, Encode};
-use scale_info::{TypeDef, TypeDefPrimitive};
+use scale_info::{form::PortableForm, TypeDef, TypeDefPrimitive};
 use serde_json::{Map, Number, Value};
 use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
+use substrate_constructor::{
+    fill_prepare::{PrimitiveToFill, SpecialTypeToFill, TypeContentToFill, UnsignedToFill},
+    storage_query::{
+        EntrySelector, EntrySelectorFunctional, FinalizedStorageQuery, StorageEntryTypeToFill,
+        StorageSelector, StorageSelectorFunctional,
+    },
+};
 use substrate_crypto_light::common::{AccountId32, DeriveJunction, FullDerivation};
 use substrate_parser::{
-    cards::{ExtendedData, ParsedData},
+    cards::{ExtendedData, FieldData, ParsedData},
     decode_all_as_type, AsMetadata, ShortSpecs,
 };
-use substrate_constructor::{fill_prepare::{PrimitiveToFill, SpecialTypeToFill, TypeContentToFill, UnsignedToFill}, storage_query::{EntrySelector, EntrySelectorFunctional, FinalizedStorageQuery, StorageEntryTypeToFill, StorageSelector, StorageSelectorFunctional}};
 
-#[derive(Clone, Debug)]
-pub struct FinalizedQueries {
-    pub system_account: FinalizedStorageQuery,
-    pub assets_account: FinalizedStorageQuery,
+pub fn events_entry_metadata(
+    metadata: &RuntimeMetadataV15,
+) -> Result<&StorageEntryMetadata<PortableForm>, ErrorChain> {
+    let mut found_events_entry_metadata = None;
+    for pallet in &metadata.pallets {
+        if let Some(storage) = &pallet.storage {
+            if storage.prefix == "System" {
+                for entry in &storage.entries {
+                    if entry.name == "Events" {
+                        found_events_entry_metadata = Some(entry);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    match found_events_entry_metadata {
+        Some(a) => Ok(a),
+        None => Err(ErrorChain::EventsNonexistant),
+    }
 }
 
-pub fn balance_queries(
+pub fn was_balance_received_at_account(
+    known_account: &AccountId32,
+    balance_transfer_event_fields: &[FieldData],
+) -> bool {
+    let mut found_receiver = None;
+    for field in balance_transfer_event_fields.iter() {
+        if let Some(ref field_name) = field.field_name {
+            if field_name == "to" {
+                if let ParsedData::Id(ref account_id32) = field.data.data {
+                    if found_receiver.is_none() {
+                        found_receiver = Some(account_id32);
+                    } else {
+                        found_receiver = None;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(receiver) = found_receiver {
+        receiver.0 == known_account.0
+    } else {
+        false
+    }
+}
+
+pub fn asset_balance_query(
     metadata_v15: &RuntimeMetadataV15,
     account_id: &AccountId32,
-    asset_id: u32,
-) -> FinalizedQueries {
+    asset_id: AssetId,
+) -> Result<FinalizedStorageQuery, ErrorChain> {
     let storage_selector = StorageSelector::init(&mut (), metadata_v15).unwrap();
 
     if let StorageSelector::Functional(mut storage_selector_functional) = storage_selector {
-        let mut index_system_in_pallet_selector = None;
-        let mut index_assets_in_pallet_selector = None;
+        let mut index_assets_in_pallet_selector: Option<usize> = None;
 
         for (index, pallet) in storage_selector_functional
             .available_pallets
@@ -40,71 +87,15 @@ pub fn balance_queries(
             .enumerate()
         {
             match pallet.prefix.as_str() {
-                "System" => index_system_in_pallet_selector = Some(index),
                 "Assets" => index_assets_in_pallet_selector = Some(index),
                 _ => {}
             }
-            if index_system_in_pallet_selector.is_some()
-                && index_assets_in_pallet_selector.is_some()
-            {
+            if index_assets_in_pallet_selector.is_some() {
                 break;
             }
         }
-        let index_system_in_pallet_selector = index_system_in_pallet_selector.unwrap();
         let index_assets_in_pallet_selector = index_assets_in_pallet_selector.unwrap();
 
-        let mut system_account_query = None;
-        let mut assets_account_query = None;
-
-        // System - Account
-        storage_selector_functional = StorageSelectorFunctional::new_at::<(), RuntimeMetadataV15>(
-            &storage_selector_functional.available_pallets,
-            &mut (),
-            &metadata_v15.types,
-            index_system_in_pallet_selector,
-        )
-        .unwrap();
-
-        if let EntrySelector::Functional(ref mut entry_selector_functional) =
-            storage_selector_functional.query.entry_selector
-        {
-            let mut entry_index = None;
-            for (index, entry) in entry_selector_functional
-                .available_entries
-                .iter()
-                .enumerate()
-            {
-                if entry.name == "Account" {
-                    entry_index = Some(index);
-                    break;
-                }
-            }
-            let entry_index = entry_index.unwrap();
-            *entry_selector_functional = EntrySelectorFunctional::new_at::<(), RuntimeMetadataV15>(
-                &entry_selector_functional.available_entries,
-                &mut (),
-                &metadata_v15.types,
-                entry_index,
-            )
-            .unwrap();
-            if let StorageEntryTypeToFill::Map {
-                hashers: _,
-                ref mut key_to_fill,
-                value: _,
-            } = entry_selector_functional.selected_entry.type_to_fill
-            {
-                if let TypeContentToFill::SpecialType(SpecialTypeToFill::AccountId32(
-                    ref mut account_to_fill,
-                )) = key_to_fill.content
-                {
-                    *account_to_fill = Some(substrate_parser::additional_types::AccountId32(account_id.0))
-                }
-            }
-
-            system_account_query = storage_selector_functional.query.finalize().unwrap();
-        }
-
-        // Assets - Account
         storage_selector_functional = StorageSelectorFunctional::new_at::<(), RuntimeMetadataV15>(
             &storage_selector_functional.available_pallets,
             &mut (),
@@ -145,7 +136,11 @@ pub fn balance_queries(
                         match ty.content {
                             TypeContentToFill::SpecialType(SpecialTypeToFill::AccountId32(
                                 ref mut account_to_fill,
-                            )) => *account_to_fill = Some(substrate_parser::additional_types::AccountId32(account_id.0)),
+                            )) => {
+                                *account_to_fill = Some(
+                                    substrate_parser::additional_types::AccountId32(account_id.0),
+                                )
+                            }
                             TypeContentToFill::Primitive(PrimitiveToFill::CompactUnsigned(
                                 ref mut specialty_unsigned_to_fill,
                             )) => {
@@ -169,16 +164,93 @@ pub fn balance_queries(
                     }
                 }
             }
-
-            assets_account_query = storage_selector_functional.query.finalize().unwrap();
         }
 
-        return FinalizedQueries {
-            system_account: system_account_query.unwrap(),
-            assets_account: assets_account_query.unwrap(),
-        };
+        storage_selector_functional
+            .query
+            .finalize()?
+            .ok_or(ErrorChain::StorageQuery)
+    } else {
+        Err(ErrorChain::StorageQuery)
     }
-    panic!("was unable to find something");
+}
+
+pub fn system_balance_query(
+    metadata_v15: &RuntimeMetadataV15,
+    account_id: &AccountId32,
+) -> Result<FinalizedStorageQuery, ErrorChain> {
+    let storage_selector = StorageSelector::init(&mut (), metadata_v15).unwrap();
+    let mut index_system_in_pallet_selector = None;
+
+    if let StorageSelector::Functional(mut storage_selector_functional) = storage_selector {
+        for (index, pallet) in storage_selector_functional
+            .available_pallets
+            .iter()
+            .enumerate()
+        {
+            match pallet.prefix.as_str() {
+                "System" => index_system_in_pallet_selector = Some(index),
+                _ => {}
+            }
+            if index_system_in_pallet_selector.is_some() {
+                break;
+            }
+        }
+        let index_system_in_pallet_selector = index_system_in_pallet_selector.unwrap();
+
+        storage_selector_functional = StorageSelectorFunctional::new_at::<(), RuntimeMetadataV15>(
+            &storage_selector_functional.available_pallets,
+            &mut (),
+            &metadata_v15.types,
+            index_system_in_pallet_selector,
+        )
+        .unwrap();
+
+        if let EntrySelector::Functional(ref mut entry_selector_functional) =
+            storage_selector_functional.query.entry_selector
+        {
+            let mut entry_index = None;
+            for (index, entry) in entry_selector_functional
+                .available_entries
+                .iter()
+                .enumerate()
+            {
+                if entry.name == "Account" {
+                    entry_index = Some(index);
+                    break;
+                }
+            }
+            let entry_index = entry_index.unwrap();
+            *entry_selector_functional = EntrySelectorFunctional::new_at::<(), RuntimeMetadataV15>(
+                &entry_selector_functional.available_entries,
+                &mut (),
+                &metadata_v15.types,
+                entry_index,
+            )
+            .unwrap();
+            if let StorageEntryTypeToFill::Map {
+                hashers: _,
+                ref mut key_to_fill,
+                value: _,
+            } = entry_selector_functional.selected_entry.type_to_fill
+            {
+                if let TypeContentToFill::SpecialType(SpecialTypeToFill::AccountId32(
+                    ref mut account_to_fill,
+                )) = key_to_fill.content
+                {
+                    *account_to_fill = Some(substrate_parser::additional_types::AccountId32(
+                        account_id.0,
+                    ))
+                }
+            }
+        }
+        storage_selector_functional
+            .query
+            .finalize()?
+            .ok_or(ErrorChain::StorageQuery)
+    } else {
+        Err(ErrorChain::StorageQuery)
+    }
 }
 
 pub fn derivations<'a>(recipient: &'a str, order: &'a str) -> FullDerivation<'a> {
