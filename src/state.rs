@@ -120,8 +120,13 @@ impl State {
                         // happens, we should record it in db.
                         state.chain_manager.shutdown().await;
 
-                        // Now that nothing happens we can wind down the ledger and shut down
+                        // Now that nothing happens we can wind down the ledger
                         state.db.shutdown().await;
+
+                        // Try to zeroize secrets
+                        state.signer.shutdown().await;
+
+                        // And shut down finally
                         break;
                     }
                 };

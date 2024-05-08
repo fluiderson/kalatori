@@ -14,7 +14,7 @@ use crate::{definitions::Entropy, error::{Error, ErrorSigner}, TaskTracker};
 use std::env;
 
 use mnemonic_external::{regular::InternalWordList, WordSet};
-use substrate_crypto_light::{common::{AccountId32, AsBase58, DeriveJunction, FullDerivation}, sr25519::Pair};
+use substrate_crypto_light::{common::{AccountId32, AsBase58, DeriveJunction, FullDerivation}, sr25519::{Pair, Signature}};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroize;
 
@@ -50,7 +50,18 @@ impl Signer {
                             }
                         );
                     },
-                    SignerRequest::Sign(request) => {todo!()},
+                    SignerRequest::Sign(request) => {
+                        let _unused = request.res.send(
+                            match Pair::from_entropy_and_full_derivation(
+                                &seed_entropy,
+                                // api spec says use "2" for communication, let's use it here too
+                                derivations(&recipient.to_base58_string(2), &request.id),
+                            ) {
+                                Ok(a) => Ok(a.sign(&request.signable)),
+                                Err(e) => Err(e.into()),
+                            }
+                        );
+                    },
                     SignerRequest::Shutdown(res) => {
                         seed_entropy.zeroize();
                         let _ = res.send(());
@@ -73,7 +84,14 @@ impl Signer {
         rx.await.map_err(|_| ErrorSigner::SignerDown)?
     }
 
-    pub async fn sign(&self) -> Result<Vec<u8>, ErrorSigner> {todo!()}
+    pub async fn sign(&self, id: String, signable: Vec<u8>) -> Result<Signature, ErrorSigner> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(SignerRequest::Sign(Sign{id, signable, res}))
+            .await
+            .map_err(|_| ErrorSigner::SignerDown)?;
+        rx.await.map_err(|_| ErrorSigner::SignerDown)?
+    }
 
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
@@ -108,7 +126,9 @@ struct PublicKeyRequest {
 
 /// Bytes to sign, with callback
 struct Sign {
-    
+    id: String,
+    signable: Vec<u8>,
+    res: oneshot::Sender<Result<Signature, ErrorSigner>>,
 }
 
 /// Read seeds from env
