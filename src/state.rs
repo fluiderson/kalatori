@@ -91,7 +91,7 @@ impl State {
                     }
                     StateAccessRequest::ServerStatus(res) => {
                         let server_status = ServerStatus {
-                            description: state.server_info.clone(),
+                            server_info: state.server_info.clone(),
                             supported_currencies: state.currencies.clone(),
                         };
                         res.send(server_status).map_err(|_| Error::Fatal)?;
@@ -240,6 +240,8 @@ impl StateData {
                 recipient: self.recipient.clone().to_base58_string(2), // TODO maybe but spec says use "2"
                 server_info: self.server_info.clone(),
                 order_info,
+                payment_page: String::new(),
+                redirect_url: String::new(),
             }))
         } else {
             Ok(OrderResponse::NotFound)
@@ -292,6 +294,8 @@ impl StateData {
             recipient: self.recipient.clone().to_base58_string(2), // TODO maybe but spec says use "2"
             server_info: self.server_info.clone(),
             order_info,
+                payment_page: String::new(),
+                redirect_url: String::new(),
         }
     }
 }

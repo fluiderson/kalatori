@@ -118,6 +118,8 @@ pub mod api_v2 {
         pub server_info: ServerInfo,
         #[serde(flatten)]
         pub order_info: OrderInfo,
+        pub payment_page: String,
+        pub redirect_url: String,
     }
 
     #[derive(Clone, Debug, Serialize, Encode, Decode)]
@@ -168,13 +170,13 @@ pub mod api_v2 {
 
     #[derive(Clone, Debug, Serialize)]
     pub struct ServerStatus {
-        pub description: ServerInfo,
+        pub server_info: ServerInfo,
         pub supported_currencies: HashMap<std::string::String, CurrencyProperties>,
     }
 
     #[derive(Debug, Serialize)]
     struct ServerHealth {
-        description: ServerInfo,
+        server_info: ServerInfo,
         connected_rpcs: Vec<RpcInfo>,
         status: Health,
     }
@@ -264,7 +266,7 @@ pub mod api_v2 {
     #[derive(Clone, Debug, Serialize, Decode, Encode)]
     pub struct TransactionInfo {
         #[serde(skip_serializing_if = "Option::is_none", flatten)]
-        finalized_tx: Option<FinalizedTx>,
+        finalized_tx: Option<FinalizedTx>, // Clearly undefined in v2.1 - TODO
         transaction_bytes: String,
         sender: String,
         recipient: String,
