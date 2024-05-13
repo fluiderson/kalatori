@@ -1,6 +1,6 @@
 use crate::{
     definitions::api_v2::*,
-    error::{Error, ErrorOrder, ErrorServer},
+    error::{Error, ErrorForceWithdrawal, ErrorOrder, ErrorServer},
     state::State,
 };
 use axum::{
@@ -25,8 +25,21 @@ pub async fn new(
 ) -> Result<impl Future<Output = Result<Cow<'static, str>, Error>>, ErrorServer> {
     let v2: Router<State> = Router::new()
         .route("/order/:order_id", routing::post(order))
-        .route("/status", routing::get(status));
-    let app = Router::new().nest("/v2", v2).with_state(state);
+        .route(
+            "/order/:order_id/forceWithdrawal",
+            routing::post(force_withdrawal),
+        )
+        .route("/status", routing::get(status))
+        .route("/health", routing::get(health))
+        .route("/audit", routing::get(audit))
+        .route("/order/:order_id/investigate", routing::post(investigate));
+    let app = Router::new()
+        .route(
+            "/public/v2/payment/:paymentAccount",
+            routing::post(public_payment_account),
+        )
+        .nest("/v2", v2)
+        .with_state(state);
 
     let listener = TcpListener::bind(host)
         .await
@@ -158,6 +171,51 @@ async fn order(
     }
 }
 
+async fn process_force_withdrawal(
+    state: State,
+    matched_path: &MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+) -> Result<OrderStatus, ErrorForceWithdrawal> {
+    const ORDER_ID: &str = "order_id";
+
+    let path_parameters = path_result
+        .map_err(|_| ErrorForceWithdrawal::InvalidParameter(matched_path.as_str().to_owned()))?;
+    let order = path_parameters
+        .iter()
+        .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
+        .ok_or_else(|| ErrorForceWithdrawal::MissingParameter(ORDER_ID.into()))?
+        .to_owned();
+    state.force_withdrawal(order).await.map_err(ErrorForceWithdrawal::WithdrawalError)
+}
+
+#[debug_handler]
+async fn force_withdrawal(
+    extract::State(state): extract::State<State>,
+    matched_path: MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+) -> Response {
+    match process_force_withdrawal(state, &matched_path, path_result).await {
+        Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
+        Err(ErrorForceWithdrawal::WithdrawalError(a)) => (StatusCode::BAD_REQUEST, Json(a)).into_response(),
+        Err(ErrorForceWithdrawal::MissingParameter(parameter)) => (
+            StatusCode::BAD_REQUEST,
+            Json([InvalidParameter {
+                parameter,
+                message: "parameter wasn't found".into(),
+            }]),
+        )
+            .into_response(),
+        Err(ErrorForceWithdrawal::InvalidParameter(parameter)) => (
+            StatusCode::BAD_REQUEST,
+            Json([InvalidParameter {
+                parameter,
+                message: "parameter's format is invalid".into(),
+            }]),
+        )
+            .into_response(),
+    }
+}
+
 async fn status(
     extract::State(state): extract::State<State>,
 ) -> ([(HeaderName, &'static str); 1], Json<ServerStatus>) {
@@ -165,4 +223,34 @@ async fn status(
         Ok(status) => ([(header::CACHE_CONTROL, "no-store")], status.into()),
         Err(_e) => panic!("db connection is down, state is lost"), //TODO tell this to client
     }
+}
+
+async fn health(
+    extract::State(state): extract::State<State>,
+) -> ([(HeaderName, &'static str); 1], Json<ServerStatus>) {
+    todo!();
+}
+
+async fn audit(extract::State(state): extract::State<State>) -> Response {
+    StatusCode::NOT_IMPLEMENTED.into_response()
+}
+
+#[debug_handler]
+async fn investigate(
+    extract::State(state): extract::State<State>,
+    matched_path: MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+    query: Query<HashMap<String, String>>,
+) -> Response {
+    todo!()
+}
+
+#[debug_handler]
+async fn public_payment_account(
+    extract::State(state): extract::State<State>,
+    matched_path: MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+    query: Query<HashMap<String, String>>,
+) -> Response {
+    todo!()
 }

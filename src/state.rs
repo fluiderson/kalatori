@@ -188,6 +188,10 @@ impl State {
         };
     }
 
+    pub async fn force_withdrawal(&self, order: String) -> Result<OrderStatus, OrderStatus> {
+        todo!()
+    }
+
     pub fn interface(&self) -> Self {
         State {
             tx: self.tx.clone(),

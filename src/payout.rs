@@ -5,7 +5,11 @@
 //! altogether (TODO)
 
 use crate::{
-    chain::{AssetTransferConstructor, BalanceTransferConstructor, construct_batch_transaction, construct_single_asset_transfer_call, construct_single_balance_transfer_call},
+    chain::{
+        construct_batch_transaction, construct_single_asset_transfer_call,
+        construct_single_balance_transfer_call, AssetTransferConstructor,
+        BalanceTransferConstructor,
+    },
     definitions::api_v2::TokenKind,
     rpc::{block_hash, current_block_number, send_stuff, ChainWatcher, Invoice},
     signer::Signer,
@@ -20,7 +24,13 @@ use substrate_crypto_light::common::AccountId32;
 /// Single function that should completely handle payout attmept. Just do not call anything else.
 ///
 /// TODO: make this an additional runner independent from chain monitors
-pub async fn payout(rpc: String, order: Invoice, state: State, chain: ChainWatcher, signer: Signer) {
+pub async fn payout(
+    rpc: String,
+    order: Invoice,
+    state: State,
+    chain: ChainWatcher,
+    signer: Signer,
+) {
     // TODO: make this retry and rotate RPCs maybe
     //
     // after some retries record a failure
@@ -44,7 +54,7 @@ pub async fn payout(rpc: String, order: Invoice, state: State, chain: ChainWatch
                     vec![construct_single_balance_transfer_call(
                         &chain.metadata,
                         &balance_transfer_constructor,
-                        )]
+                    )]
                 }
                 TokenKind::Asset => {
                     let asset_transfer_constructor = AssetTransferConstructor {
@@ -55,7 +65,7 @@ pub async fn payout(rpc: String, order: Invoice, state: State, chain: ChainWatch
                     vec![construct_single_asset_transfer_call(
                         &chain.metadata,
                         &asset_transfer_constructor,
-                        )]
+                    )]
                 }
             },
             a if (loss_tolerance..=manual_intervention_amount).contains(&a) => {
@@ -65,7 +75,7 @@ pub async fn payout(rpc: String, order: Invoice, state: State, chain: ChainWatch
             _ => {
                 tracing::error!("Balance is out of range: {balance:?}");
                 return;
-            },
+            }
         };
 
         let mut batch_transaction = construct_batch_transaction(
@@ -82,11 +92,17 @@ pub async fn payout(rpc: String, order: Invoice, state: State, chain: ChainWatch
 
         let signature = signer.sign(order.id, sign_this).await.unwrap();
 
-        batch_transaction.signature.content = TypeContentToFill::SpecialType(SpecialTypeToFill::SignatureSr25519(Some(signature)));
+        batch_transaction.signature.content =
+            TypeContentToFill::SpecialType(SpecialTypeToFill::SignatureSr25519(Some(signature)));
 
-        let extrinsic = batch_transaction.send_this_signed::<(), RuntimeMetadataV15>(&chain.metadata).unwrap().unwrap();
+        let extrinsic = batch_transaction
+            .send_this_signed::<(), RuntimeMetadataV15>(&chain.metadata)
+            .unwrap()
+            .unwrap();
 
-        send_stuff(&client, &format!("0x{}", hex::encode(extrinsic))).await.unwrap();
+        send_stuff(&client, &format!("0x{}", hex::encode(extrinsic)))
+            .await
+            .unwrap();
 
         // TODO obvious
     }

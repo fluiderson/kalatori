@@ -378,6 +378,19 @@ pub enum ErrorOrder {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum ErrorForceWithdrawal {
+    #[error("Order parameter missing: {0}")]
+    MissingParameter(String),
+
+    #[error("Order parameter invalid: {0}")]
+    InvalidParameter(String),
+
+    #[error("Withdrawal failed: {0:?}")]
+    WithdrawalError(OrderStatus),
+
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum ErrorServer {
     #[error("failed to bind the TCP listener to {0:?}")]
     TcpListenerBind(SocketAddr),
