@@ -9,12 +9,19 @@
 //!
 //! Also this abstraction could be used to implement off-system signer
 
-use crate::{definitions::Entropy, error::{Error, ErrorSigner}, TaskTracker};
+use crate::{
+    definitions::Entropy,
+    error::{Error, ErrorSigner},
+    TaskTracker,
+};
 
 use std::env;
 
 use mnemonic_external::{regular::InternalWordList, WordSet};
-use substrate_crypto_light::{common::{AccountId32, AsBase58, DeriveJunction, FullDerivation}, sr25519::{Pair, Signature}};
+use substrate_crypto_light::{
+    common::{AccountId32, AsBase58, DeriveJunction, FullDerivation},
+    sr25519::{Pair, Signature},
+};
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroize;
 
@@ -27,15 +34,12 @@ pub struct Signer {
 
 impl Signer {
     /// Run once to initialize; this should do **all** secret management
-    pub fn init(
-        recipient: AccountId32,
-        task_tracker: TaskTracker,
-    ) -> Result<Self, Error> {
-            let (tx, mut rx) = mpsc::channel(16);
-            task_tracker.spawn("Signer", async move {
-                let mut seed_entropy = parse_seeds()?; // TODO: shutdown on failure
-                while let Some(request) = rx.recv().await {
-                    match request {
+    pub fn init(recipient: AccountId32, task_tracker: TaskTracker) -> Result<Self, Error> {
+        let (tx, mut rx) = mpsc::channel(16);
+        task_tracker.spawn("Signer", async move {
+            let mut seed_entropy = parse_seeds()?; // TODO: shutdown on failure
+            while let Some(request) = rx.recv().await {
+                match request {
                     SignerRequest::PublicKey(request) => {
                         let _unused = request.res.send(
                             match Pair::from_entropy_and_full_derivation(
@@ -43,13 +47,11 @@ impl Signer {
                                 // api spec says use "2" for communication, let's use it here too
                                 derivations(&recipient.to_base58_string(2), &request.id),
                             ) {
-                                Ok(a) => Ok(a
-                                    .public()
-                                    .to_base58_string(request.ss58)),
+                                Ok(a) => Ok(a.public().to_base58_string(request.ss58)),
                                 Err(e) => Err(e.into()),
-                            }
+                            },
                         );
-                    },
+                    }
                     SignerRequest::Sign(request) => {
                         let _unused = request.res.send(
                             match Pair::from_entropy_and_full_derivation(
@@ -59,26 +61,26 @@ impl Signer {
                             ) {
                                 Ok(a) => Ok(a.sign(&request.signable)),
                                 Err(e) => Err(e.into()),
-                            }
+                            },
                         );
-                    },
+                    }
                     SignerRequest::Shutdown(res) => {
                         seed_entropy.zeroize();
                         let _ = res.send(());
                         break;
-                    },
+                    }
                 }
             }
             Ok("Signer module cleared and is shutting down!".into())
         });
 
-        Ok(Self{tx})
+        Ok(Self { tx })
     }
 
     pub async fn public(&self, id: String, ss58: u16) -> Result<String, ErrorSigner> {
         let (res, rx) = oneshot::channel();
         self.tx
-            .send(SignerRequest::PublicKey(PublicKeyRequest{id, ss58, res}))
+            .send(SignerRequest::PublicKey(PublicKeyRequest { id, ss58, res }))
             .await
             .map_err(|_| ErrorSigner::SignerDown)?;
         rx.await.map_err(|_| ErrorSigner::SignerDown)?
@@ -87,7 +89,7 @@ impl Signer {
     pub async fn sign(&self, id: String, signable: Vec<u8>) -> Result<Signature, ErrorSigner> {
         let (res, rx) = oneshot::channel();
         self.tx
-            .send(SignerRequest::Sign(Sign{id, signable, res}))
+            .send(SignerRequest::Sign(Sign { id, signable, res }))
             .await
             .map_err(|_| ErrorSigner::SignerDown)?;
         rx.await.map_err(|_| ErrorSigner::SignerDown)?
@@ -101,7 +103,9 @@ impl Signer {
 
     /// Clone wrapper in case we need to make it more complex later
     pub fn interface(&self) -> Self {
-        Signer { tx: self.tx.clone() }
+        Signer {
+            tx: self.tx.clone(),
+        }
     }
 }
 
@@ -154,4 +158,3 @@ pub fn derivations<'a>(recipient: &'a str, order: &'a str) -> FullDerivation<'a>
         password: None,
     }
 }
-

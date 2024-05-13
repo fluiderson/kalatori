@@ -26,6 +26,7 @@ mod chain;
 mod database;
 mod definitions;
 mod error;
+mod payout;
 mod rpc;
 mod server;
 mod signer;
@@ -132,7 +133,7 @@ async fn main() -> Result<(), Error> {
 
     let state = State::initialise(
         currencies,
-        signer,
+        signer.interface(),
         ConfigWoChains {
             recipient: recipient.clone(),
             debug: config.debug,
@@ -167,6 +168,7 @@ async fn main() -> Result<(), Error> {
         .send(ChainManager::ignite(
             config.chain,
             state.interface(),
+            signer.interface(),
             task_tracker.clone(),
             shutdown_notification.clone(),
         )?)
@@ -284,7 +286,6 @@ fn default_filter() -> String {
 
     filter
 }
-
 
 #[derive(Clone)]
 struct TaskTracker {

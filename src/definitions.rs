@@ -1,6 +1,6 @@
 //! Deaf and dumb object definitions
 
-use std::ops::Deref;
+use std::ops::{Deref, Sub};
 
 use serde::Deserialize;
 
@@ -45,6 +45,14 @@ impl Deref for Balance {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl Sub for Balance {
+    type Output = Self;
+
+    fn sub(self, r: Self) -> Self {
+        Balance(self.0 - r.0)
     }
 }
 

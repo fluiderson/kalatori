@@ -7,11 +7,17 @@ use frame_metadata::{
     v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
 };
 use parity_scale_codec::{Decode, Encode};
+use primitive_types::H256;
 use scale_info::{form::PortableForm, TypeDef, TypeDefPrimitive};
 use serde_json::{Map, Number, Value};
 use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
 use substrate_constructor::{
-    fill_prepare::{PrimitiveToFill, SpecialTypeToFill, TypeContentToFill, UnsignedToFill},
+    fill_prepare::{
+        prepare_type, EraToFill, PrimitiveToFill, RegularPrimitiveToFill, SpecialTypeToFill,
+        SpecialtyUnsignedToFill, TransactionToFill, TypeContentToFill, TypeToFill, UnsignedToFill,
+        VariantSelector, DEFAULT_PERIOD,
+    },
+    finalize::Finalize,
     storage_query::{
         EntrySelector, EntrySelectorFunctional, FinalizedStorageQuery, StorageEntryTypeToFill,
         StorageSelector, StorageSelectorFunctional,
@@ -20,8 +26,574 @@ use substrate_constructor::{
 use substrate_crypto_light::common::{AccountId32, DeriveJunction, FullDerivation};
 use substrate_parser::{
     cards::{ExtendedData, FieldData, ParsedData},
-    decode_all_as_type, AsMetadata, ShortSpecs,
+    decode_all_as_type,
+    decoding_sci::Ty,
+    propagated::Propagated,
+    special_indicators::SpecialtyUnsignedInteger,
+    AsMetadata, ShortSpecs,
 };
+
+pub struct AssetTransferConstructor<'a> {
+    pub asset_id: u32,
+    pub amount: u128,
+    pub to_account: &'a AccountId32,
+}
+
+pub fn construct_single_asset_transfer_call(
+    metadata: &RuntimeMetadataV15,
+    asset_transfer_constructor: &AssetTransferConstructor,
+) -> CallToFill {
+    let mut call = prepare_type::<(), RuntimeMetadataV15>(
+        &Ty::Symbol(&metadata.extrinsic.call_ty),
+        &mut (),
+        &metadata.types,
+        Propagated::new(),
+    )
+    .unwrap();
+
+    if let TypeContentToFill::Variant(ref mut pallet_selector) = call.content {
+        let mut index_assets_in_pallets = None;
+
+        for (index_pallet, variant_pallet) in pallet_selector.available_variants.iter().enumerate()
+        {
+            if variant_pallet.name == "Assets" {
+                index_assets_in_pallets = Some(index_pallet);
+                break;
+            }
+        }
+
+        let index_assets_in_pallets = index_assets_in_pallets.unwrap();
+
+        *pallet_selector = VariantSelector::new_at::<(), RuntimeMetadataV15>(
+            &pallet_selector.available_variants,
+            &mut (),
+            &metadata.types,
+            index_assets_in_pallets,
+        )
+        .unwrap();
+
+        if pallet_selector.selected.fields_to_fill.len() == 1 {
+            if let TypeContentToFill::Variant(ref mut method_selector) =
+                pallet_selector.selected.fields_to_fill[0]
+                    .type_to_fill
+                    .content
+            {
+                let mut index_transfer_in_methods = None;
+
+                for (index_method, variant_method) in
+                    method_selector.available_variants.iter().enumerate()
+                {
+                    if variant_method.name.as_str() == "transfer" {
+                        index_transfer_in_methods = Some(index_method);
+                        break;
+                    }
+                }
+
+                let index_transfer_in_methods = index_transfer_in_methods.unwrap();
+
+                *method_selector = VariantSelector::new_at::<(), RuntimeMetadataV15>(
+                    &method_selector.available_variants,
+                    &mut (),
+                    &metadata.types,
+                    index_transfer_in_methods,
+                )
+                .unwrap();
+
+                for field in method_selector.selected.fields_to_fill.iter_mut() {
+                    if let Some(ref mut field_name) = field.field_name {
+                        match field_name.as_str() {
+                            "target" => {
+                                if let TypeContentToFill::Variant(ref mut dest_selector) =
+                                    field.type_to_fill.content
+                                {
+                                    let mut index_account_id_in_dest_selector = None;
+
+                                    for (index, dest_variant) in
+                                        dest_selector.available_variants.iter().enumerate()
+                                    {
+                                        if dest_variant.name == "Id" {
+                                            index_account_id_in_dest_selector = Some(index);
+                                            break;
+                                        }
+                                    }
+
+                                    let index_account_id_in_dest_selector =
+                                        index_account_id_in_dest_selector.unwrap();
+
+                                    *dest_selector =
+                                        VariantSelector::new_at::<(), RuntimeMetadataV15>(
+                                            &dest_selector.available_variants,
+                                            &mut (),
+                                            &metadata.types,
+                                            index_account_id_in_dest_selector,
+                                        )
+                                        .unwrap();
+
+                                    if dest_selector.selected.fields_to_fill.len() == 1 {
+                                        if let TypeContentToFill::SpecialType(
+                                            SpecialTypeToFill::AccountId32(ref mut account_to_fill),
+                                        ) = dest_selector.selected.fields_to_fill[0]
+                                            .type_to_fill
+                                            .content
+                                        {
+                                            *account_to_fill = Some(
+                                                asset_transfer_constructor.to_account.to_owned(),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            "id" => match field.type_to_fill.content {
+                                TypeContentToFill::Primitive(PrimitiveToFill::CompactUnsigned(
+                                    SpecialtyUnsignedToFill {
+                                        content: UnsignedToFill::U32(ref mut value),
+                                        specialty: SpecialtyUnsignedInteger::None,
+                                    },
+                                )) => {
+                                    *value = Some(asset_transfer_constructor.asset_id);
+                                }
+                                TypeContentToFill::Primitive(PrimitiveToFill::Unsigned(
+                                    SpecialtyUnsignedToFill {
+                                        content: UnsignedToFill::U32(ref mut value),
+                                        specialty: SpecialtyUnsignedInteger::None,
+                                    },
+                                )) => {
+                                    *value = Some(asset_transfer_constructor.asset_id);
+                                }
+                                _ => {}
+                            },
+                            "amount" => match field.type_to_fill.content {
+                                TypeContentToFill::Primitive(PrimitiveToFill::CompactUnsigned(
+                                    SpecialtyUnsignedToFill {
+                                        content: UnsignedToFill::U128(ref mut value),
+                                        specialty: SpecialtyUnsignedInteger::Balance,
+                                    },
+                                )) => {
+                                    *value = Some(asset_transfer_constructor.amount);
+                                }
+                                TypeContentToFill::Primitive(PrimitiveToFill::Unsigned(
+                                    SpecialtyUnsignedToFill {
+                                        content: UnsignedToFill::U128(ref mut value),
+                                        specialty: SpecialtyUnsignedInteger::Balance,
+                                    },
+                                )) => {
+                                    *value = Some(asset_transfer_constructor.amount);
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    CallToFill(call)
+}
+
+pub struct BalanceTransferConstructor<'a> {
+    pub amount: u128,
+    pub to_account: &'a AccountId32,
+    pub is_clearing: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct CallToFill(pub TypeToFill);
+
+pub fn construct_batch_transaction(
+    metadata: &RuntimeMetadataV15,
+    genesis_hash: H256,
+    author: AccountId32,
+    call_set: &[CallToFill],
+    block_hash: H256,
+    block_number: u32,
+    nonce: u32,
+) -> TransactionToFill {
+    let mut transaction_to_fill = TransactionToFill::init(&mut (), metadata, genesis_hash).unwrap();
+
+    // deal with author
+    match transaction_to_fill.author.content {
+        TypeContentToFill::Composite(ref mut fields_to_fill) => {
+            if fields_to_fill.len() == 1 {
+                if let TypeContentToFill::SpecialType(SpecialTypeToFill::AccountId32(ref mut a)) =
+                    fields_to_fill[0].type_to_fill.content
+                {
+                    *a = Some(author);
+                }
+            }
+        }
+        TypeContentToFill::SpecialType(SpecialTypeToFill::AccountId32(ref mut a)) => {
+            *a = Some(author);
+        }
+        TypeContentToFill::Variant(ref mut variant_selector) => {
+            let mut index_account_id = None;
+
+            for (index, variant_id) in variant_selector.available_variants.iter().enumerate() {
+                if variant_id.name == "Id" {
+                    index_account_id = Some(index);
+                    break;
+                }
+            }
+
+            let index_account_id = index_account_id.unwrap();
+
+            *variant_selector = VariantSelector::new_at::<(), RuntimeMetadataV15>(
+                &variant_selector.available_variants,
+                &mut (),
+                &metadata.types,
+                index_account_id,
+            )
+            .unwrap();
+
+            if variant_selector.selected.fields_to_fill.len() == 1 {
+                if let TypeContentToFill::SpecialType(SpecialTypeToFill::AccountId32(ref mut a)) =
+                    variant_selector.selected.fields_to_fill[0]
+                        .type_to_fill
+                        .content
+                {
+                    *a = Some(author);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // deal with call
+    transaction_to_fill.call = construct_batch_call(metadata, call_set).0;
+
+    // set era to mortal
+    for ext in transaction_to_fill.extensions.iter_mut() {
+        match ext.content {
+            TypeContentToFill::Composite(ref mut fields) => {
+                if fields.len() == 1 {
+                    if let TypeContentToFill::SpecialType(SpecialTypeToFill::Era(ref mut era)) =
+                        fields[0].type_to_fill.content
+                    {
+                        *era = EraToFill::Mortal {
+                            period_entry: DEFAULT_PERIOD,
+                            block_number_entry: None,
+                        };
+                        break;
+                    }
+                }
+            }
+            TypeContentToFill::SpecialType(SpecialTypeToFill::Era(ref mut era)) => {
+                *era = EraToFill::Mortal {
+                    period_entry: DEFAULT_PERIOD,
+                    block_number_entry: None,
+                };
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    transaction_to_fill.populate_block_info(Some(block_hash), Some(block_number.into()));
+    transaction_to_fill.populate_nonce(nonce);
+
+    for ext in transaction_to_fill.extensions.iter_mut() {
+        if ext.finalize().is_none() {
+            println!("{ext:?}");
+        }
+    }
+
+    transaction_to_fill
+}
+
+pub fn construct_batch_call(metadata: &RuntimeMetadataV15, call_set: &[CallToFill]) -> CallToFill {
+    let mut call = prepare_type::<(), RuntimeMetadataV15>(
+        &Ty::Symbol(&metadata.extrinsic.call_ty),
+        &mut (),
+        &metadata.types,
+        Propagated::new(),
+    )
+    .unwrap();
+
+    if let TypeContentToFill::Variant(ref mut pallet_selector) = call.content {
+        let mut index_utility_in_pallets = None;
+
+        for (index_pallet, variant_pallet) in pallet_selector.available_variants.iter().enumerate()
+        {
+            if variant_pallet.name == "Utility" {
+                index_utility_in_pallets = Some(index_pallet);
+                break;
+            }
+        }
+
+        let index_utility_in_pallets = index_utility_in_pallets.unwrap();
+
+        *pallet_selector = VariantSelector::new_at::<(), RuntimeMetadataV15>(
+            &pallet_selector.available_variants,
+            &mut (),
+            &metadata.types,
+            index_utility_in_pallets,
+        )
+        .unwrap();
+
+        if pallet_selector.selected.fields_to_fill.len() == 1 {
+            if let TypeContentToFill::Variant(ref mut method_selector) =
+                pallet_selector.selected.fields_to_fill[0]
+                    .type_to_fill
+                    .content
+            {
+                let mut index_batch_all_in_methods = None;
+
+                for (index_method, variant_method) in
+                    method_selector.available_variants.iter().enumerate()
+                {
+                    if variant_method.name == "batch_all" {
+                        index_batch_all_in_methods = Some(index_method);
+                        break;
+                    }
+                }
+
+                let index_batch_all_in_methods = index_batch_all_in_methods.unwrap();
+
+                *method_selector = VariantSelector::new_at::<(), RuntimeMetadataV15>(
+                    &method_selector.available_variants,
+                    &mut (),
+                    &metadata.types,
+                    index_batch_all_in_methods,
+                )
+                .unwrap();
+
+                if method_selector.selected.fields_to_fill.len() == 1
+                    && method_selector.selected.fields_to_fill[0].field_name
+                        == Some("calls".to_string())
+                {
+                    if let TypeContentToFill::SequenceRegular(ref mut calls_sequence) =
+                        method_selector.selected.fields_to_fill[0]
+                            .type_to_fill
+                            .content
+                    {
+                        calls_sequence.content = call_set
+                            .iter()
+                            .map(|call| call.0.content.to_owned())
+                            .collect();
+                    }
+                }
+            }
+        }
+    }
+    CallToFill(call)
+}
+
+pub fn construct_single_balance_transfer_call(
+    metadata: &RuntimeMetadataV15,
+    balance_transfer_constructor: &BalanceTransferConstructor,
+) -> CallToFill {
+    let mut call = prepare_type::<(), RuntimeMetadataV15>(
+        &Ty::Symbol(&metadata.extrinsic.call_ty),
+        &mut (),
+        &metadata.types,
+        Propagated::new(),
+    )
+    .unwrap();
+
+    if let TypeContentToFill::Variant(ref mut pallet_selector) = call.content {
+        let mut index_balances_in_pallets = None;
+
+        for (index_pallet, variant_pallet) in pallet_selector.available_variants.iter().enumerate()
+        {
+            if variant_pallet.name == "Balances" {
+                index_balances_in_pallets = Some(index_pallet);
+                break;
+            }
+        }
+
+        let index_balances_in_pallets = index_balances_in_pallets.unwrap();
+
+        *pallet_selector = VariantSelector::new_at::<(), RuntimeMetadataV15>(
+            &pallet_selector.available_variants,
+            &mut (),
+            &metadata.types,
+            index_balances_in_pallets,
+        )
+        .unwrap();
+
+        if pallet_selector.selected.fields_to_fill.len() == 1 {
+            if let TypeContentToFill::Variant(ref mut method_selector) =
+                pallet_selector.selected.fields_to_fill[0]
+                    .type_to_fill
+                    .content
+            {
+                let mut index_transfer_in_methods = None;
+
+                for (index_method, variant_method) in
+                    method_selector.available_variants.iter().enumerate()
+                {
+                    match variant_method.name.as_str() {
+                        "transfer_keep_alive" => {
+                            if !balance_transfer_constructor.is_clearing {
+                                index_transfer_in_methods = Some(index_method)
+                            }
+                        }
+                        "transfer_all" => {
+                            if balance_transfer_constructor.is_clearing {
+                                index_transfer_in_methods = Some(index_method)
+                            }
+                        }
+                        _ => {}
+                    }
+                    if index_transfer_in_methods.is_some() {
+                        break;
+                    }
+                }
+
+                let index_transfer_in_methods = index_transfer_in_methods.unwrap();
+
+                *method_selector = VariantSelector::new_at::<(), RuntimeMetadataV15>(
+                    &method_selector.available_variants,
+                    &mut (),
+                    &metadata.types,
+                    index_transfer_in_methods,
+                )
+                .unwrap();
+
+                for field in method_selector.selected.fields_to_fill.iter_mut() {
+                    if let Some(ref mut field_name) = field.field_name {
+                        match field_name.as_str() {
+                            "dest" => {
+                                if let TypeContentToFill::Variant(ref mut dest_selector) =
+                                    field.type_to_fill.content
+                                {
+                                    let mut index_account_id_in_dest_selector = None;
+
+                                    for (index, dest_variant) in
+                                        dest_selector.available_variants.iter().enumerate()
+                                    {
+                                        if dest_variant.name == "Id" {
+                                            index_account_id_in_dest_selector = Some(index);
+                                            break;
+                                        }
+                                    }
+
+                                    let index_account_id_in_dest_selector =
+                                        index_account_id_in_dest_selector.unwrap();
+
+                                    *dest_selector =
+                                        VariantSelector::new_at::<(), RuntimeMetadataV15>(
+                                            &dest_selector.available_variants,
+                                            &mut (),
+                                            &metadata.types,
+                                            index_account_id_in_dest_selector,
+                                        )
+                                        .unwrap();
+
+                                    if dest_selector.selected.fields_to_fill.len() == 1 {
+                                        if let TypeContentToFill::SpecialType(
+                                            SpecialTypeToFill::AccountId32(ref mut account_to_fill),
+                                        ) = dest_selector.selected.fields_to_fill[0]
+                                            .type_to_fill
+                                            .content
+                                        {
+                                            *account_to_fill = Some(
+                                                balance_transfer_constructor.to_account.to_owned(),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            "keep_alive" => {
+                                if let TypeContentToFill::Primitive(PrimitiveToFill::Regular(
+                                    RegularPrimitiveToFill::Bool(ref mut keep_alive_bool),
+                                )) = field.type_to_fill.content
+                                {
+                                    *keep_alive_bool = Some(false);
+                                }
+                            }
+                            "value" => match field.type_to_fill.content {
+                                TypeContentToFill::Primitive(PrimitiveToFill::CompactUnsigned(
+                                    SpecialtyUnsignedToFill {
+                                        content: UnsignedToFill::U128(ref mut value),
+                                        specialty: SpecialtyUnsignedInteger::Balance,
+                                    },
+                                )) => {
+                                    *value = Some(balance_transfer_constructor.amount);
+                                }
+                                TypeContentToFill::Primitive(PrimitiveToFill::Unsigned(
+                                    SpecialtyUnsignedToFill {
+                                        content: UnsignedToFill::U128(ref mut value),
+                                        specialty: SpecialtyUnsignedInteger::Balance,
+                                    },
+                                )) => {
+                                    *value = Some(balance_transfer_constructor.amount);
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    CallToFill(call)
+}
+
+pub fn block_number_query(metadata_v15: &RuntimeMetadataV15) -> FinalizedStorageQuery {
+    let storage_selector = StorageSelector::init(&mut (), metadata_v15).unwrap();
+
+    if let StorageSelector::Functional(mut storage_selector_functional) = storage_selector {
+        let mut index_system_in_pallet_selector = None;
+
+        for (index, pallet) in storage_selector_functional
+            .available_pallets
+            .iter()
+            .enumerate()
+        {
+            if pallet.prefix == "System" {
+                index_system_in_pallet_selector = Some(index);
+                break;
+            }
+        }
+
+        let index_system_in_pallet_selector = index_system_in_pallet_selector.unwrap();
+
+        // System - Number (current block number)
+        storage_selector_functional = StorageSelectorFunctional::new_at::<(), RuntimeMetadataV15>(
+            &storage_selector_functional.available_pallets,
+            &mut (),
+            &metadata_v15.types,
+            index_system_in_pallet_selector,
+        )
+        .unwrap();
+
+        if let EntrySelector::Functional(ref mut entry_selector_functional) =
+            storage_selector_functional.query.entry_selector
+        {
+            let mut entry_index = None;
+            for (index, entry) in entry_selector_functional
+                .available_entries
+                .iter()
+                .enumerate()
+            {
+                if entry.name == "Number" {
+                    entry_index = Some(index);
+                    break;
+                }
+            }
+            let entry_index = entry_index.unwrap();
+            *entry_selector_functional = EntrySelectorFunctional::new_at::<(), RuntimeMetadataV15>(
+                &entry_selector_functional.available_entries,
+                &mut (),
+                &metadata_v15.types,
+                entry_index,
+            )
+            .unwrap();
+
+            storage_selector_functional
+                .query
+                .finalize()
+                .unwrap()
+                .unwrap()
+        } else {
+            panic!("no storage variants in system pallet")
+        }
+    } else {
+        panic!("no pallets with storage")
+    }
+}
 
 pub fn events_entry_metadata(
     metadata: &RuntimeMetadataV15,
@@ -246,7 +818,6 @@ pub fn system_balance_query(
         Err(ErrorChain::StorageQuery)
     }
 }
-
 
 pub fn hashed_key_element(data: &[u8], hasher: &StorageHasher) -> Vec<u8> {
     match hasher {

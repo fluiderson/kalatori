@@ -55,8 +55,6 @@ impl State {
         */
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
 
-        let recipient_ss58 = recipient.to_base58_string(2); // TODO maybe but spec says use "2"
-
         let server_info = ServerInfo {
             // TODO
             version: env!("CARGO_PKG_VERSION"),
@@ -70,7 +68,7 @@ impl State {
             let chain_manager = chain_manager.await.map_err(|_| Error::Fatal)?;
             let state = StateData {
                 currencies,
-                recipient: recipient_ss58,
+                recipient,
                 server_info,
                 db,
                 chain_manager,
@@ -103,7 +101,7 @@ impl State {
                         match state.db.mark_paid(id.clone()).await {
                             Ok(order) => {
                                 // TODO: callback here
-                                state.chain_manager.reap(id, order).await;
+                                drop(state.chain_manager.reap(id, order, state.recipient).await);
                             }
                             Err(e) => {
                                 tracing::error!(
@@ -221,7 +219,7 @@ struct CreateInvoice {
 
 struct StateData {
     currencies: HashMap<String, CurrencyProperties>,
-    recipient: String,
+    recipient: AccountId32,
     server_info: ServerInfo,
     db: Database,
     chain_manager: ChainManager,
@@ -235,7 +233,7 @@ impl StateData {
             Ok(OrderResponse::FoundOrder(OrderStatus {
                 order,
                 message,
-                recipient: self.recipient.clone(),
+                recipient: self.recipient.clone().to_base58_string(2), // TODO maybe but spec says use "2"
                 server_info: self.server_info.clone(),
                 order_info,
             }))
@@ -287,7 +285,7 @@ impl StateData {
         OrderStatus {
             order,
             message,
-            recipient: self.recipient.clone(),
+            recipient: self.recipient.clone().to_base58_string(2), // TODO maybe but spec says use "2"
             server_info: self.server_info.clone(),
             order_info,
         }

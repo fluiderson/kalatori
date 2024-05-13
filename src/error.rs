@@ -45,7 +45,6 @@ pub enum Error {
     #[error("Receiver account could not be parsed: {0:?}")]
     RecipientAccount(substrate_crypto_light::error::Error),
 
-
     #[error("Fatal error. System is shutting down.")]
     Fatal,
 
@@ -91,7 +90,6 @@ impl From<std::io::Error> for Error {
         Error::IoError(e)
     }
 }
-
 
 #[derive(Debug, thiserror::Error)]
 pub enum ErrorChain {
@@ -407,7 +405,6 @@ pub enum ErrorSigner {
 
     #[error("Derivation failed: {0:?}")]
     InvalidDerivation(CryptoError),
-
 }
 
 impl From<ErrorWordList> for ErrorSigner {

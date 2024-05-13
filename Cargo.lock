@@ -241,15 +241,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blake2"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
-dependencies = [
- "digest 0.10.7",
-]
-
-[[package]]
 name = "blake2-rfc"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1130,7 +1121,7 @@ dependencies = [
  "sp-crypto-hashing",
  "substrate-constructor",
  "substrate-crypto-light",
- "substrate_parser 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "substrate_parser",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -2103,20 +2094,6 @@ dependencies = [
 
 [[package]]
 name = "sp-arithmetic"
-version = "24.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afa823ca5adc490d47dccb41d69ad482bc57a317bd341de275868378f48f131c"
-dependencies = [
- "integer-sqrt",
- "num-traits",
- "parity-scale-codec",
- "scale-info",
- "sp-std",
- "static_assertions",
-]
-
-[[package]]
-name = "sp-arithmetic"
 version = "25.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "910c07fa263b20bf7271fdd4adcb5d3217dfdac14270592e0780223542e7e114"
@@ -2127,15 +2104,6 @@ dependencies = [
  "scale-info",
  "sp-std",
  "static_assertions",
-]
-
-[[package]]
-name = "sp-core-hashing"
-version = "16.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f812cb2dff962eb378c507612a50f1c59f52d92eb97b710f35be3c2346a3cd7"
-dependencies = [
- "sp-crypto-hashing",
 ]
 
 [[package]]
@@ -2199,10 +2167,10 @@ dependencies = [
  "parity-scale-codec",
  "primitive-types",
  "scale-info",
- "sp-arithmetic 25.0.0",
+ "sp-arithmetic",
  "sp-crypto-hashing",
  "substrate-crypto-light",
- "substrate_parser 0.6.1 (git+https://github.com/Alzymologist/substrate-parser)",
+ "substrate_parser",
 ]
 
 [[package]]
@@ -2228,27 +2196,6 @@ dependencies = [
 [[package]]
 name = "substrate_parser"
 version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3692eaf5785c67a07d884a3308c783916307300085fe160b8d9277b389505fb9"
-dependencies = [
- "base58",
- "bitvec",
- "blake2",
- "external-memory-tools",
- "frame-metadata",
- "hex",
- "num-bigint",
- "parity-scale-codec",
- "plot_icon",
- "primitive-types",
- "scale-info",
- "sp-arithmetic 24.0.0",
- "sp-core-hashing",
-]
-
-[[package]]
-name = "substrate_parser"
-version = "0.6.1"
 source = "git+https://github.com/Alzymologist/substrate-parser#c227d40952e3d11b384d30e294f08be2abd1ad43"
 dependencies = [
  "bitvec",
@@ -2257,9 +2204,10 @@ dependencies = [
  "hex",
  "num-bigint",
  "parity-scale-codec",
+ "plot_icon",
  "primitive-types",
  "scale-info",
- "sp-arithmetic 25.0.0",
+ "sp-arithmetic",
  "sp-crypto-hashing",
  "substrate-crypto-light",
 ]
