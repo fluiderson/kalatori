@@ -191,6 +191,20 @@ impl Database {
             // No process forking beyond this point!
             while let Some(request) = rx.recv().await {
                 match request {
+                    DbRequest::ActiveOrderList(res) => {
+                        let _unused = res.send(
+                            Ok(
+                                orders
+                                    .iter()
+                                    .filter_map(|a| a.ok())
+                                    .filter_map(|(a, b)| 
+                                        match (String::decode(&mut &a[..]), OrderInfo::decode(&mut &b[..])) {
+                                            (Ok(a), Ok(b)) => Some((a, b)),
+                                            _ => None
+                                        })
+                                    .filter(|(a, b)| b.payment_status == PaymentStatus::Pending).collect())
+                            );
+                    }
                     DbRequest::CreateOrder(request) => {
                         let _unused = request.res.send(create_order(
                             request.order,
@@ -223,6 +237,15 @@ impl Database {
         });
 
         Ok(Self { tx })
+    }
+
+    pub async fn order_list(&self) -> Result<Vec<(String, OrderInfo)>, ErrorDb> {
+        let (res, rx) = oneshot::channel();
+        let _unused = self
+            .tx
+            .send(DbRequest::ActiveOrderList(res))
+            .await;
+        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 
     pub async fn create_order(
@@ -287,6 +310,7 @@ impl Database {
 
 enum DbRequest {
     CreateOrder(CreateOrder),
+    ActiveOrderList(oneshot::Sender<Result<Vec<(String, OrderInfo)>, ErrorDb>>),
     ReadOrder(ReadOrder),
     MarkPaid(MarkPaid),
     MarkWithdrawn(ModifyOrder),

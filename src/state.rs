@@ -63,9 +63,12 @@ impl State {
             kalatori_remark: remark.clone(),
         };
 
+
         // Remember to always spawn async here or things might deadlock
-        task_tracker.spawn("State Handler", async move {
+        task_tracker.clone().spawn("State Handler", async move {
             let chain_manager = chain_manager.await.map_err(|_| Error::Fatal)?;
+            let db_wakeup = db.clone();
+            let chain_manager_wakeup = chain_manager.clone();
             let state = StateData {
                 currencies,
                 recipient,
@@ -74,6 +77,15 @@ impl State {
                 chain_manager,
                 signer,
             };
+
+            // TODO: consider doing this even more lazy
+            let order_list = db_wakeup.order_list().await?;
+            task_tracker.spawn("Restore saved orders", async move {
+                for (order, order_details) in order_list {
+                    chain_manager_wakeup.add_invoice(order, order_details).await;
+                }
+                Ok("All saved orders restored".into())
+            });
 
             while let Some(request) = rx.recv().await {
                 match request {
@@ -283,7 +295,7 @@ impl StateData {
                     order_info,
                     String::from("Order with this ID was already processed"),
                 )))
-            }
+    }
         }
     }
 
