@@ -26,8 +26,6 @@ mod chain;
 mod database;
 mod definitions;
 mod error;
-mod payout;
-mod rpc;
 mod server;
 mod signer;
 mod state;
@@ -36,7 +34,7 @@ mod utils;
 use crate::definitions::{Chain, Entropy, Timestamp, Version};
 use database::ConfigWoChains;
 use error::Error;
-use rpc::ChainManager;
+use chain::ChainManager;
 use signer::Signer;
 use state::State;
 
@@ -254,7 +252,7 @@ fn default_filter() -> String {
     const TARGETS: &[&str] = &[
         callback::MODULE,
         database::MODULE,
-        rpc::MODULE,
+        chain::MODULE,
         server::MODULE,
         env!("CARGO_PKG_NAME"),
     ];

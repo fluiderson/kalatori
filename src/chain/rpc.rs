@@ -1,8 +1,11 @@
+//! Blockchain operations that actually require calling the chain
+
 use crate::{
     chain::{
-        asset_balance_query, base58prefix, block_number_query, events_entry_metadata,
+        definitions::{EventFilter, WatchAccount,},
+        utils::{asset_balance_query, base58prefix, block_number_query, events_entry_metadata,
         hashed_key_element, pallet_index, storage_key, system_balance_query,
-        system_properties_to_short_specs, unit, was_balance_received_at_account,
+        system_properties_to_short_specs, unit, was_balance_received_at_account},
     },
     definitions::api_v2::{CurrencyProperties, OrderInfo},
     definitions::{
@@ -10,7 +13,6 @@ use crate::{
         AssetInfo, Balance, BlockHash, Chain, NativeToken, Nonce, PalletIndex, Timestamp,
     },
     error::{Error, ErrorChain, NotHex},
-    payout::payout,
     signer::Signer,
     state::State,
     utils::unhex,
@@ -43,13 +45,7 @@ use substrate_parser::{
     storage_data::{KeyData, KeyPart},
     AsMetadata, ShortSpecs,
 };
-use tokio::{
-    sync::{mpsc, oneshot},
-    time::{timeout, Duration},
-};
-use tokio_util::sync::CancellationToken;
 
-pub const MODULE: &str = module_path!();
 
 const MAX_BLOCK_NUMBER_ERROR: &str = "block number type overflow is occurred";
 const BLOCK_NONCE_ERROR: &str = "failed to fetch an account nonce by the scanner client";
@@ -69,33 +65,14 @@ const TRANSFER: &str = "Transfer";
 
 const AURA: &str = "AuraApi";
 
-#[derive(Debug)]
-pub struct EventFilter<'a> {
-    pub pallet: &'a str,
-    pub optional_event_variant: Option<&'a str>,
-}
-
-#[derive(Debug)]
-struct ChainProperties {
-    specs: ShortSpecs,
-    metadata: RuntimeMetadataV15,
-    existential_deposit: Option<Balance>,
-    assets_pallet: Option<AssetsPallet>,
-    block_hash_count: BlockNumber,
-    account_lifetime: BlockNumber,
-    depth: Option<NonZeroU64>,
-}
-
-#[derive(Debug)]
-struct AssetsPallet {
-    multi_location: Option<PalletIndex>,
-    assets: HashMap<AssetId, AssetProperties>,
-}
-
-#[derive(Debug)]
-struct AssetProperties {
-    min_balance: Balance,
-    decimals: Decimals,
+pub async fn subscribe_blocks(client: &WsClient) -> Result<Subscription<BlockHead>, ErrorChain> {
+    Ok(client
+            .subscribe(
+                "chain_subscribeFinalizedHeads",
+                rpc_params![],
+                "unsubscribe blocks",
+            )
+            .await?)
 }
 
 pub async fn get_value_from_storage(
@@ -133,7 +110,7 @@ pub async fn get_keys_from_storage(
 
 /// fetch genesis hash, must be a hexadecimal string transformable into
 /// H256 format
-async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
+pub async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
     let genesis_hash_request: Value = client
         .request(
             "chain_getBlockHash",
@@ -183,7 +160,7 @@ pub async fn block_hash(
 }
 
 /// fetch metadata at known block
-async fn metadata(client: &WsClient, block: &BlockHash) -> Result<RuntimeMetadataV15, ErrorChain> {
+pub async fn metadata(client: &WsClient, block: &BlockHash) -> Result<RuntimeMetadataV15, ErrorChain> {
     let block_hash_string = block.to_string();
     let metadata_request: Value = client
         .request(
@@ -222,7 +199,7 @@ async fn metadata(client: &WsClient, block: &BlockHash) -> Result<RuntimeMetadat
 }
 
 // fetch specs at known block
-async fn specs(
+pub async fn specs(
     client: &WsClient,
     metadata: &RuntimeMetadataV15,
     block_hash: &BlockHash,
@@ -237,466 +214,7 @@ async fn specs(
     }
 }
 
-#[derive(Debug)]
-pub struct Currency {
-    chain: String,
-    asset: Option<AssetId>,
-}
-
-#[derive(Debug)]
-pub struct ConnectedChain {
-    rpc: String,
-    client: WsClient,
-    genesis: BlockHash,
-    properties: ChainProperties,
-}
-
-/// RPC server handle
-#[derive(Clone, Debug)]
-pub struct ChainManager {
-    pub tx: tokio::sync::mpsc::Sender<ChainRequest>,
-}
-
-impl ChainManager {
-    /// Run once to start all chain connections; this should be very robust, if manager fails
-    /// - all modules should be restarted probably.
-    pub fn ignite(
-        chain: Vec<Chain>,
-        state: State,
-        signer: Signer,
-        task_tracker: TaskTracker,
-        cancellation_token: CancellationToken,
-    ) -> Result<Self, Error> {
-        /*
-                let client = WsClientBuilder::default()
-                    .build(rpc.clone())
-                    .await
-                    .map_err(ErrorChain::Client)?;
-        */
-        let (tx, mut rx) = mpsc::channel(1024);
-
-        let mut watch_chain = HashMap::new();
-
-        let mut currency_map = HashMap::new();
-
-        // start network monitors
-        for c in chain {
-            let (chain_tx, mut chain_rx) = mpsc::channel(1024);
-            watch_chain.insert(c.name.clone(), chain_tx.clone());
-            if let Some(ref a) = c.native_token {
-                if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
-                    return Err(Error::DuplicateCurrency(a.name.clone()));
-                }
-            }
-            for a in &c.asset {
-                if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
-                    return Err(Error::DuplicateCurrency(a.name.clone()));
-                }
-            }
-
-            start_chain_watch(
-                c,
-                &currency_map,
-                chain_tx.clone(),
-                chain_rx,
-                state.interface(),
-                signer.interface(),
-                task_tracker.clone(),
-                cancellation_token.clone(),
-            )?;
-        }
-
-        task_tracker
-            .clone()
-            .spawn("Blockchain connections manager", async move {
-                // start requests engine
-                while let Some(request) = rx.recv().await {
-                    match request {
-                        ChainRequest::WatchAccount(request) => {
-                            if let Some(chain) = currency_map.get(&request.currency) {
-                                if let Some(receiver) = watch_chain.get(chain) {
-                                    let _unused = receiver
-                                        .send(ChainTrackerRequest::WatchAccount(request))
-                                        .await;
-                                } else {
-                                    let _unused = request
-                                        .res
-                                        .send(Err(ErrorChain::InvalidChain(chain.to_string())));
-                                }
-                            } else {
-                                let _unused = request
-                                    .res
-                                    .send(Err(ErrorChain::InvalidCurrency(request.currency)));
-                            }
-                        }
-                        ChainRequest::Reap(request) => {
-                            if let Some(chain) = currency_map.get(&request.currency) {
-                                if let Some(receiver) = watch_chain.get(chain) {
-                                    let _unused =
-                                        receiver.send(ChainTrackerRequest::Reap(request)).await;
-                                } else {
-                                    let _unused = request
-                                        .res
-                                        .send(Err(ErrorChain::InvalidChain(chain.to_string())));
-                                }
-                            } else {
-                                let _unused = request
-                                    .res
-                                    .send(Err(ErrorChain::InvalidCurrency(request.currency)));
-                            }
-                        }
-                        ChainRequest::Shutdown(res) => {
-                            for (name, chain) in watch_chain.drain() {
-                                let (tx, rx) = oneshot::channel();
-                                let _unused = chain.send(ChainTrackerRequest::Shutdown(tx)).await;
-                                let _ = rx.await;
-                            }
-                            let _ = res.send(());
-                            break;
-                        }
-                    }
-                }
-
-                Ok("Chain manager is shutting down".into())
-            });
-
-        Ok(Self { tx })
-    }
-
-    pub async fn add_invoice(&self, id: String, order: OrderInfo) -> Result<(), ErrorChain> {
-        let (res, rx) = oneshot::channel();
-        self.tx
-            .send(ChainRequest::WatchAccount(WatchAccount::new(
-                id, order, None, res,
-            )?))
-            .await
-            .map_err(|_| ErrorChain::MessageDropped)?;
-        rx.await.map_err(|_| ErrorChain::MessageDropped)?
-    }
-
-    pub async fn reap(
-        &self,
-        id: String,
-        order: OrderInfo,
-        recipient: AccountId32,
-    ) -> Result<(), ErrorChain> {
-        let (res, rx) = oneshot::channel();
-        self.tx
-            .send(ChainRequest::Reap(WatchAccount::new(
-                id,
-                order,
-                Some(recipient),
-                res,
-            )?))
-            .await
-            .map_err(|_| ErrorChain::MessageDropped)?;
-        rx.await.map_err(|_| ErrorChain::MessageDropped)?
-    }
-
-    pub async fn shutdown(&self) -> () {
-        let (tx, rx) = oneshot::channel();
-        let _unused = self.tx.send(ChainRequest::Shutdown(tx)).await;
-        let _ = rx.await;
-        ()
-    }
-}
-
-enum ChainRequest {
-    WatchAccount(WatchAccount),
-    Reap(WatchAccount),
-    Shutdown(oneshot::Sender<()>),
-}
-
-enum ChainTrackerRequest {
-    WatchAccount(WatchAccount),
-    NewBlock(String),
-    Reap(WatchAccount),
-    Shutdown(oneshot::Sender<()>),
-}
-
-#[derive(Debug)]
-struct WatchAccount {
-    id: String,
-    address: AccountId32,
-    currency: String,
-    amount: Balance,
-    recipient: Option<AccountId32>,
-    res: oneshot::Sender<Result<(), ErrorChain>>,
-}
-
-impl WatchAccount {
-    fn new(
-        id: String,
-        order: OrderInfo,
-        recipient: Option<AccountId32>,
-        res: oneshot::Sender<Result<(), ErrorChain>>,
-    ) -> Result<WatchAccount, ErrorChain> {
-        Ok(WatchAccount {
-            id,
-            address: AccountId32::from_base58_string(&order.payment_account)
-                .map_err(ErrorChain::InvoiceAccount)?
-                .0,
-            currency: order.currency.currency,
-            amount: Balance::parse(order.amount, order.currency.decimals),
-            recipient,
-            res,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Invoice {
-    pub id: String,
-    pub address: AccountId32,
-    pub currency: String,
-    pub amount: Balance,
-    pub recipient: Option<AccountId32>,
-}
-
-impl Invoice {
-    fn from_request(watch_account: WatchAccount) -> Self {
-        drop(watch_account.res.send(Ok(())));
-        Invoice {
-            id: watch_account.id,
-            address: watch_account.address,
-            currency: watch_account.currency,
-            amount: watch_account.amount,
-            recipient: watch_account.recipient,
-        }
-    }
-
-    pub async fn balance(
-        &self,
-        client: &WsClient,
-        chain_watcher: &ChainWatcher,
-        block: &H256,
-    ) -> Result<Balance, ErrorChain> {
-        let currency = chain_watcher
-            .assets
-            .get(&self.currency)
-            .ok_or(ErrorChain::InvalidCurrency(self.currency.clone()))?;
-        if let Some(asset_id) = currency.asset_id {
-            let balance = asset_balance_at_account(
-                client,
-                &block,
-                &chain_watcher.metadata,
-                &self.address,
-                asset_id,
-            )
-            .await?;
-            Ok(balance)
-        } else {
-            let balance =
-                system_balance_at_account(client, &block, &chain_watcher.metadata, &self.address)
-                    .await?;
-            Ok(balance)
-        }
-    }
-
-    pub async fn check(
-        &self,
-        client: &WsClient,
-        chain_watcher: &ChainWatcher,
-        block: &H256,
-    ) -> Result<bool, ErrorChain> {
-        Ok(self.balance(client, chain_watcher, block).await? >= self.amount)
-    }
-}
-
-fn start_chain_watch(
-    c: Chain,
-    currency_map: &HashMap<String, String>,
-    chain_tx: mpsc::Sender<ChainTrackerRequest>,
-    mut chain_rx: mpsc::Receiver<ChainTrackerRequest>,
-    state: State,
-    signer: Signer,
-    task_tracker: TaskTracker,
-    cancellation_token: CancellationToken,
-) -> Result<(), ErrorChain> {
-    //let (block_source_tx, mut block_source_rx) = mpsc::channel(16);
-    task_tracker
-        .clone()
-        .spawn(format!("Chain {} watcher", c.name.clone()), async move {
-            let watchdog = 30000;
-            let mut watched_accounts = HashMap::new();
-            let mut shutdown = false;
-            for endpoint in c.endpoints.iter().cycle() {
-                // not restarting chain if shutdown is in progress
-                if shutdown || cancellation_token.is_cancelled() {
-                    break;
-                }
-                if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
-                    // prepare chain
-                    let watcher = match ChainWatcher::prepare_chain(&client, &mut watched_accounts, endpoint, chain_tx.clone(), state.interface(), task_tracker.clone())
-                        .await
-                    {
-                        Ok(a) => a,
-                        Err(e) => {
-                            tracing::info!(
-                                "Failed to connect to chain {}, due to {:?} switching RPC server...",
-                                c.name,
-                                e
-                            );
-                            continue;
-                        }
-                    };
-
-
-                    // fulfill requests
-                    while let Ok(Some(request)) =
-                        timeout(Duration::from_millis(watchdog), chain_rx.recv()).await
-                    {
-                        match request {
-                            ChainTrackerRequest::NewBlock(block) => {
-                                let block = match block_hash(&client, Some(block)).await {
-                                    Ok(a) => a,
-                                    Err(e) => {
-                                        tracing::info!(
-                                        "Failed to receive block in chain {}, due to {:?} switching RPC server...",
-                                        c.name,
-                                        e
-                            );
-                            continue;
-
-                                    },
-                                };
-                                let events = events_at_block(
-                                    &client,
-                                    &block,
-                                    Some(EventFilter {
-                                        pallet: "Balances",
-                                        optional_event_variant: Some("Transfer"),
-                                    }),
-                                    events_entry_metadata(&watcher.metadata)?,
-                                    &watcher.metadata.types,
-                                    )
-                                    .await
-                                    .unwrap();
-
-                                let mut id_remove_list = Vec::new();
-                                for (id, invoice) in watched_accounts.iter() {
-                                    if events.iter().any(|event| was_balance_received_at_account(&invoice.address, &event.0.fields)) {
-                                        match invoice.check(&client, &watcher, &block).await {
-                                            Ok(true) => {
-                                                state.order_paid(id.clone()).await;
-                                                id_remove_list.push(id.to_owned());
-                                            }
-                                            Ok(false) => (),
-                                            Err(e) => {
-                                                tracing::warn!("account fetch error: {0:?}", e);
-                                            }
-                                        }
-                                    }
-                                }
-
-                                for id in id_remove_list {
-                                    watched_accounts.remove(&id);
-                                }
-                            }
-                            ChainTrackerRequest::WatchAccount(request) => {
-                                watched_accounts.insert(request.id.clone(), Invoice::from_request(request));
-                            }
-                            ChainTrackerRequest::Reap(request) => {
-                                let id = request.id.clone();
-                                let rpc = endpoint.clone();
-                                let reap_state_handle = state.interface();
-                                let watcher_for_reaper = watcher.clone();
-                                let signer_for_reaper = signer.interface();
-                                task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
-                                    payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
-                                    Ok(format!("Payout attempt for order {} terminated", id).into())
-                                });
-                            }
-                            ChainTrackerRequest::Shutdown(res) => {
-                                shutdown = true;
-                                let _ = res.send(());
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(format!("Chain {} monitor shut down", c.name).into())
-        });
-    Ok(())
-}
-
-#[derive(Debug, Clone)]
-pub struct ChainWatcher {
-    pub genesis_hash: H256,
-    pub metadata: RuntimeMetadataV15,
-    pub specs: ShortSpecs,
-    pub assets: HashMap<String, CurrencyProperties>,
-}
-
-impl ChainWatcher {
-    pub async fn prepare_chain(
-        client: &WsClient,
-        watched_accounts: &mut HashMap<String, Invoice>,
-        rpc_url: &str,
-        chain_tx: mpsc::Sender<ChainTrackerRequest>,
-        state: State,
-        task_tracker: TaskTracker,
-    ) -> Result<Self, ErrorChain> {
-        let genesis_hash = genesis_hash(&client).await?;
-        let mut blocks: Subscription<BlockHead> = client
-            .subscribe(
-                "chain_subscribeFinalizedHeads",
-                rpc_params![],
-                "unsubscribe blocks",
-            )
-            .await?;
-        let block = next_block(client, &mut blocks).await?;
-        let metadata = metadata(&client, &block).await?;
-        let specs = specs(&client, &metadata, &block).await?;
-        let assets =
-            assets_set_at_block(&client, &block, &metadata, rpc_url, specs.clone()).await?;
-
-        let chain = ChainWatcher {
-            genesis_hash,
-            metadata,
-            specs,
-            assets,
-        };
-
-        // check monitored accounts
-        let mut id_remove_list = Vec::new();
-        for (id, account) in watched_accounts.iter() {
-            match account.check(client, &chain, &block).await {
-                Ok(true) => {
-                    state.order_paid(id.clone()).await;
-                    id_remove_list.push(id.to_owned());
-                }
-                Ok(false) => (),
-                Err(e) => {
-                    tracing::warn!("account fetch error: {0:?}", e);
-                }
-            }
-        }
-        for id in id_remove_list {
-            watched_accounts.remove(&id);
-        }
-
-        task_tracker.spawn("watching blocks at {rpc_url}", async move {
-            while let Ok(block) = next_block_number(&mut blocks).await {
-                if chain_tx
-                    .send(ChainTrackerRequest::NewBlock(block))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            // this should reset chain monitor on timeout;
-            // but if this breaks, it meand that the latter is already down either way
-            Ok("Block watch at {rpc_url} stopped".into())
-        });
-
-        Ok(chain)
-    }
-}
-
-async fn next_block_number(blocks: &mut Subscription<BlockHead>) -> Result<String, ErrorChain> {
+pub async fn next_block_number(blocks: &mut Subscription<BlockHead>) -> Result<String, ErrorChain> {
     match blocks.next().await {
         Some(Ok(a)) => Ok(a.number),
         Some(Err(e)) => Err(e.into()),
@@ -704,7 +222,7 @@ async fn next_block_number(blocks: &mut Subscription<BlockHead>) -> Result<Strin
     }
 }
 
-async fn next_block(
+pub async fn next_block(
     client: &WsClient,
     blocks: &mut Subscription<BlockHead>,
 ) -> Result<H256, ErrorChain> {
@@ -713,7 +231,7 @@ async fn next_block(
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
-struct BlockHead {
+pub struct BlockHead {
     //digest: Value,
     //extrinsics_root: String,
     pub number: String,
@@ -1053,7 +571,7 @@ pub async fn asset_balance_at_account(
     }
 }
 
-async fn system_balance_at_account(
+pub async fn system_balance_at_account(
     client: &WsClient,
     block_hash: &H256,
     metadata_v15: &RuntimeMetadataV15,
