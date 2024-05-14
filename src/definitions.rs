@@ -314,7 +314,7 @@ pub mod api_v2 {
 )]
 
 fn balance_insufficient_precision() {
-    const DECIMALS: Decimals = 10;
+    const DECIMALS: api_v2::Decimals = 10;
 
     let float = 931395.862219815_3;
     let parsed = Balance::parse(float, DECIMALS);
