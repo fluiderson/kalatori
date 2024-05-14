@@ -1,18 +1,26 @@
 use crate::{BlockNumber, Timestamp};
-use redb::TableDefinition;
+use redb::{TableDefinition, TypeName, Value};
 use subxt::ext::codec::{Compact, Decode, Encode};
 
 // Tables
 
-pub const ROOT: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("root");
-pub const KEYS: TableDefinition<'_, PublicSlot, U256Slot> = TableDefinition::new("keys");
-pub const CHAINS: TableDefinition<'_, ChainHash, BlockNumber> = TableDefinition::new("chains");
-// const INVOICES: TableDefinition<'_, InvoiceKey, Invoice> = TableDefinition::new("invoices");
+pub const ROOT_NAME: &str = "root";
+pub const ROOT: TableDefinition<'_, &str, &[u8]> = TableDefinition::new(ROOT_NAME);
+pub const KEYS_NAME: &str = "keys";
+pub const KEYS: TableDefinition<'_, PublicSlot, U256Slot> = TableDefinition::new(KEYS_NAME);
+pub const CHAINS_NAME: &str = "chains";
+pub const CHAINS: TableDefinition<'_, ChainHash, BlockNumber> = TableDefinition::new(CHAINS_NAME);
+pub const INVOICES_NAME: &str = "invoices";
+pub const INVOICES: TableDefinition<'_, InvoiceKey, Invoice> = TableDefinition::new(INVOICES_NAME);
 
-// const ACCOUNTS: &str = "accounts";
+const SWEEP: &str = "sweep";
 
-// type ACCOUNTS_KEY = Account;
-// type ACCOUNTS_VALUE = (InvoiceKey, Nonce);
+type SWEEP_KEY = InvoiceKey;
+
+pub const ACCOUNTS: &str = "accounts";
+
+pub type ACCOUNTS_KEY = Account;
+pub type ACCOUNTS_VALUE = InvoiceKey;
 
 // const TRANSACTIONS: &str = "transactions";
 
@@ -60,6 +68,58 @@ pub struct ChainProperties {
 // #[codec(crate = subxt::ext::codec)]
 // struct Transfer(Option<Compact<AssetId>>, #[codec(compact)] BalanceSlot);
 
+#[derive(Encode, Decode, Debug)]
+#[codec(crate = subxt::ext::codec)]
+pub struct Invoice {
+    pub paid: bool,
+}
+
+impl Value for Invoice {
+    type SelfType<'a> = Self;
+    type AsBytes<'a> = Vec<u8>;
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    fn from_bytes<'a>(mut data: &[u8]) -> Self::SelfType<'a> {
+        Self::decode(&mut data).unwrap()
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a> {
+        Self::encode(value)
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new(stringify!(Invoice))
+    }
+}
+
+// impl Value for Invoice {
+//     type SelfType<'a> = Self;
+
+//     type AsBytes<'a> = Vec<u8>;
+
+//     fn fixed_width() -> Option<usize> {
+//         None
+//     }
+
+//     fn from_bytes<'a>(mut data: &[u8]) -> Self::SelfType<'_>
+//     where
+//         Self: 'a,
+//     {
+//         Self::decode(&mut data).unwrap()
+//     }
+
+//     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'a>) -> Self::AsBytes<'_> {
+//         value.encode()
+//     }
+
+//     fn type_name() -> TypeName {
+//         TypeName::new(stringify!(Invoice))
+//     }
+// }
+
 // #[derive(Encode, Decode, Debug)]
 // #[codec(crate = subxt::ext::codec)]
 // struct Invoice {
@@ -103,31 +163,6 @@ pub struct ChainProperties {
 // struct TransferTx {
 //     recipient: Account,
 //     exact_amount: Option<Compact<BalanceSlot>>,
-// }
-
-// impl Value for Invoice {
-//     type SelfType<'a> = Self;
-
-//     type AsBytes<'a> = Vec<u8>;
-
-//     fn fixed_width() -> Option<usize> {
-//         None
-//     }
-
-//     fn from_bytes<'a>(mut data: &[u8]) -> Self::SelfType<'_>
-//     where
-//         Self: 'a,
-//     {
-//         Self::decode(&mut data).unwrap()
-//     }
-
-//     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'a>) -> Self::AsBytes<'_> {
-//         value.encode()
-//     }
-
-//     fn type_name() -> TypeName {
-//         TypeName::new(stringify!(Invoice))
-//     }
 // }
 
 // pub struct ConfigWoChains {

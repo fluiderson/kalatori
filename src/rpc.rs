@@ -1,12 +1,14 @@
 use crate::{
-    AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, NativeToken,
+    database::{ChainHash, State, StoredChainInfo},
+    AssetId, AssetInfo, Balance, BlockHash, BlockNumber, Chain, Decimals, HashMap, NativeToken,
     OnlineClient, PalletIndex, RuntimeConfig, TaskTracker, Timestamp,
 };
+use ahash::HashMapExt;
 use anyhow::{Context, Result};
 use scale_info::TypeDef;
 use std::{
     borrow::Cow,
-    collections::{hash_map::Entry, HashMap},
+    collections::hash_map::Entry,
     error::Error,
     fmt::{self, Debug, Display, Formatter},
     sync::Arc,
@@ -137,28 +139,21 @@ fn fetch_assets_pallet_index(metadata: &Metadata) -> Result<Option<PalletIndex>>
     })
 }
 
-async fn fetch_finalized_head_hash(methods: &LegacyRpcMethods<RuntimeConfig>) -> Result<BlockHash> {
-    methods
+async fn fetch_finalized_head_number_and_hash(
+    methods: &LegacyRpcMethods<RuntimeConfig>,
+) -> Result<(BlockNumber, BlockHash)> {
+    let head_hash = methods
         .chain_get_finalized_head()
         .await
-        .context("failed to get the finalized head hash")
+        .context("failed to get the finalized head hash")?;
+    let head = methods
+        .chain_get_block(Some(head_hash))
+        .await
+        .context("failed to get the finalized head")?
+        .context("received nothing after requesting the finalized head")?;
+
+    Ok((head.block.header.number, head_hash))
 }
-
-// async fn fetch_finalized_head_number_and_hash(
-//     methods: &LegacyRpcMethods<RuntimeConfig>,
-// ) -> Result<(BlockNumber, BlockHash)> {
-//     let head_hash = methods
-//         .chain_get_finalized_head()
-//         .await
-//         .context("failed to get the finalized head hash")?;
-//     let head = methods
-//         .chain_get_block(Some(head_hash))
-//         .await
-//         .context("failed to get the finalized head")?
-//         .context("received nothing after requesting the finalized head")?;
-
-//     Ok((head.block.header.number, head_hash))
-// }
 
 async fn fetch_runtime(
     methods: &LegacyRpcMethods<RuntimeConfig>,
@@ -245,7 +240,7 @@ async fn try_add_currency(
 
     if let Some((same_name, _)) = rx.await.unwrap() {
         Err(anyhow::anyhow!(
-            "config already has the native token or an asset with the name {same_name:?}, all currency names must be unique"
+            "config has more than one native token or asset with the name {same_name:?}, all currency names must be unique"
         ))
     } else {
         tracing::info!(?asset, "Registered the currency {:?}.", arc_name);
@@ -640,13 +635,14 @@ async fn prepare_chain(
     );
 
     let methods = LegacyRpcMethods::new(rpc_client.clone());
-    let backend = Arc::new(LegacyBackend::builder().build(rpc_client.clone()));
+    let backend: Arc<LegacyBackend<RuntimeConfig>> =
+        Arc::new(LegacyBackend::builder().build(rpc_client.clone()));
 
     let genesis = methods
         .genesis_hash()
         .await
         .context("failed to fetch the genesis hash")?;
-    let finalized_hash = fetch_finalized_head_hash(&methods).await?;
+    let (finalized_number, finalized_hash) = fetch_finalized_head_number_and_hash(&methods).await?;
     let ((metadata, is_metadata_legacy), runtime_version) =
         fetch_runtime(&methods, &*backend, finalized_hash).await?;
 
@@ -678,7 +674,7 @@ async fn prepare_chain(
         constants: &constants,
         native_token_option: chain.native_token,
         assets_option: chain.asset,
-        account_lifetime,
+        account_lifetime: account_lifetime_in_blocks,
         chain_currencies: &mut chain_currencies,
     })
     .await?;
@@ -698,6 +694,7 @@ async fn prepare_chain(
                     genesis,
                     currencies: chain_currencies,
                     inner: InnerConnectedChain {
+                        prepared: (finalized_number, finalized_hash),
                         methods,
                         backend,
                         client,
@@ -728,6 +725,7 @@ pub struct ConnectedChain {
 }
 
 pub struct InnerConnectedChain {
+    pub prepared: (BlockNumber, BlockHash),
     methods: LegacyRpcMethods<RuntimeConfig>,
     backend: Arc<LegacyBackend<RuntimeConfig>>,
     client: OnlineClient,
@@ -760,43 +758,72 @@ impl Display for Shutdown {
     }
 }
 
-pub struct Processor {
-    // state: Arc<State>,
-    // backend: Arc<LegacyBackend<RuntimeConfig>>,
-    // shutdown_notification: CancellationToken,
-    // methods: LegacyRpcMethods<RuntimeConfig>,
-    // client: OnlineClient,
-    // storage: StorageClient<RuntimeConfig, OnlineClient>,
+pub struct Processor<'a> {
+    hash: ChainHash,
+    chain: InnerConnectedChain,
+    state: &'a Arc<State>,
 }
 
-impl Processor {
-    // #[tracing::instrument(skip_all, fields(chain = chain.name))]
-    // pub async fn ignite()
+impl Processor<'_> {
+    pub async fn ignite(
+        db_chain_info: StoredChainInfo,
+        chain: InnerConnectedChain,
+        state: &Arc<State>,
+    ) -> Result<Cow<'static, str>> {
+        Processor {
+            hash: db_chain_info.hash,
+            chain,
+            state,
+        }
+        .execute(db_chain_info.last_block)
+        .await
+        .or_else(|error| {
+            error.downcast().map(|Shutdown| {
+                format!(
+                    "The {:?} chain processor is shut down.",
+                    state.chain_name(db_chain_info.hash)
+                )
+                .into()
+            })
+        })
+    }
 
-    //     pub async fn ignite(state: Arc<State>, notif: CancellationToken) -> Result<Cow<'static, str>> {
-    //         let client = Client::builder().build(state.rpc.clone()).await.unwrap();
-    //         let rpc_c = RpcClient::new(client);
-    //         let methods = LegacyRpcMethods::new(rpc_c.clone());
-    //         let backend = Arc::new(LegacyBackend::builder().build(rpc_c));
-    //         let onl = OnlineClient::from_backend(backend.clone()).await.unwrap();
-    //         let st = onl.storage();
+    async fn execute(&self, last_block_option: Option<BlockNumber>) -> Result<Cow<'static, str>> {
+        // let (head_hash, head_number) = self.finalized_head_hash_and_number().await?;
 
-    //         Processor {
-    //             state,
-    //             backend,
-    //             shutdown_notification: notif,
-    //             methods,
-    //             client: onl,
-    //             storage: st,
-    //         }
-    //         .execute()
-    //         .await
-    //         .or_else(|error| {
-    //             error
-    //                 .downcast()
-    //                 .map(|Shutdown| "The RPC module is shut down.".into())
-    //         })
-    //     }
+        // let subscription;
+
+        if let Some(last_block) = last_block_option {
+            todo!()
+        } else {
+        }
+        // let mut stream = self
+        // .chain
+        // .client
+        // .blocks()
+        // .subscribe_finalized().await.unwrap();
+
+        // loop {
+        //     let b = stream.next().await.unwrap().unwrap();
+
+        //     tracing::warn!("{}: {:?}", self.state.chain_name(self.hash), b.number());
+        // }
+
+        todo!()
+    }
+
+    async fn set_metadata(&self, at: BlockHash) -> Result<()> {
+        let ((metadata, d), g) =
+            fetch_runtime(&self.chain.methods, &*self.chain.backend, at).await?;
+
+        // let metadata = fetch_metadata(&*self.backend, at)
+        //     .await
+        //     .context("failed to fetch metadata for the scanner client")?;
+
+        // self.scanner.client.set_metadata(metadata);
+
+        Ok(())
+    }
 
     //     async fn execute(mut self) -> Result<Cow<'static, str>> {
     //         let (head_number, head_hash) = self
@@ -823,28 +850,18 @@ impl Processor {
     //         }
     //     }
 
-    //     async fn finalized_head_number_and_hash(&self) -> Result<(BlockNumber, BlockHash)> {
-    //         let head_hash = self
-    //             .methods
-    //             .chain_get_finalized_head()
-    //             .await
-    //             .context("failed to get the finalized head hash")?;
-    //         let head = self
-    //             .methods
-    //             .chain_get_block(Some(head_hash))
-    //             .await
-    //             .context("failed to get the finalized head")?
-    //             .context("received nothing after requesting the finalized head")?;
+    // async fn finalized_head_hash_and_number(&self) -> Result<(BlockNumber, BlockHash)> {
+    //     let head_hash = fetch_finalized_head_hash(&self.chain.methods).await?;
+    //     let head = self
+    //         .chain
+    //         .methods
+    //         .chain_get_block(Some(head_hash))
+    //         .await
+    //         .context("failed to get the finalized head")?
+    //         .context("received nothing after requesting the finalized head")?;
 
-    //         Ok((head.block.header.number, head_hash))
-    //     }
-
-    //     async fn finalized_heads(&self) -> Result<RpcSubscription<<RuntimeConfig as Config>::Header>> {
-    //         self.methods
-    //             .chain_subscribe_finalized_heads()
-    //             .await
-    //             .context("failed to subscribe to finalized heads")
-    //     }
+    //     Ok((head.block.header.number, head_hash))
+    // }
 
     //     async fn process_skipped(
     //         &self,

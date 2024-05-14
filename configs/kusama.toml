@@ -1,4 +1,5 @@
 account-lifetime = 604800000 # 1 week.
+invoices-sweep-trigger = 3600000 # 1 hour.
 
 [[chain]]
 name = "kusama"

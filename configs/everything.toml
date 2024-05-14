@@ -1,4 +1,5 @@
 account-lifetime = 86400000 # 1 day.
+invoices-sweep-trigger = 300000 # 5 minutes.
 # in-memory-db = true
 
 [[chain]]

@@ -1,9 +1,10 @@
+use ahash::RandomState;
 use anyhow::{Context, Error, Result};
 use hex_simd::AsciiCase;
 use serde::Deserialize;
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections,
     env::{self, VarError},
     error::Error as _,
     ffi::OsString,
@@ -13,14 +14,18 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     ops::Deref,
     panic, str,
+    sync::Arc,
 };
 use subxt::{
     config::{substrate::SubstrateHeader, PolkadotExtrinsicParams},
-    ext::sp_core::{
-        crypto::{AccountId32, Ss58Codec},
-        paste,
-        sr25519::Pair,
-        Pair as _,
+    ext::{
+        futures::TryFutureExt,
+        sp_core::{
+            crypto::{AccountId32, Ss58Codec},
+            paste,
+            sr25519::Pair,
+            Pair as _,
+        },
     },
     PolkadotConfig,
 };
@@ -40,30 +45,21 @@ mod rpc;
 mod server;
 
 use asset::Asset;
-use database::{PublicSlot, State, StateParameters};
+use database::{ChainHash, PublicSlot, State, StateParameters, StoredChainInfo};
+use rpc::{InnerConnectedChain, Processor};
 
-macro_rules! env_vars_inner {
-    ($prefix:literal, $env_name:ident) => {
-        env_vars_inner!($prefix, $env_name, stringify!($env_name));
-    };
-    ($prefix:literal, $env_name:ident, $env_key:expr) => {
-        const $env_name: &str = concat!($prefix, "_", $env_key);
+const CONFIG: &str = "KALATORI_CONFIG";
+const LOG: &str = "KALATORI_LOG";
+const SEED: &str = "KALATORI_SEED";
+const RECIPIENT: &str = "KALATORI_RECIPIENT";
+const REMARK: &str = "KALATORI_REMARK";
+const OLD_SEED: &str = "KALATORI_OLD_SEED_";
 
-        paste::paste! {
-            const [<$env_name _BYTES>]: &[u8] = $env_name.as_bytes();
-        }
-    };
-}
-
-macro_rules! env_vars {
-    ($prefix:literal: $( $env_name:ident $( => $env_key:literal )? ),*) => {
-        $(
-            env_vars_inner!($prefix, $env_name $( , $env_key )?);
-        )*
-    };
-}
-
-env_vars!("KALATORI": CONFIG, LOG, SEED, RECIPIENT, REMARK, OLD_SEED => "OLD_SEED_");
+const CONFIG_BYTES: &[u8] = CONFIG.as_bytes();
+const SEED_BYTES: &[u8] = SEED.as_bytes();
+const RECIPIENT_BYTES: &[u8] = RECIPIENT.as_bytes();
+const REMARK_BYTES: &[u8] = REMARK.as_bytes();
+const OLD_SEED_BYTES: &[u8] = OLD_SEED.as_bytes();
 
 const DB_VERSION: Version = 0;
 
@@ -83,6 +79,7 @@ type PalletIndex = u8;
 type BlockHash = <RuntimeConfig as subxt::Config>::Hash;
 type AccountId = <RuntimeConfig as subxt::Config>::AccountId;
 type OnlineClient = subxt::OnlineClient<RuntimeConfig>;
+type HashMap<K, V> = collections::HashMap<K, V, RandomState>;
 
 struct RuntimeConfig;
 
@@ -139,6 +136,12 @@ async fn try_main() -> Result<()> {
         tracing::info!("\"debug\" isn't set.");
     }
 
+    if let Some(invoices_sweep_trigger) = config.invoices_sweep_trigger {
+        tracing::info!("\"invoices-sweep-trigger\": {invoices_sweep_trigger}.");
+    } else {
+        tracing::info!("\"invoices-sweep-trigger\" isn't set.");
+    }
+
     let host = if let Some(unparsed_host) = &config.host {
         unparsed_host
             .parse()
@@ -171,10 +174,18 @@ async fn try_main() -> Result<()> {
         env!("CARGO_PKG_AUTHORS")
     );
 
-    let (chains, currencies) =
-        rpc::prepare(config.chain.unwrap_or_default(), config.account_lifetime)
-            .await
-            .context("failed to prepare the RPC module")?;
+    let (chains, currencies) = rpc::prepare(
+        config.chain.unwrap_or_else(|| {
+            tracing::warn!(
+                "The config contains no chains, the daemon will start in the idle mode."
+            );
+
+            vec![]
+        }),
+        config.account_lifetime,
+    )
+    .await
+    .context("failed to prepare the RPC module")?;
 
     tracing::info!(
         "The number of served chains: {}. With the total number of currencies: {}.",
@@ -192,18 +203,19 @@ async fn try_main() -> Result<()> {
         account_lifetime: config.account_lifetime,
         chains,
         currencies,
+        invoices_sweep_trigger: config.invoices_sweep_trigger,
     })
     .context("failed to initialize the database module")?;
 
     let (task_tracker, error_rx) = TaskTracker::new();
 
-    task_tracker.spawn(
-        "the shutdown listener",
-        shutdown_listener(shutdown_notification.clone()),
-    );
+    // task_tracker.spawn(
+    //     "the shutdown listener",
+    //     shutdown_listener(shutdown_notification.clone()),
+    // );
 
-    for (chain_hash, chain) in checked_chains {
-        // task_tracker.spawn(name, task)
+    for (db_chain_info, chain) in checked_chains {
+        // task_tracker.spawn_chain_processor(state.clone(), db_chain_info, chain);
     }
 
     // task_tracker.spawn(
@@ -388,6 +400,11 @@ fn default_filter() -> String {
     filter
 }
 
+struct TaskError {
+    task: Cow<'static, str>,
+    error: Error,
+}
+
 #[derive(Clone)]
 struct TaskTracker {
     inner: task::TaskTracker,
@@ -409,6 +426,18 @@ impl TaskTracker {
         name: impl Into<Cow<'static, str>> + Send + 'static,
         task: impl Future<Output = Result<Cow<'static, str>>> + Send + 'static,
     ) -> JoinHandle<()> {
+        self.spawn_inner(async {
+            task.await.map_err(|error| TaskError {
+                task: name.into(),
+                error,
+            })
+        })
+    }
+
+    fn spawn_inner(
+        &self,
+        task: impl Future<Output = Result<Cow<'static, str>, TaskError>> + Send + 'static,
+    ) -> JoinHandle<()> {
         let error_tx = self.error_tx.clone();
 
         self.inner.spawn(async move {
@@ -416,15 +445,33 @@ impl TaskTracker {
                 Ok(shutdown_message) if !shutdown_message.is_empty() => {
                     tracing::info!("{shutdown_message}");
                 }
-                Err(error) => {
+                Err(task_error) => {
                     if let Err(SendError((from, unsent_error))) =
-                        error_tx.send((name.into(), error))
+                        error_tx.send((task_error.task, task_error.error))
                     {
                         tracing::error!("Received a fatal error from {from}:\n{unsent_error:?}");
                     }
                 }
                 _ => {}
             }
+        })
+    }
+
+    fn spawn_chain_processor(
+        &self,
+        state: Arc<State>,
+        db_chain_info: StoredChainInfo,
+        chain: InnerConnectedChain,
+    ) -> JoinHandle<()> {
+        self.spawn_inner(async move {
+            let hash = db_chain_info.hash;
+
+            Processor::ignite(db_chain_info, chain, &state)
+                .await
+                .map_err(|error| TaskError {
+                    task: format!("the {:?} chain processor", state.chain_name(hash)).into(),
+                    error,
+                })
         })
     }
 
@@ -507,6 +554,7 @@ struct Config {
     debug: Option<bool>,
     in_memory_db: Option<bool>,
     chain: Option<Vec<Chain>>,
+    invoices_sweep_trigger: Option<Timestamp>,
 }
 
 impl Config {

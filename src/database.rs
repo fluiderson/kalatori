@@ -1,35 +1,42 @@
 use crate::{
     rpc::{ConnectedChain, InnerConnectedChain},
-    AccountId, AssetId, Timestamp, Version, DB_VERSION, OLD_SEED,
+    AccountId, AssetId, BlockHash, BlockNumber, HashMap, Timestamp, Version, DB_VERSION, OLD_SEED,
 };
+use ahash::HashMapExt;
 use anyhow::{Context, Result};
 use redb::{
     backends::{FileBackend, InMemoryBackend},
-    AccessGuard, Database, Key, ReadOnlyTable, ReadTransaction, Table, TableDefinition, TableError,
-    TableHandle, Value,
+    AccessGuard, Database, Key, ReadOnlyTable, ReadTransaction, ReadableTable, Table,
+    TableDefinition, TableError, TableHandle, Value, WriteTransaction,
 };
 use std::{
-    borrow::Cow,
-    collections::{
-        hash_map::{Entry, VacantEntry},
-        HashMap,
-    },
+    borrow::{Borrow, Cow},
+    collections::hash_map::{Entry, VacantEntry},
+    fmt::Debug,
     fs::File,
     io::ErrorKind,
+    str,
     sync::Arc,
     time::{Duration, SystemTime},
 };
-use subxt::ext::{
-    codec::{Compact, Decode, Encode},
-    sp_core::{sr25519::Pair, Pair as _, U256},
+use subxt::{
+    custom_values::CustomValueAddress,
+    ext::{
+        codec::{Compact, Decode, Encode},
+        sp_core::{sr25519::Pair, Pair as _, U256},
+    },
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 mod v1;
 
-use v1::{ChainHash, ChainProperties, DaemonInfo, DAEMON_INFO, DB_VERSION_KEY, KEYS, ROOT};
+use v1::{
+    ChainProperties, DaemonInfo, Invoice, InvoiceKey, U256Slot, ACCOUNTS, ACCOUNTS_KEY,
+    ACCOUNTS_VALUE, CHAINS, CHAINS_NAME, DAEMON_INFO, DB_VERSION_KEY, INVOICES, INVOICES_NAME,
+    KEYS, KEYS_NAME, ROOT, ROOT_NAME,
+};
 
-pub use v1::PublicSlot;
+pub use v1::{ChainHash, PublicSlot};
 
 pub const MODULE: &str = module_path!();
 
@@ -53,6 +60,7 @@ pub struct StateParameters {
     pub account_lifetime: Timestamp,
     pub chains: HashMap<String, ConnectedChain>,
     pub currencies: HashMap<Arc<String>, Option<AssetId>>,
+    pub invoices_sweep_trigger: Option<Timestamp>,
 }
 
 pub struct State {
@@ -79,8 +87,9 @@ impl State {
             account_lifetime,
             mut chains,
             mut currencies,
+            invoices_sweep_trigger,
         }: StateParameters,
-    ) -> Result<(Arc<Self>, Vec<(ChainHash, InnerConnectedChain)>)> {
+    ) -> Result<(Arc<Self>, Vec<(StoredChainInfo, InnerConnectedChain)>)> {
         let builder = Database::builder();
 
         let (mut database, is_new) = if let Some(path) = path_option {
@@ -103,25 +112,10 @@ impl State {
             builder.create_with_backend(InMemoryBackend::new()).map(|db| (db, true))
         }.context("failed to create/open the database")?;
 
-        let write_tx = database
+        let tx = database
             .begin_write()
-            .context("failed to begin a read transaction")?;
-        let mut root = write_tx.open_table(ROOT).with_context(|| {
-            format!(
-                "failed to open the {:?} table in a write transaction",
-                ROOT.name()
-            )
-        })?;
-
-        let read_tx = database
-            .begin_read()
-            .context("failed to begin a read transaction")?;
-        let ro_root_option = open_ro_table(&read_tx, ROOT)?;
-        let ro_root_slots = ro_root_option.as_ref().map_or(Ok(None), |ro_root| {
-            get_slot(ro_root, DB_VERSION_KEY).and_then(|db_version| {
-                get_slot(ro_root, DAEMON_INFO).map(|daemon_info| db_version.zip(daemon_info))
-            })
-        })?;
+            .context("failed to begin a write transaction")?;
+        let mut root = open_table(&tx, ROOT)?;
 
         let public = pair.public().0;
         let mut checked_chains = Vec::with_capacity(chains.len());
@@ -131,75 +125,7 @@ impl State {
         let daemon_info;
         let mapped_old_pairs;
 
-        if let Some((ref encoded_db_version, ref encoded_daemon_info)) = ro_root_slots {
-            let db_version: Version = decode_slot(encoded_db_version, DB_VERSION_KEY)?;
-
-            if db_version != DB_VERSION {
-                anyhow::bail!(
-                    "database contains an invalid database version ({db_version}), expected {DB_VERSION}"
-                );
-            }
-
-            let DaemonInfo {
-                chains: db_chains,
-                public: mut db_public,
-                old_publics_death_timestamps,
-            } = decode_slot(encoded_daemon_info, DAEMON_INFO)?;
-
-            let (mapped_old_pairs_shadow, new_old_publics_death_timestamps) = process_keys(
-                public,
-                &mut db_public,
-                old_pairs,
-                old_publics_death_timestamps,
-                &read_tx,
-            )?;
-
-            let mut new_db_chains =
-                Vec::with_capacity(db_chains.len().saturating_add(chains.len()));
-
-            for (name, properties) in db_chains {
-                process_db_chain(
-                    name,
-                    &properties,
-                    &mut chains,
-                    ProcessChainParameters {
-                        currencies: &mut currencies,
-                        mapped_currencies: &mut mapped_currencies,
-                        mapped_chains: &mut mapped_chains,
-                        checked_chains: &mut checked_chains,
-                        new_db_chains: &mut new_db_chains,
-                    },
-                )?;
-            }
-
-            for (name, chain) in chains {
-                process_chain(
-                    name,
-                    chain,
-                    ProcessChainParameters {
-                        currencies: &mut currencies,
-                        mapped_currencies: &mut mapped_currencies,
-                        mapped_chains: &mut mapped_chains,
-                        checked_chains: &mut checked_chains,
-                        new_db_chains: &mut new_db_chains,
-                    },
-                );
-            }
-
-            mapped_old_pairs = mapped_old_pairs_shadow;
-            daemon_info = DaemonInfo {
-                chains: new_db_chains,
-                public,
-                old_publics_death_timestamps: new_old_publics_death_timestamps,
-            }
-            .encode();
-        } else {
-            if !is_new {
-                anyhow::bail!(
-                    "existing database doesn't contain {DB_VERSION_KEY:?} and/or {DAEMON_INFO:?}, maybe it was created by another program"
-                );
-            }
-
+        if is_new {
             if !old_pairs.is_empty() {
                 tracing::warn!(
                     "The daemon has no existing database, so all `{OLD_SEED}*` are ignored."
@@ -231,14 +157,152 @@ impl State {
             .encode();
 
             insert_slot(&mut root, DB_VERSION_KEY, &DB_VERSION.encode())?;
+        } else {
+            let Some(encoded_db_version) = get_slot(ROOT, &root, DB_VERSION_KEY)? else {
+                anyhow::bail!("existing database doesn't contain {DB_VERSION_KEY:?}");
+            };
+
+            let db_version: Version = decode_slot(&encoded_db_version, DB_VERSION_KEY)?;
+
+            if db_version != DB_VERSION {
+                anyhow::bail!(
+                    "database contains an invalid database version ({db_version}), expected {DB_VERSION}"
+                );
+            }
+
+            let Some(encoded_daemon_info) = get_slot(ROOT, &root, DAEMON_INFO)? else {
+                anyhow::bail!("existing database doesn't contain {DAEMON_INFO:?}");
+            };
+
+            let DaemonInfo {
+                chains: db_chains,
+                public: mut db_public,
+                old_publics_death_timestamps,
+            } = decode_slot(&encoded_daemon_info, DAEMON_INFO)?;
+
+            let tables = Tables::get(&tx)?;
+
+            let (mapped_old_pairs_shadow, new_old_publics_death_timestamps) = process_keys(
+                public,
+                &mut db_public,
+                old_pairs,
+                old_publics_death_timestamps,
+                tables.keys,
+            )?;
+
+            let mut new_db_chains =
+                Vec::with_capacity(db_chains.len().saturating_add(chains.len()));
+            let mut sweep_invoices = false;
+
+            for (name, properties) in db_chains {
+                process_db_chain(
+                    name,
+                    &properties,
+                    &mut chains,
+                    tables.chains.as_ref(),
+                    &mut sweep_invoices,
+                    invoices_sweep_trigger,
+                    ProcessChainParameters {
+                        currencies: &mut currencies,
+                        mapped_currencies: &mut mapped_currencies,
+                        mapped_chains: &mut mapped_chains,
+                        checked_chains: &mut checked_chains,
+                        new_db_chains: &mut new_db_chains,
+                    },
+                )?;
+            }
+
+            // sweep
+
+            mapped_old_pairs = mapped_old_pairs_shadow;
+            daemon_info = vec![];
         }
 
         insert_slot(&mut root, DAEMON_INFO, &daemon_info)?;
-        drop(ro_root_slots);
-        drop((root, ro_root_option, read_tx));
 
-        write_tx
-            .commit()
+        // if let Some((ref encoded_db_version, ref encoded_daemon_info)) = ro_root_slots {
+        //     let db_version: Version = decode_slot(encoded_db_version, DB_VERSION_KEY)?;
+
+        //     if db_version != DB_VERSION {
+        //         anyhow::bail!(
+        //             "database contains an invalid database version ({db_version}), expected {DB_VERSION}"
+        //         );
+        //     }
+
+        //     let DaemonInfo {
+        //         chains: db_chains,
+        //         public: mut db_public,
+        //         old_publics_death_timestamps,
+        //     } = decode_slot(encoded_daemon_info, DAEMON_INFO)?;
+
+        //     let (mapped_old_pairs_shadow, new_old_publics_death_timestamps) = process_keys(
+        //         public,
+        //         &mut db_public,
+        //         old_pairs,
+        //         old_publics_death_timestamps,
+        //         &read_tx,
+        //     )?;
+
+        //     let mut new_db_chains =
+        //         Vec::with_capacity(db_chains.len().saturating_add(chains.len()));
+        //     let mut sweep_invoices = false;
+
+        //     for (name, properties) in db_chains {
+        //         process_db_chain(
+        //             name,
+        //             &properties,
+        //             &mut chains,
+        //             &read_tx,
+        //             &mut sweep_invoices,
+        //             invoices_sweep_trigger,
+        //             ProcessChainParameters {
+        //                 currencies: &mut currencies,
+        //                 mapped_currencies: &mut mapped_currencies,
+        //                 mapped_chains: &mut mapped_chains,
+        //                 checked_chains: &mut checked_chains,
+        //                 new_db_chains: &mut new_db_chains,
+        //             },
+        //         )?;
+        //     }
+
+        //     if sweep_invoices {}
+
+        //     for (name, chain) in chains {
+        //         process_chain(
+        //             name,
+        //             chain,
+        //             ProcessChainParameters {
+        //                 currencies: &mut currencies,
+        //                 mapped_currencies: &mut mapped_currencies,
+        //                 mapped_chains: &mut mapped_chains,
+        //                 checked_chains: &mut checked_chains,
+        //                 new_db_chains: &mut new_db_chains,
+        //             },
+        //         );
+        //     }
+
+        //     mapped_old_pairs = mapped_old_pairs_shadow;
+        //     daemon_info = DaemonInfo {
+        //         chains: new_db_chains,
+        //         public,
+        //         old_publics_death_timestamps: new_old_publics_death_timestamps,
+        //     }
+        //     .encode();
+        // } else {
+        //     if !is_new {
+        //         anyhow::bail!(
+        //             "existing database doesn't contain {DB_VERSION_KEY:?} and/or {DAEMON_INFO:?}, maybe it was created by another program"
+        //         );
+        //     }
+        // }
+
+        // insert_slot(&mut root, DAEMON_INFO, &daemon_info)?;
+        // drop(ro_root_slots);
+        // drop((root, ro_root_option, read_tx));
+
+        drop(root);
+
+        tx.commit()
             .context("failed to commit a write transaction to the database")?;
 
         if database
@@ -250,19 +314,24 @@ impl State {
             tracing::debug!("The database doesn't need to be compacted.");
         }
 
-        Ok((
-            Arc::new(Self {
-                recipient,
-                pair,
-                account_lifetime,
-                debug,
-                remark,
-                old_pairs: mapped_old_pairs,
-                chains: mapped_chains,
-                currencies: mapped_currencies,
-            }),
-            checked_chains,
-        ))
+        // Ok((
+        //     Arc::new(Self {
+        //         recipient,
+        //         pair,
+        //         account_lifetime,
+        //         debug,
+        //         remark,
+        //         old_pairs: mapped_old_pairs,
+        //         chains: mapped_chains,
+        //         currencies: mapped_currencies,
+        //     }),
+        //     checked_chains,
+        // ))
+        todo!()
+    }
+
+    pub fn chain_name(&self, hash: ChainHash) -> &str {
+        get_chain_name(hash, &self.chains)
     }
 
     //     pub fn rpc(&self) -> &str {
@@ -378,36 +447,77 @@ impl State {
 //     }
 // }
 
-fn get_slot<'a>(
-    table: &'a ReadOnlyTable<&str, &[u8]>,
-    key: &str,
-) -> Result<Option<AccessGuard<'a, &'static [u8]>>> {
-    table
-        .get(key)
-        .with_context(|| format!("failed to get the {key:?} slot"))
+fn get_chain_name(hash: ChainHash, mapped_chains: &HashMap<ChainHash, ChainInfo>) -> &str {
+    &mapped_chains
+        .get(&hash)
+        .expect("state should always have a chain with provided `hash`")
+        .name
 }
 
-fn insert_slot(table: &mut Table<'_, &str, &[u8]>, key: &str, value: &[u8]) -> Result<()> {
-    table
-        .insert(key, value)
-        .map(|_| ())
-        .with_context(|| format!("failed to insert the {key:?} slot"))
+struct Tables<'a> {
+    chains: Option<Table<'a, ChainHash, BlockNumber>>,
+    invoices: Option<Table<'a, InvoiceKey, Invoice>>,
+    keys: Option<Table<'a, PublicSlot, U256Slot>>,
+    accounts: HashMap<ChainHash, Table<'a, ACCOUNTS_KEY, ACCOUNTS_VALUE>>,
 }
 
-fn decode_slot<T: Decode>(slot: &AccessGuard<'_, &[u8]>, key: &str) -> Result<T> {
-    T::decode(&mut slot.value()).with_context(|| format!("failed to decode the {key:?} slot"))
+impl<'a> Tables<'a> {
+    fn get(tx: &'a WriteTransaction) -> Result<Tables<'a>> {
+        let mut chains = None;
+        let mut keys = None;
+        let mut invoices = None;
+        let mut accounts = HashMap::new();
+
+        for table in tx
+            .list_tables()
+            .context("failed to get the list of tables in the database")?
+        {
+            match table.name() {
+                ROOT_NAME => {}
+                CHAINS_NAME => chains = Some(open_table(tx, CHAINS)?),
+                KEYS_NAME => keys = Some(open_table(tx, KEYS)?),
+                INVOICES_NAME => invoices = Some(open_table(tx, INVOICES)?),
+                other => {
+                    if filter_multitables(tx, other, &mut accounts)? {
+                        tracing::debug!("Detected an unknown table {other:?}, it'll be purged.");
+
+                        tx.delete_table(table).context("failed to delete a table")?;
+                    }
+                }
+            }
+        }
+
+        Ok(Self {
+            chains,
+            invoices,
+            keys,
+            accounts,
+        })
+    }
 }
 
-fn format_timestamp(timestamp: Timestamp) -> String {
-    const MAX: &str = "9999-12-31T23:59:59.999999999Z";
+fn filter_multitables<'a>(
+    tx: &'a WriteTransaction,
+    other_table: &str,
+    accounts: &mut HashMap<ChainHash, Table<'a, ACCOUNTS_KEY, ACCOUNTS_VALUE>>,
+) -> Result<bool> {
+    if let Some(hash_string) = other_table.strip_prefix(ACCOUNTS) {
+        let Some(chain_hash) = hex_simd::decode_to_vec(hash_string)
+            .ok()
+            .and_then(|raw_hash| raw_hash.try_into().ok())
+        else {
+            return Ok(true);
+        };
 
-    OffsetDateTime::UNIX_EPOCH
-        .saturating_add(
-            time::Duration::try_from(Duration::from_micros(timestamp))
-                .unwrap_or(time::Duration::MAX),
-        )
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| MAX.into())
+        accounts.insert(
+            chain_hash,
+            open_table(tx, TableDefinition::new(other_table))?,
+        );
+
+        Ok(false)
+    } else {
+        Ok(true)
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -416,7 +526,7 @@ fn process_keys(
     db_public: &mut PublicSlot,
     mut old_pairs: HashMap<PublicSlot, (Pair, String)>,
     old_publics_death_timestamps: Vec<(PublicSlot, Compact<Timestamp>)>,
-    tx: &ReadTransaction,
+    keys: Option<Table<'_, PublicSlot, U256Slot>>,
 ) -> Result<(
     HashMap<PublicSlot, Pair>,
     Vec<(PublicSlot, Compact<Timestamp>)>,
@@ -480,18 +590,9 @@ fn process_keys(
             );
         }
 
-        let is_db_public_in_circulation = match open_ro_table(tx, KEYS)? {
-            Some(keys) => keys
-                .get(*db_public)
-                .with_context(|| {
-                    format!(
-                        "failed to get a slot of the current key in the {:?} table",
-                        KEYS.name()
-                    )
-                })?
-                .is_some(),
-            None => false,
-        };
+        let is_db_public_in_circulation = keys.map_or(Ok(false), |table| {
+            get_slot(KEYS, &table, *db_public).map(|slot_option| slot_option.is_some())
+        })?;
 
         if is_db_public_in_circulation {
             old_pairs
@@ -530,7 +631,7 @@ struct ProcessChainParameters<'a> {
     currencies: &'a mut HashMap<Arc<String>, Option<AssetId>>,
     mapped_currencies: &'a mut HashMap<String, MappedCurrency>,
     mapped_chains: &'a mut HashMap<ChainHash, ChainInfo>,
-    checked_chains: &'a mut Vec<(ChainHash, InnerConnectedChain)>,
+    checked_chains: &'a mut Vec<(StoredChainInfo, InnerConnectedChain)>,
     new_db_chains: &'a mut Vec<(String, ChainProperties)>,
 }
 
@@ -538,6 +639,9 @@ fn process_db_chain(
     name: String,
     properties: &ChainProperties,
     chains: &mut HashMap<String, ConnectedChain>,
+    chains_table_option: Option<&Table<'_, ChainHash, BlockNumber>>,
+    sweep_invoices: &mut bool,
+    invoices_sweep_trigger_option: Option<BlockNumber>,
     ProcessChainParameters {
         currencies,
         mapped_currencies,
@@ -564,6 +668,26 @@ fn process_db_chain(
             crate::encode_to_hex(properties.hash)
         );
 
+        let last_block = chains_table_option
+            .map_or(Ok(None), |chains_table| {
+                get_slot(CHAINS, chains_table, properties.hash)
+            })?
+            .map(|guard| guard.value());
+
+        if let Some(invoices_sweep_trigger) = invoices_sweep_trigger_option {
+            if let Some(last_block_some) = last_block {
+                if connected_chain
+                    .inner
+                    .prepared
+                    .0
+                    .saturating_sub(invoices_sweep_trigger)
+                    > last_block_some
+                {
+                    *sweep_invoices = true;
+                }
+            }
+        }
+
         process_maps_n_vecs(ProcessMapsNVecs {
             name,
             chain: connected_chain,
@@ -573,6 +697,7 @@ fn process_db_chain(
             checked_chains,
             new_db_chains,
             entry,
+            last_block,
         });
     } else {
         tracing::warn!(
@@ -583,15 +708,78 @@ fn process_db_chain(
     Ok(())
 }
 
+fn prepare_sweeps(
+    tx: &WriteTransaction,
+    checked_chains: &[(StoredChainInfo, InnerConnectedChain)],
+    accounts_tables: &HashMap<ChainHash, Table<'_, ACCOUNTS_KEY, ACCOUNTS_VALUE>>,
+    invoices_option: Option<Table<'_, InvoiceKey, Invoice>>,
+    mapped_chains: &HashMap<ChainHash, ChainInfo>,
+) -> Result<()> {
+    tracing::info!(
+        "The invoices sweep has been triggered. Filtering unpaid invoices out might take some time..."
+    );
+
+    let Some(invoices) = invoices_option else {
+        return Ok(());
+    };
+
+    for (StoredChainInfo { hash, .. }, _) in checked_chains {
+        if let Some(accounts) = accounts_tables.get(hash) {
+            for account_result in accounts.iter().with_context(|| {
+                format!(
+                    "failed to create an iterator from the {:?} table of the {:?} chain",
+                    ACCOUNTS.name(),
+                    get_chain_name(*hash, mapped_chains)
+                )
+            })? {
+                let (encoded_account, encoded_invoice_key) = account_result.with_context(|| {
+                    format!(
+                        "failed to get an account from the {:?} table of the {:?} chain",
+                        ACCOUNTS.name(),
+                        get_chain_name(*hash, mapped_chains)
+                    )
+                })?;
+                let (account, invoice_key) = (encoded_account.value(), encoded_invoice_key.value());
+
+                if let Some(encoded_invoice) = invoices.get(invoice_key).with_context(|| {
+                    format!(
+                        "failed to get an invoice from the {:?} table of the {:?} chain",
+                        ACCOUNTS.name(),
+                        get_chain_name(*hash, mapped_chains)
+                    )
+                })? {
+                    todo!()
+                } else {
+                    tracing::warn!(
+                        "An account {:?} from the {:?} chain has no matching invoice with the {:?} key.",
+                        crate::encode_to_hex(account),
+                        get_chain_name(*hash, mapped_chains),
+                        str::from_utf8(invoice_key)
+                            .map_or_else(|_| crate::encode_to_hex(invoice_key), ToOwned::to_owned)
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub struct StoredChainInfo {
+    pub hash: ChainHash,
+    pub last_block: Option<BlockNumber>,
+}
+
 struct ProcessMapsNVecs<'a> {
     name: String,
     chain: ConnectedChain,
     chain_hash: ChainHash,
     currencies: &'a mut HashMap<Arc<String>, Option<AssetId>>,
     mapped_currencies: &'a mut HashMap<String, MappedCurrency>,
-    checked_chains: &'a mut Vec<(ChainHash, InnerConnectedChain)>,
+    checked_chains: &'a mut Vec<(StoredChainInfo, InnerConnectedChain)>,
     new_db_chains: &'a mut Vec<(String, ChainProperties)>,
     entry: VacantEntry<'a, ChainHash, ChainInfo>,
+    last_block: Option<BlockNumber>,
 }
 
 fn process_maps_n_vecs(
@@ -604,6 +792,7 @@ fn process_maps_n_vecs(
         checked_chains,
         new_db_chains,
         entry,
+        last_block,
     }: ProcessMapsNVecs<'_>,
 ) {
     for currency_name in chain.currencies {
@@ -620,7 +809,13 @@ fn process_maps_n_vecs(
         );
     }
 
-    checked_chains.push((chain_hash, chain.inner));
+    checked_chains.push((
+        StoredChainInfo {
+            hash: chain_hash,
+            last_block,
+        },
+        chain.inner,
+    ));
     new_db_chains.push((
         name.clone(),
         ChainProperties {
@@ -666,6 +861,7 @@ fn process_chain(
                 checked_chains,
                 new_db_chains,
                 entry,
+                last_block: None,
             });
 
             break;
@@ -683,24 +879,68 @@ fn process_chain(
     }
 }
 
-fn open_ro_table<K: Key, V: Value>(
-    tx: &ReadTransaction,
+fn open_table<'a, K: Key, V: Value>(
+    tx: &'a WriteTransaction,
     table: TableDefinition<'_, K, V>,
-) -> Result<Option<ReadOnlyTable<K, V>>> {
-    tx.open_table(table)
-        .map(Some)
-        .or_else(|error| {
-            if matches!(error, TableError::TableDoesNotExist(_)) {
-                Ok(None)
-            } else {
-                Err(error)
-            }
-        })
-        .with_context(|| {
-            format!(
-                "failed to open the {:?} table in a read transaction",
-                table.name()
-            )
-        })
-        .map_err(Into::into)
+) -> Result<Table<'a, K, V>> {
+    tx.open_table(table).with_context(|| {
+        format!(
+            "failed to open the {:?} table in a write transaction",
+            table.name()
+        )
+    })
+}
+
+// fn open_ro_table<K: Key, V: Value>(
+//     tx: &ReadTransaction,
+//     table: TableDefinition<'_, K, V>,
+// ) -> Result<Option<ReadOnlyTable<K, V>>> {
+//     tx.open_table(table).map(Some).or_else(|error| {
+//         if matches!(error, TableError::TableDoesNotExist(_)) {
+//             Ok(None)
+//         } else {
+//             Err(error).with_context(|| {
+//                 format!(
+//                     "failed to open the {:?} table in a read transaction",
+//                     table.name()
+//                 )
+//             })
+//         }
+//     })
+// }
+
+fn get_slot<'a, K: Key, V: Value>(
+    definition: TableDefinition<'_, K, V>,
+    table: &'a Table<'_, K, V>,
+    key: impl Borrow<K::SelfType<'a>> + Debug,
+) -> Result<Option<AccessGuard<'a, V>>> {
+    table.get(key.borrow()).with_context(|| {
+        format!(
+            "failed to get the {key:?} slot in the {:?} table",
+            definition.name()
+        )
+    })
+}
+
+fn insert_slot(table: &mut Table<'_, &str, &[u8]>, key: &str, value: &[u8]) -> Result<()> {
+    table
+        .insert(key, value)
+        .map(|_| ())
+        .with_context(|| format!("failed to insert the {key:?} slot"))
+}
+
+fn decode_slot<T: Decode>(slot: &AccessGuard<'_, &[u8]>, key: &str) -> Result<T> {
+    T::decode(&mut slot.value()).with_context(|| format!("failed to decode the {key:?} slot"))
+}
+
+fn format_timestamp(timestamp: Timestamp) -> String {
+    const MAX: &str = "9999-12-31T23:59:59.999999999Z";
+
+    OffsetDateTime::UNIX_EPOCH
+        .saturating_add(
+            time::Duration::try_from(Duration::from_micros(timestamp))
+                .unwrap_or(time::Duration::MAX),
+        )
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| MAX.into())
 }
