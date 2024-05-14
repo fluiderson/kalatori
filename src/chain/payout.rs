@@ -6,12 +6,16 @@
 
 use crate::{
     chain::{
+        definitions::Invoice,
+        rpc::{block_hash, current_block_number, send_stuff},
+        tracker::ChainWatcher,
+        utils::{
         construct_batch_transaction, construct_single_asset_transfer_call,
         construct_single_balance_transfer_call, AssetTransferConstructor,
         BalanceTransferConstructor,
+        },
     },
     definitions::api_v2::TokenKind,
-    rpc::{block_hash, current_block_number, send_stuff, ChainWatcher, Invoice},
     signer::Signer,
     state::State,
 };

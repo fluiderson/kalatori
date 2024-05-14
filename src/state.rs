@@ -8,7 +8,7 @@ use crate::{
         Entropy,
     },
     error::{Error, ErrorOrder},
-    rpc::ChainManager,
+    chain::ChainManager,
     signer::Signer,
     ConfigWoChains, TaskTracker,
 };
