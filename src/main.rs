@@ -32,9 +32,9 @@ mod state;
 mod utils;
 
 use crate::definitions::{Chain, Entropy, Timestamp, Version};
+use chain::ChainManager;
 use database::ConfigWoChains;
 use error::Error;
-use chain::ChainManager;
 use signer::Signer;
 use state::State;
 

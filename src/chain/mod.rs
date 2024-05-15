@@ -10,17 +10,16 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    definitions::{Chain, api_v2::OrderInfo},
+    definitions::{api_v2::OrderInfo, Chain},
     error::{Error, ErrorChain},
-    Signer, State,
-    TaskTracker,
+    Signer, State, TaskTracker,
 };
 
 pub mod definitions;
-pub mod utils;
-pub mod rpc;
 pub mod payout;
+pub mod rpc;
 pub mod tracker;
+pub mod utils;
 
 use definitions::{ChainRequest, ChainTrackerRequest, WatchAccount};
 use tracker::start_chain_watch;
@@ -119,8 +118,9 @@ impl ChainManager {
                         ChainRequest::Shutdown(res) => {
                             for (name, chain) in watch_chain.drain() {
                                 let (tx, rx) = oneshot::channel();
-                                let _unused = chain.send(ChainTrackerRequest::Shutdown(tx)).await;
-                                let _ = rx.await;
+                                if chain.send(ChainTrackerRequest::Shutdown(tx)).await.is_ok() {
+                                    let _ = rx.await;
+                                }
                             }
                             let _ = res.send(());
                             break;
@@ -171,6 +171,3 @@ impl ChainManager {
         ()
     }
 }
-
-
-

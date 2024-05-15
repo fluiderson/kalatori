@@ -1,4 +1,5 @@
 use crate::{
+    chain::ChainManager,
     database::Database,
     definitions::{
         api_v2::{
@@ -8,7 +9,6 @@ use crate::{
         Entropy,
     },
     error::{Error, ErrorOrder},
-    chain::ChainManager,
     signer::Signer,
     ConfigWoChains, TaskTracker,
 };
@@ -62,7 +62,6 @@ impl State {
             debug,
             kalatori_remark: remark.clone(),
         };
-
 
         // Remember to always spawn async here or things might deadlock
         task_tracker.clone().spawn("State Handler", async move {
@@ -295,7 +294,7 @@ impl StateData {
                     order_info,
                     String::from("Order with this ID was already processed"),
                 )))
-    }
+            }
         }
     }
 
@@ -306,8 +305,8 @@ impl StateData {
             recipient: self.recipient.clone().to_base58_string(2), // TODO maybe but spec says use "2"
             server_info: self.server_info.clone(),
             order_info,
-                payment_page: String::new(),
-                redirect_url: String::new(),
+            payment_page: String::new(),
+            redirect_url: String::new(),
         }
     }
 }

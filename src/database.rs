@@ -192,18 +192,18 @@ impl Database {
             while let Some(request) = rx.recv().await {
                 match request {
                     DbRequest::ActiveOrderList(res) => {
-                        let _unused = res.send(
-                            Ok(
-                                orders
-                                    .iter()
-                                    .filter_map(|a| a.ok())
-                                    .filter_map(|(a, b)| 
-                                        match (String::decode(&mut &a[..]), OrderInfo::decode(&mut &b[..])) {
-                                            (Ok(a), Ok(b)) => Some((a, b)),
-                                            _ => None
-                                        })
-                                    .filter(|(a, b)| b.payment_status == PaymentStatus::Pending).collect())
-                            );
+                        let _unused = res.send(Ok(orders
+                            .iter()
+                            .filter_map(|a| a.ok())
+                            .filter_map(|(a, b)| {
+                                match (String::decode(&mut &a[..]), OrderInfo::decode(&mut &b[..]))
+                                {
+                                    (Ok(a), Ok(b)) => Some((a, b)),
+                                    _ => None,
+                                }
+                            })
+                            .filter(|(a, b)| b.payment_status == PaymentStatus::Pending)
+                            .collect()));
                     }
                     DbRequest::CreateOrder(request) => {
                         let _unused = request.res.send(create_order(
@@ -241,10 +241,7 @@ impl Database {
 
     pub async fn order_list(&self) -> Result<Vec<(String, OrderInfo)>, ErrorDb> {
         let (res, rx) = oneshot::channel();
-        let _unused = self
-            .tx
-            .send(DbRequest::ActiveOrderList(res))
-            .await;
+        let _unused = self.tx.send(DbRequest::ActiveOrderList(res)).await;
         rx.await.map_err(|_| ErrorDb::DbEngineDown)?
     }
 

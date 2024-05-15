@@ -3,9 +3,8 @@
 use std::collections::HashMap;
 
 use frame_metadata::v15::RuntimeMetadataV15;
-use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
-use primitive_types::H256;
+use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use substrate_parser::ShortSpecs;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -14,17 +13,20 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    TaskTracker,
     chain::{
-        definitions::{ChainRequest, ChainTrackerRequest, EventFilter, Invoice},
-        payout::payout, 
-        rpc::{BlockHead, assets_set_at_block, block_hash, events_at_block, genesis_hash, metadata, next_block, next_block_number, specs, subscribe_blocks},
+        definitions::{BlockHash, ChainRequest, ChainTrackerRequest, EventFilter, Invoice},
+        payout::payout,
+        rpc::{
+            assets_set_at_block, block_hash, events_at_block, genesis_hash, metadata, next_block,
+            next_block_number, specs, subscribe_blocks, BlockHead,
+        },
         utils::{events_entry_metadata, was_balance_received_at_account},
     },
-    definitions::{Chain, api_v2::CurrencyProperties,},
+    definitions::{api_v2::CurrencyProperties, Chain},
     error::ErrorChain,
     signer::Signer,
     state::State,
+    TaskTracker,
 };
 
 pub fn start_chain_watch(
@@ -57,7 +59,7 @@ pub fn start_chain_watch(
                         Ok(a) => a,
                         Err(e) => {
                             tracing::info!(
-                                "Failed to connect to chain {}, due to {:?} switching RPC server...",
+                                "Failed to connect to chain {}, due to {} switching RPC server...",
                                 c.name,
                                 e
                             );
@@ -77,7 +79,7 @@ pub fn start_chain_watch(
                                     Ok(a) => a,
                                     Err(e) => {
                                         tracing::info!(
-                                        "Failed to receive block in chain {}, due to {:?} switching RPC server...",
+                                        "Failed to receive block in chain {}, due to {} switching RPC server...",
                                         c.name,
                                         e
                             );
@@ -148,7 +150,7 @@ pub fn start_chain_watch(
 
 #[derive(Debug, Clone)]
 pub struct ChainWatcher {
-    pub genesis_hash: H256,
+    pub genesis_hash: BlockHash,
     pub metadata: RuntimeMetadataV15,
     pub specs: ShortSpecs,
     pub assets: HashMap<String, CurrencyProperties>,
@@ -188,7 +190,7 @@ impl ChainWatcher {
                 }
                 Ok(false) => (),
                 Err(e) => {
-                    tracing::warn!("account fetch error: {0:?}", e);
+                    tracing::warn!("account fetch error: {0}", e);
                 }
             }
         }
@@ -214,5 +216,3 @@ impl ChainWatcher {
         Ok(chain)
     }
 }
-
-

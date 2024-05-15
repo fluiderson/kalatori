@@ -1,7 +1,7 @@
 //! Utils to process chain data without accessing the chain
 
 //TransactionToFill::init(&mut (), metadata, genesis_hash).unwrap();
-use crate::{definitions::api_v2::AssetId, error::ErrorChain};
+use crate::{chain::definitions::BlockHash, definitions::api_v2::AssetId, error::ErrorChain};
 use frame_metadata::{
     v14::StorageHasher,
     v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
@@ -202,14 +202,15 @@ pub struct CallToFill(pub TypeToFill);
 
 pub fn construct_batch_transaction(
     metadata: &RuntimeMetadataV15,
-    genesis_hash: H256,
+    genesis_hash: BlockHash,
     author: AccountId32,
     call_set: &[CallToFill],
-    block_hash: H256,
+    block: BlockHash,
     block_number: u32,
     nonce: u32,
 ) -> TransactionToFill {
-    let mut transaction_to_fill = TransactionToFill::init(&mut (), metadata, genesis_hash).unwrap();
+    let mut transaction_to_fill =
+        TransactionToFill::init(&mut (), metadata, genesis_hash.0).unwrap();
 
     // deal with author
     match transaction_to_fill.author.content {
@@ -288,7 +289,7 @@ pub fn construct_batch_transaction(
         }
     }
 
-    transaction_to_fill.populate_block_info(Some(block_hash), Some(block_number.into()));
+    transaction_to_fill.populate_block_info(Some(block.0), Some(block_number.into()));
     transaction_to_fill.populate_nonce(nonce);
 
     for ext in transaction_to_fill.extensions.iter_mut() {
