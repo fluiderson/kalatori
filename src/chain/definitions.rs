@@ -17,8 +17,33 @@ use crate::{
         Chain,
         api_v2::{OrderInfo},
     },
-    error::ErrorChain,
+    error::{ErrorChain, NotHex},
+    utils::unhex,
 };
+
+/// Abstraction to distinguish block hash from many other H256 things
+#[derive(Debug, Clone)]
+pub struct BlockHash (pub primitive_types::H256);
+
+impl BlockHash {
+    /// Convert block hash to RPC-friendly format
+    pub fn to_string(&self) -> String {
+        hex::encode(&self.0)
+    }
+
+    /// Convert string returned by RPC to typesafe block
+    ///
+    /// TODO: integrate nicely with serde
+    pub fn from_str(s: &str) -> Result<Self, crate::error::ErrorChain> {
+        let block_hash_raw = unhex(&s, NotHex::BlockHash)?;
+        Ok(BlockHash(H256(
+                block_hash_raw
+                    .try_into()
+                    .map_err(|_| ErrorChain::BlockHashLength)?,
+            )))
+    }
+}
+
 
 #[derive(Debug)]
 pub struct EventFilter<'a> {
@@ -132,7 +157,7 @@ impl Invoice {
         &self,
         client: &WsClient,
         chain_watcher: &ChainWatcher,
-        block: &H256,
+        block: &BlockHash,
     ) -> Result<Balance, ErrorChain> {
         let currency = chain_watcher
             .assets
@@ -160,7 +185,7 @@ impl Invoice {
         &self,
         client: &WsClient,
         chain_watcher: &ChainWatcher,
-        block: &H256,
+        block: &BlockHash,
     ) -> Result<bool, ErrorChain> {
         Ok(self.balance(client, chain_watcher, block).await? >= self.amount)
     }

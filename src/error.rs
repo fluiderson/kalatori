@@ -93,11 +93,23 @@ impl From<std::io::Error> for Error {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ErrorChain {
+    #[error("Asset id is not u32")]
+    AssetIdFormat,
+
+    #[error("Asset key has no parceable part")]
+    AssetKeyEmpty,
+
+    #[error("Asset key is not single hash")]
+    AssetKeyNotSingleHash,
+
     #[error("Format of fetched base58 prefix {value} is not supported.")]
     Base58PrefixFormatNotSupported { value: String },
 
     #[error("Base58 prefixes in metadata {meta} and specs {specs} do not match.")]
     Base58PrefixMismatch { specs: u16, meta: u16 },
+
+    #[error("Unexpected block number format.")]
+    BlockNumberFormat,
 
     #[error("Unexpected block hash format.")]
     BlockHashFormat,
@@ -111,42 +123,14 @@ pub enum ErrorChain {
     #[error("Threading error. {0}")]
     Tokio(JoinError),
 
-    //    #[error("Internal database error. {0}")]
-    //    DbInternal(sled::Error),
-
-    //    #[error("Database error recording transaction. {0}")]
-    //    DbTransaction(sled::transaction::TransactionError),
     #[error("Format of fetched decimals {value} is not supported.")]
     DecimalsFormatNotSupported { value: String },
-
-    #[error("Fetch address in the database for genesis hash {} got damaged, and could not be decoded.", hex::encode(.0))]
-    DecodeDbAddress(H256),
-
-    //#[error("Key in the database {} is damaged, and could not be decoded.", hex::encode(.0))]
-    //DecodeDbKey(IVec),
-    #[error("MetadataSpecs in the database for genesis hash {} got damaged, and could not be decoded.", hex::encode(.0))]
-    DecodeDbMetadataSpecs(H256),
 
     #[error("Unexpected genesis hash format.")]
     GenesisHashFormat,
 
     #[error("Unexpected genesis hash length.")]
     GenesisHashLength,
-
-    #[error("Key {0} got damaged on the interface.")]
-    InterfaceKey(String),
-
-    #[error(
-        "No metadata and specs for chain with genesis hash {} in the database.",
-        hex::encode(genesis_hash)
-    )]
-    LoadSpecsMetadata { genesis_hash: H256 },
-
-    #[error("Address for chain with genesis hash {} is not in the database.", hex::encode(.0))]
-    LostAddress(H256),
-
-    #[error("Metadata fetch was somehow done with no pre-existing entry for genesis hash {}. This is a bug, please report it.", hex::encode(.0))]
-    MetadataFetchWithoutExistingEntry(H256),
 
     #[error("...")]
     MetadataFormat,
@@ -273,6 +257,9 @@ pub enum ErrorChain {
 
     #[error("Events do not exist in this chain")]
     EventsNonexistant,
+
+    #[error("Substrate parser error: {0}")]
+    ParserError(ParserError<()>),
 }
 
 impl From<ClientError> for ErrorChain {
@@ -302,6 +289,12 @@ impl From<MetaVersionErrorPallets> for ErrorChain {
 impl From<StorageRegistryError> for ErrorChain {
     fn from(e: StorageRegistryError) -> Self {
         ErrorChain::StorageRegistryError(e)
+    }
+}
+
+impl From<ParserError<()>> for ErrorChain {
+    fn from(e: ParserError<()>) -> Self {
+        ErrorChain::ParserError(e)
     }
 }
 

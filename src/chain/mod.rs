@@ -119,8 +119,9 @@ impl ChainManager {
                         ChainRequest::Shutdown(res) => {
                             for (name, chain) in watch_chain.drain() {
                                 let (tx, rx) = oneshot::channel();
-                                let _unused = chain.send(ChainTrackerRequest::Shutdown(tx)).await;
-                                let _ = rx.await;
+                                if chain.send(ChainTrackerRequest::Shutdown(tx)).await.is_ok() {
+                                    let _ = rx.await;
+                                }
                             }
                             let _ = res.send(());
                             break;

@@ -9,8 +9,6 @@ pub type Nonce = u32;
 pub type Timestamp = u64;
 pub type PalletIndex = u8;
 
-pub type BlockHash = primitive_types::H256;
-
 pub type Entropy = Vec<u8>; // TODO: maybe enforce something here
 
 #[derive(Deserialize)]

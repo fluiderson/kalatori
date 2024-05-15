@@ -40,7 +40,7 @@ pub async fn payout(
     // after some retries record a failure
     if let Ok(client) = WsClientBuilder::default().build(rpc).await {
         let block = block_hash(&client, None).await.unwrap(); // TODO should retry instead
-        let block_number = current_block_number(&client, &chain.metadata, &block).await;
+        let block_number = current_block_number(&client, &chain.metadata, &block).await.unwrap();
         let balance = order.balance(&client, &chain, &block).await.unwrap(); // TODO same
         let loss_tolerance = 10000; // TODO: replace with multiple of existential
         let manual_intervention_amount = 1000000000000;
