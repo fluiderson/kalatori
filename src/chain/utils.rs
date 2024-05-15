@@ -209,7 +209,8 @@ pub fn construct_batch_transaction(
     block_number: u32,
     nonce: u32,
 ) -> TransactionToFill {
-    let mut transaction_to_fill = TransactionToFill::init(&mut (), metadata, genesis_hash.0).unwrap();
+    let mut transaction_to_fill =
+        TransactionToFill::init(&mut (), metadata, genesis_hash.0).unwrap();
 
     // deal with author
     match transaction_to_fill.author.content {

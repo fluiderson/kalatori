@@ -2,10 +2,12 @@
 
 use crate::{
     chain::{
-        definitions::{BlockHash, EventFilter, WatchAccount,},
-        utils::{asset_balance_query, base58prefix, block_number_query, events_entry_metadata,
-        hashed_key_element, pallet_index, storage_key, system_balance_query,
-        system_properties_to_short_specs, unit, was_balance_received_at_account},
+        definitions::{BlockHash, EventFilter, WatchAccount},
+        utils::{
+            asset_balance_query, base58prefix, block_number_query, events_entry_metadata,
+            hashed_key_element, pallet_index, storage_key, system_balance_query,
+            system_properties_to_short_specs, unit, was_balance_received_at_account,
+        },
     },
     definitions::api_v2::{CurrencyProperties, OrderInfo},
     definitions::{
@@ -45,7 +47,6 @@ use substrate_parser::{
     AsMetadata, ShortSpecs,
 };
 
-
 const MAX_BLOCK_NUMBER_ERROR: &str = "block number type overflow is occurred";
 const BLOCK_NONCE_ERROR: &str = "failed to fetch an account nonce by the scanner client";
 
@@ -66,12 +67,12 @@ const AURA: &str = "AuraApi";
 
 pub async fn subscribe_blocks(client: &WsClient) -> Result<Subscription<BlockHead>, ErrorChain> {
     Ok(client
-            .subscribe(
-                "chain_subscribeFinalizedHeads",
-                rpc_params![],
-                "unsubscribe blocks",
-            )
-            .await?)
+        .subscribe(
+            "chain_subscribeFinalizedHeads",
+            rpc_params![],
+            "unsubscribe blocks",
+        )
+        .await?)
 }
 
 pub async fn get_value_from_storage(
@@ -80,7 +81,10 @@ pub async fn get_value_from_storage(
     block: &BlockHash,
 ) -> Result<Value, ErrorChain> {
     let value: Value = client
-        .request("state_getStorage", rpc_params![whole_key, block.to_string()])
+        .request(
+            "state_getStorage",
+            rpc_params![whole_key, block.to_string()],
+        )
         .await?;
     Ok(value)
 }
@@ -118,9 +122,7 @@ pub async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
         .await
         .map_err(ErrorChain::Client)?;
     match genesis_hash_request {
-        Value::String(x) => {
-            BlockHash::from_str(&x)
-        }
+        Value::String(x) => BlockHash::from_str(&x),
         _ => return Err(ErrorChain::GenesisHashFormat),
     }
 }
@@ -141,15 +143,16 @@ pub async fn block_hash(
         .await
         .map_err(ErrorChain::Client)?;
     match block_hash_request {
-        Value::String(x) => {
-            BlockHash::from_str(&x)
-        }
+        Value::String(x) => BlockHash::from_str(&x),
         _ => return Err(ErrorChain::BlockHashFormat),
     }
 }
 
 /// fetch metadata at known block
-pub async fn metadata(client: &WsClient, block: &BlockHash) -> Result<RuntimeMetadataV15, ErrorChain> {
+pub async fn metadata(
+    client: &WsClient,
+    block: &BlockHash,
+) -> Result<RuntimeMetadataV15, ErrorChain> {
     let metadata_request: Value = client
         .request(
             "state_call",
@@ -226,24 +229,6 @@ pub struct BlockHead {
     //parent_hash: String,
     //state_root: String,
 }
-/*
-#[derive(Deserialize, Debug)]
-struct Transferred {
-    asset_id: u32,
-    // The implementation of `Deserialize` for `AccountId32` works only with strings.
-    #[serde(deserialize_with = "account_deserializer")]
-    from: AccountId32,
-    #[serde(deserialize_with = "account_deserializer")]
-    to: AccountId32,
-    amount: u128,
-}*/
-/*
-fn account_deserializer<'de, D>(deserializer: D) -> Result<AccountId32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    <([u8; 32],)>::deserialize(deserializer).map(|address| AccountId32(address.0))
-}*/
 
 // TODO: add proper errors
 //
@@ -296,111 +281,122 @@ pub async fn assets_set_at_block(
         }
     }
 
-    if let (Some(assets_asset_storage_metadata), Some(assets_metadata_storage_metadata)) = (assets_asset_storage_metadata, assets_metadata_storage_metadata) {
-
-    let available_keys_assets_asset =
-        get_keys_from_storage(client, "Assets", "Asset", block).await?;
-    if let Value::Array(ref keys_array) = available_keys_assets_asset {
-        for key in keys_array.iter() {
-            if let Value::String(string_key) = key {
-                let value_fetch = get_value_from_storage(client, string_key, block)
-                    .await
-                    .unwrap();
-                if let Value::String(ref string_value) = value_fetch {
-                    let key_data = hex::decode(string_key.trim_start_matches("0x")).unwrap();
-                    let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
-                    let storage_entry = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
-                        &key_data.as_ref(),
-                        &value_data.as_ref(),
-                        &mut (),
-                        assets_asset_storage_metadata,
-                        &metadata_v15.types,
-                    )
-                    .unwrap();
-                    let asset_id = {
-                        if let KeyData::SingleHash { content } = storage_entry.key {
-                            if let KeyPart::Parsed(extended_data) = content {
-                                if let ParsedData::PrimitiveU32 {
-                                    value,
-                                    specialty: _,
-                                } = extended_data.data
-                                {
-                                    Ok(value)
+    if let (Some(assets_asset_storage_metadata), Some(assets_metadata_storage_metadata)) = (
+        assets_asset_storage_metadata,
+        assets_metadata_storage_metadata,
+    ) {
+        let available_keys_assets_asset =
+            get_keys_from_storage(client, "Assets", "Asset", block).await?;
+        if let Value::Array(ref keys_array) = available_keys_assets_asset {
+            for key in keys_array.iter() {
+                if let Value::String(string_key) = key {
+                    let value_fetch = get_value_from_storage(client, string_key, block).await?;
+                    if let Value::String(ref string_value) = value_fetch {
+                        let key_data = hex::decode(string_key.trim_start_matches("0x")).unwrap();
+                        let value_data =
+                            hex::decode(string_value.trim_start_matches("0x")).unwrap();
+                        let storage_entry = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
+                            &key_data.as_ref(),
+                            &value_data.as_ref(),
+                            &mut (),
+                            assets_asset_storage_metadata,
+                            &metadata_v15.types,
+                        )?;
+                        let asset_id = {
+                            if let KeyData::SingleHash { content } = storage_entry.key {
+                                if let KeyPart::Parsed(extended_data) = content {
+                                    if let ParsedData::PrimitiveU32 {
+                                        value,
+                                        specialty: _,
+                                    } = extended_data.data
+                                    {
+                                        Ok(value)
+                                    } else {
+                                        Err(ErrorChain::AssetIdFormat)
+                                    }
                                 } else {
-                                    Err(ErrorChain::AssetIdFormat)
+                                    Err(ErrorChain::AssetKeyEmpty)
                                 }
                             } else {
-                                Err(ErrorChain::AssetKeyEmpty)
+                                Err(ErrorChain::AssetKeyNotSingleHash)
                             }
-                        } else {
-                            Err(ErrorChain::AssetKeyNotSingleHash)
-                        }
-                    }?;
-                    let mut verified_sufficient = false;
-                    if let ParsedData::Composite(fields) = storage_entry.value.data {
-                        for field_data in fields.iter() {
-                            if let Some(field_name) = &field_data.field_name {
-                                if field_name == "is_sufficient" {
-                                    if let ParsedData::PrimitiveBool(is_it) = field_data.data.data {
-                                        verified_sufficient = is_it;
+                        }?;
+                        let mut verified_sufficient = false;
+                        if let ParsedData::Composite(fields) = storage_entry.value.data {
+                            for field_data in fields.iter() {
+                                if let Some(field_name) = &field_data.field_name {
+                                    if field_name == "is_sufficient" {
+                                        if let ParsedData::PrimitiveBool(is_it) =
+                                            field_data.data.data
+                                        {
+                                            verified_sufficient = is_it;
+                                        }
+                                        break;
                                     }
-                                    break;
                                 }
                             }
                         }
-                    }
-                    if verified_sufficient {
-                        match &assets_metadata_storage_metadata.ty {
-                            StorageEntryType::Plain(_) => {
-                                panic!("expected map with single entry, got plain")
-                            }
-                            StorageEntryType::Map {
-                                hashers,
-                                key: key_ty,
-                                value: value_ty,
-                            } => {
-                                if hashers.len() == 1 {
-                                    let hasher = &hashers[0];
-                                    match metadata_v15.types.resolve(key_ty.id).unwrap().type_def {
-                                        TypeDef::Primitive(TypeDefPrimitive::U32) => {
-                                            let key_assets_metadata = format!(
-                                                "0x{}{}{}",
-                                                hex::encode(twox_128("Assets".as_bytes())),
-                                                hex::encode(twox_128("Metadata".as_bytes())),
-                                                hex::encode(hashed_key_element(
-                                                    &asset_id.encode(),
-                                                    hasher
-                                                ))
-                                            );
-                                            let value_fetch = get_value_from_storage(
-                                                client,
-                                                &key_assets_metadata,
-                                                block,
-                                            )
-                                            .await?;
-                                            if let Value::String(ref string_value) = value_fetch {
-                                                let value_data = unhex(string_value, NotHex::StorageValue)?;
-                                                let value = decode_all_as_type::<
-                                                    &[u8],
-                                                    (),
-                                                    RuntimeMetadataV15,
-                                                >(
-                                                    value_ty,
-                                                    &value_data.as_ref(),
-                                                    &mut (),
-                                                    &metadata_v15.types,
-                                                )?;
+                        if verified_sufficient {
+                            match &assets_metadata_storage_metadata.ty {
+                                StorageEntryType::Plain(_) => {
+                                    return Err(ErrorChain::AssetMetadataPlain)
+                                }
+                                StorageEntryType::Map {
+                                    hashers,
+                                    key: key_ty,
+                                    value: value_ty,
+                                } => {
+                                    if hashers.len() == 1 {
+                                        let hasher = &hashers[0];
+                                        match metadata_v15
+                                            .types
+                                            .resolve(key_ty.id)
+                                            .unwrap()
+                                            .type_def
+                                        {
+                                            TypeDef::Primitive(TypeDefPrimitive::U32) => {
+                                                let key_assets_metadata = format!(
+                                                    "0x{}{}{}",
+                                                    hex::encode(twox_128("Assets".as_bytes())),
+                                                    hex::encode(twox_128("Metadata".as_bytes())),
+                                                    hex::encode(hashed_key_element(
+                                                        &asset_id.encode(),
+                                                        hasher
+                                                    ))
+                                                );
+                                                let value_fetch = get_value_from_storage(
+                                                    client,
+                                                    &key_assets_metadata,
+                                                    block,
+                                                )
+                                                .await?;
+                                                if let Value::String(ref string_value) = value_fetch
+                                                {
+                                                    let value_data =
+                                                        unhex(string_value, NotHex::StorageValue)?;
+                                                    let value = decode_all_as_type::<
+                                                        &[u8],
+                                                        (),
+                                                        RuntimeMetadataV15,
+                                                    >(
+                                                        value_ty,
+                                                        &value_data.as_ref(),
+                                                        &mut (),
+                                                        &metadata_v15.types,
+                                                    )?;
 
-                                                let mut name = None;
-                                                let mut symbol = None;
-                                                let mut decimals = None;
+                                                    let mut name = None;
+                                                    let mut symbol = None;
+                                                    let mut decimals = None;
 
-                                                if let ParsedData::Composite(fields) = value.data {
-                                                    for field_data in fields.iter() {
-                                                        if let Some(field_name) =
-                                                            &field_data.field_name
-                                                        {
-                                                            match field_name.as_str() {
+                                                    if let ParsedData::Composite(fields) =
+                                                        value.data
+                                                    {
+                                                        for field_data in fields.iter() {
+                                                            if let Some(field_name) =
+                                                                &field_data.field_name
+                                                            {
+                                                                match field_name.as_str() {
                                                                 "name" => match &field_data.data.data {
                                                                     ParsedData::Text{text, specialty: _} => {
                                                                         name = Some(text.to_owned());
@@ -468,37 +464,41 @@ pub async fn assets_set_at_block(
                                                                 },
                                                                 _ => {},
                                                             }
+                                                            }
+                                                            if name.is_some()
+                                                                && symbol.is_some()
+                                                                && decimals.is_some()
+                                                            {
+                                                                break;
+                                                            }
                                                         }
-                                                        if name.is_some()
-                                                            && symbol.is_some()
-                                                            && decimals.is_some()
-                                                        {
-                                                            break;
-                                                        }
+                                                        //let name = name.unwrap();
+                                                        let symbol = symbol.unwrap();
+                                                        let decimals = decimals.unwrap();
+                                                        assets_set.insert(
+                                                            symbol,
+                                                            CurrencyProperties {
+                                                                chain_name: chain_name.clone(),
+                                                                kind: TokenKind::Asset,
+                                                                decimals,
+                                                                rpc_url: rpc_url.to_string(),
+                                                                asset_id: Some(asset_id),
+                                                                ss58: specs.base58prefix,
+                                                            },
+                                                        );
+                                                    } else {
+                                                        return Err(
+                                                            ErrorChain::AssetMetadataUnexpected,
+                                                        );
                                                     }
-                                                    //let name = name.unwrap();
-                                                    let symbol = symbol.unwrap();
-                                                    let decimals = decimals.unwrap();
-                                                    assets_set.insert(
-                                                        symbol,
-                                                        CurrencyProperties {
-                                                            chain_name: chain_name.clone(),
-                                                            kind: TokenKind::Asset,
-                                                            decimals,
-                                                            rpc_url: rpc_url.to_string(),
-                                                            asset_id: Some(asset_id),
-                                                            ss58: specs.base58prefix,
-                                                        },
-                                                    );
-                                                } else {
-                                                    panic!("unexpected assets metadata value structure")
                                                 }
                                             }
+
+                                            _ => return Err(ErrorChain::AssetMetadataType),
                                         }
-                                        _ => panic!("wrong data type"),
+                                    } else {
+                                        return Err(ErrorChain::AssetMetadataMapSize);
                                     }
-                                } else {
-                                    panic!("expected map with single entry, got multiple entries")
                                 }
                             }
                         }
@@ -506,7 +506,6 @@ pub async fn assets_set_at_block(
                 }
             }
         }
-    }
     }
     Ok(assets_set)
 }
@@ -520,8 +519,7 @@ pub async fn asset_balance_at_account(
 ) -> Result<Balance, ErrorChain> {
     let query = asset_balance_query(metadata_v15, account_id, asset_id)?;
 
-    let value_fetch = get_value_from_storage(client, &query.key, block)
-        .await?;
+    let value_fetch = get_value_from_storage(client, &query.key, block).await?;
     if let Value::String(ref string_value) = value_fetch {
         let value_data = unhex(string_value, NotHex::StorageValue)?;
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
@@ -557,8 +555,7 @@ pub async fn system_balance_at_account(
 ) -> Result<Balance, ErrorChain> {
     let query = system_balance_query(metadata_v15, account_id)?;
 
-    let value_fetch = get_value_from_storage(client, &query.key, block)
-        .await?;
+    let value_fetch = get_value_from_storage(client, &query.key, block).await?;
     if let Value::String(ref string_value) = value_fetch {
         let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
@@ -681,8 +678,7 @@ pub async fn current_block_number(
 ) -> Result<u32, ErrorChain> {
     let block_number_query = block_number_query(metadata);
     if let Value::String(hex_data) =
-        get_value_from_storage(client, &block_number_query.key, block)
-            .await?
+        get_value_from_storage(client, &block_number_query.key, block).await?
     {
         let value_data = hex::decode(hex_data.trim_start_matches("0x")).unwrap();
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(

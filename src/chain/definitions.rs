@@ -12,18 +12,14 @@ use crate::{
         rpc::{asset_balance_at_account, system_balance_at_account},
         tracker::ChainWatcher,
     },
-    definitions::{
-        Balance,
-        Chain,
-        api_v2::{OrderInfo},
-    },
+    definitions::{api_v2::OrderInfo, Balance, Chain},
     error::{ErrorChain, NotHex},
     utils::unhex,
 };
 
 /// Abstraction to distinguish block hash from many other H256 things
 #[derive(Debug, Clone)]
-pub struct BlockHash (pub primitive_types::H256);
+pub struct BlockHash(pub primitive_types::H256);
 
 impl BlockHash {
     /// Convert block hash to RPC-friendly format
@@ -37,13 +33,12 @@ impl BlockHash {
     pub fn from_str(s: &str) -> Result<Self, crate::error::ErrorChain> {
         let block_hash_raw = unhex(&s, NotHex::BlockHash)?;
         Ok(BlockHash(H256(
-                block_hash_raw
-                    .try_into()
-                    .map_err(|_| ErrorChain::BlockHashLength)?,
-            )))
+            block_hash_raw
+                .try_into()
+                .map_err(|_| ErrorChain::BlockHashLength)?,
+        )))
     }
 }
-
 
 #[derive(Debug)]
 pub struct EventFilter<'a> {
@@ -190,4 +185,3 @@ impl Invoice {
         Ok(self.balance(client, chain_watcher, block).await? >= self.amount)
     }
 }
-

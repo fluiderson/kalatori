@@ -10,9 +10,9 @@ use crate::{
         rpc::{block_hash, current_block_number, send_stuff},
         tracker::ChainWatcher,
         utils::{
-        construct_batch_transaction, construct_single_asset_transfer_call,
-        construct_single_balance_transfer_call, AssetTransferConstructor,
-        BalanceTransferConstructor,
+            construct_batch_transaction, construct_single_asset_transfer_call,
+            construct_single_balance_transfer_call, AssetTransferConstructor,
+            BalanceTransferConstructor,
         },
     },
     definitions::api_v2::TokenKind,
@@ -40,7 +40,9 @@ pub async fn payout(
     // after some retries record a failure
     if let Ok(client) = WsClientBuilder::default().build(rpc).await {
         let block = block_hash(&client, None).await.unwrap(); // TODO should retry instead
-        let block_number = current_block_number(&client, &chain.metadata, &block).await.unwrap();
+        let block_number = current_block_number(&client, &chain.metadata, &block)
+            .await
+            .unwrap();
         let balance = order.balance(&client, &chain, &block).await.unwrap(); // TODO same
         let loss_tolerance = 10000; // TODO: replace with multiple of existential
         let manual_intervention_amount = 1000000000000;

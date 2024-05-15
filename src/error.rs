@@ -102,6 +102,18 @@ pub enum ErrorChain {
     #[error("Asset key is not single hash")]
     AssetKeyNotSingleHash,
 
+    #[error("Asset metadata is not a map")]
+    AssetMetadataPlain,
+
+    #[error("unexpected assets metadata value structure")]
+    AssetMetadataUnexpected,
+
+    #[error("wrong data type")]
+    AssetMetadataType,
+
+    #[error("expected map with single entry, got multiple entries")]
+    AssetMetadataMapSize,
+
     #[error("Format of fetched base58 prefix {value} is not supported.")]
     Base58PrefixFormatNotSupported { value: String },
 
@@ -260,6 +272,9 @@ pub enum ErrorChain {
 
     #[error("Substrate parser error: {0}")]
     ParserError(ParserError<()>),
+
+    #[error("Storage entry decoding error: {0}")]
+    StorageDecodeError(StorageError<()>),
 }
 
 impl From<ClientError> for ErrorChain {
@@ -295,6 +310,12 @@ impl From<StorageRegistryError> for ErrorChain {
 impl From<ParserError<()>> for ErrorChain {
     fn from(e: ParserError<()>) -> Self {
         ErrorChain::ParserError(e)
+    }
+}
+
+impl From<StorageError<()>> for ErrorChain {
+    fn from(e: StorageError<()>) -> Self {
+        ErrorChain::StorageDecodeError(e)
     }
 }
 
@@ -380,7 +401,6 @@ pub enum ErrorForceWithdrawal {
 
     #[error("Withdrawal failed: {0:?}")]
     WithdrawalError(OrderStatus),
-
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -185,7 +185,10 @@ async fn process_force_withdrawal(
         .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
         .ok_or_else(|| ErrorForceWithdrawal::MissingParameter(ORDER_ID.into()))?
         .to_owned();
-    state.force_withdrawal(order).await.map_err(ErrorForceWithdrawal::WithdrawalError)
+    state
+        .force_withdrawal(order)
+        .await
+        .map_err(ErrorForceWithdrawal::WithdrawalError)
 }
 
 #[debug_handler]
@@ -196,7 +199,9 @@ async fn force_withdrawal(
 ) -> Response {
     match process_force_withdrawal(state, &matched_path, path_result).await {
         Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
-        Err(ErrorForceWithdrawal::WithdrawalError(a)) => (StatusCode::BAD_REQUEST, Json(a)).into_response(),
+        Err(ErrorForceWithdrawal::WithdrawalError(a)) => {
+            (StatusCode::BAD_REQUEST, Json(a)).into_response()
+        }
         Err(ErrorForceWithdrawal::MissingParameter(parameter)) => (
             StatusCode::BAD_REQUEST,
             Json([InvalidParameter {
