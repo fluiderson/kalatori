@@ -158,7 +158,7 @@ pub async fn metadata(
             "state_call",
             rpc_params![
                 "Metadata_metadata_at_version",
-                "0f000000",
+                "0x0f000000",
                 &block.to_string()
             ],
         )
