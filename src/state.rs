@@ -81,7 +81,9 @@ impl State {
             let order_list = db_wakeup.order_list().await?;
             task_tracker.spawn("Restore saved orders", async move {
                 for (order, order_details) in order_list {
-                    chain_manager_wakeup.add_invoice(order, order_details).await;
+                    chain_manager_wakeup
+                        .add_invoice(order, order_details, state.recipient)
+                        .await;
                 }
                 Ok("All saved orders restored".into())
             });
@@ -275,7 +277,7 @@ impl StateData {
         {
             OrderCreateResponse::New => {
                 self.chain_manager
-                    .add_invoice(order.clone(), order_info.clone())
+                    .add_invoice(order.clone(), order_info.clone(), self.recipient)
                     .await?;
                 Ok(OrderResponse::NewOrder(self.order_status(
                     order,

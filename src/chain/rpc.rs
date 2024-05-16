@@ -4,9 +4,8 @@ use crate::{
     chain::{
         definitions::{BlockHash, EventFilter},
         utils::{
-            asset_balance_query, block_number_query, events_entry_metadata,
-            hashed_key_element, system_balance_query,
-            system_properties_to_short_specs,
+            asset_balance_query, block_number_query, events_entry_metadata, hashed_key_element,
+            system_balance_query, system_properties_to_short_specs,
         },
     },
     definitions::api_v2::CurrencyProperties,
@@ -29,10 +28,7 @@ use scale_info::{form::PortableForm, PortableRegistry, TypeDef, TypeDefPrimitive
 use serde::Deserialize;
 use serde_json::{Number, Value};
 use sp_crypto_hashing::twox_128;
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-};
+use std::{collections::HashMap, fmt::Debug};
 use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
     cards::{Event, ParsedData, Sequence},
@@ -670,10 +666,9 @@ pub async fn current_block_number(
     metadata: &RuntimeMetadataV15,
     block: &BlockHash,
 ) -> Result<u32, ErrorChain> {
-    let block_number_query = block_number_query(metadata);
+    let block_number_query = block_number_query(metadata)?;
     let fetched_value = get_value_from_storage(client, &block_number_query.key, block).await?;
-    if let Value::String(hex_data) = fetched_value
-            {
+    if let Value::String(hex_data) = fetched_value {
         let value_data = unhex(&hex_data, NotHex::StorageValue)?;
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
             &block_number_query.value_ty,

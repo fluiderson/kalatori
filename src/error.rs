@@ -96,6 +96,10 @@ impl From<std::io::Error> for Error {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ErrorChain {
+    // TODO: this should be prevented by typesafety
+    #[error("Asset id is missing")]
+    AssetId,
+
     #[error("Asset id is not u32")]
     AssetIdFormat,
 
@@ -159,6 +163,9 @@ pub enum ErrorChain {
     #[error("No base58 prefix is fetched as system properties or found in the metadata.")]
     NoBase58Prefix,
 
+    #[error("Block number definition not found")]
+    NoBlockNumberDefinition,
+
     #[error("No decimals value is fetched.")]
     NoDecimals,
 
@@ -167,6 +174,18 @@ pub enum ErrorChain {
 
     #[error("Metadata must start with `meta` prefix.")]
     NoMetaPrefix,
+
+    #[error("Pallet not found")]
+    NoPallet,
+
+    #[error("No pallets with storage found")]
+    NoStorage,
+
+    #[error("Pallet System not found")]
+    NoSystem,
+
+    #[error("No storage variants in system pallet")]
+    NoStorageInSystem,
 
     #[error("No unit value is fetched.")]
     NoUnit,
@@ -194,7 +213,6 @@ pub enum ErrorChain {
 
     //#[error("Aura slot duration could not be parsed as u64")]
     //AuraSlotDurationFormat,
-
     #[error("Internal error: {0:?}")] // TODO this should be replaced by specific errors
     ErrorUtil(ErrorUtil),
 
@@ -225,9 +243,6 @@ pub enum ErrorChain {
     #[error("Storage query could not be formed")]
     StorageQuery,
 
-    //#[error("Storage format error")]
-    //StorageFormatError,
-
     #[error("Events could not be fetched")]
     EventsMissing,
 
@@ -242,11 +257,41 @@ pub enum ErrorChain {
 
     #[error("Type registry error: {0}")]
     RegistryError(RegistryError<()>),
+
+    #[error("Substrate constructor error: {0:?}")]
+    SubstrateConstructor(ErrorFixMe<(), RuntimeMetadataV15>),
+
+    #[error("Transaction is not ready to be signed: {0}")]
+    TransactionNotSignable(String),
+
+    #[error("Signing failed: {0}")]
+    Signer(ErrorSigner),
+
+    #[error("Transaction could not be completed")]
+    NothingToSend,
+
+    #[error("Storage entry is not a map")]
+    StorageEntryNotMap,
+
+    #[error("Storage entry map has more than one records")]
+    StorageEntryMapMultiple,
+
+    #[error("Storage key {0} not found")]
+    StorageKeyNotFound(String),
+
+    #[error("Storage key is not u32")]
+    StorageKeyNotU32,
 }
 
 impl From<ClientError> for ErrorChain {
     fn from(e: ClientError) -> Self {
         ErrorChain::Client(e)
+    }
+}
+
+impl From<ErrorSigner> for ErrorChain {
+    fn from(e: ErrorSigner) -> Self {
+        ErrorChain::Signer(e)
     }
 }
 
@@ -289,6 +334,12 @@ impl From<StorageError<()>> for ErrorChain {
 impl From<RegistryError<()>> for ErrorChain {
     fn from(e: RegistryError<()>) -> Self {
         ErrorChain::RegistryError(e)
+    }
+}
+
+impl From<ErrorFixMe<(), RuntimeMetadataV15>> for ErrorChain {
+    fn from(e: ErrorFixMe<(), RuntimeMetadataV15>) -> Self {
+        ErrorChain::SubstrateConstructor(e)
     }
 }
 

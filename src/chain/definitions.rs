@@ -94,7 +94,7 @@ pub struct WatchAccount {
     pub address: AccountId32,
     pub currency: String,
     pub amount: Balance,
-    pub recipient: Option<AccountId32>,
+    pub recipient: AccountId32,
     pub res: oneshot::Sender<Result<(), ErrorChain>>,
 }
 
@@ -102,7 +102,7 @@ impl WatchAccount {
     pub fn new(
         id: String,
         order: OrderInfo,
-        recipient: Option<AccountId32>,
+        recipient: AccountId32,
         res: oneshot::Sender<Result<(), ErrorChain>>,
     ) -> Result<WatchAccount, ErrorChain> {
         Ok(WatchAccount {
@@ -131,7 +131,7 @@ pub struct Invoice {
     pub address: AccountId32,
     pub currency: String,
     pub amount: Balance,
-    pub recipient: Option<AccountId32>,
+    pub recipient: AccountId32,
 }
 
 impl Invoice {
