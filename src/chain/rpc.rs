@@ -44,7 +44,7 @@ use substrate_parser::{
     decode_all_as_type, decode_as_storage_entry,
     special_indicators::SpecialtyUnsignedInteger,
     storage_data::{KeyData, KeyPart},
-    AsMetadata, ShortSpecs,
+    AsMetadata, ResolveType, ShortSpecs,
 };
 
 const MAX_BLOCK_NUMBER_ERROR: &str = "block number type overflow is occurred";
@@ -292,9 +292,8 @@ pub async fn assets_set_at_block(
                 if let Value::String(string_key) = key {
                     let value_fetch = get_value_from_storage(client, string_key, block).await?;
                     if let Value::String(ref string_value) = value_fetch {
-                        let key_data = hex::decode(string_key.trim_start_matches("0x")).unwrap();
-                        let value_data =
-                            hex::decode(string_value.trim_start_matches("0x")).unwrap();
+                        let key_data = unhex(string_key, NotHex::StorageKey)?;
+                        let value_data = unhex(string_value, NotHex::StorageValue)?;
                         let storage_entry = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
                             &key_data.as_ref(),
                             &value_data.as_ref(),
@@ -350,8 +349,7 @@ pub async fn assets_set_at_block(
                                         let hasher = &hashers[0];
                                         match metadata_v15
                                             .types
-                                            .resolve(key_ty.id)
-                                            .unwrap()
+                                            .resolve_ty(key_ty.id, &mut ())?
                                             .type_def
                                         {
                                             TypeDef::Primitive(TypeDefPrimitive::U32) => {
@@ -456,7 +454,7 @@ pub async fn assets_set_at_block(
                                                                         }
                                                                     },
                                                                     _ => {},
-                                                                },
+                               },
                                                                 "decimals" => {
                                                                     if let ParsedData::PrimitiveU8{value, specialty: _} = field_data.data.data {
                                                                         decimals = Some(value);
@@ -472,20 +470,21 @@ pub async fn assets_set_at_block(
                                                                 break;
                                                             }
                                                         }
-                                                        //let name = name.unwrap();
-                                                        let symbol = symbol.unwrap();
-                                                        let decimals = decimals.unwrap();
-                                                        assets_set.insert(
-                                                            symbol,
-                                                            CurrencyProperties {
-                                                                chain_name: chain_name.clone(),
-                                                                kind: TokenKind::Asset,
-                                                                decimals,
-                                                                rpc_url: rpc_url.to_string(),
-                                                                asset_id: Some(asset_id),
-                                                                ss58: specs.base58prefix,
-                                                            },
-                                                        );
+                                                        if let (Some(symbol), Some(decimals)) =
+                                                            (symbol, decimals)
+                                                        {
+                                                            assets_set.insert(
+                                                                symbol,
+                                                                CurrencyProperties {
+                                                                    chain_name: chain_name.clone(),
+                                                                    kind: TokenKind::Asset,
+                                                                    decimals,
+                                                                    rpc_url: rpc_url.to_string(),
+                                                                    asset_id: Some(asset_id),
+                                                                    ss58: specs.base58prefix,
+                                                                },
+                                                            );
+                                                        }
                                                     } else {
                                                         return Err(
                                                             ErrorChain::AssetMetadataUnexpected,
@@ -557,7 +556,7 @@ pub async fn system_balance_at_account(
 
     let value_fetch = get_value_from_storage(client, &query.key, block).await?;
     if let Value::String(ref string_value) = value_fetch {
-        let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
+        let value_data = unhex(string_value, NotHex::StorageValue)?;
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
             &query.value_ty,
             &value_data.as_ref(),
@@ -680,14 +679,13 @@ pub async fn current_block_number(
     if let Value::String(hex_data) =
         get_value_from_storage(client, &block_number_query.key, block).await?
     {
-        let value_data = hex::decode(hex_data.trim_start_matches("0x")).unwrap();
+        let value_data = unhex(&hex_data, NotHex::StorageValue)?;
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
             &block_number_query.value_ty,
             &value_data.as_ref(),
             &mut (),
             &metadata.types,
-        )
-        .unwrap();
+        )?;
         if let ParsedData::PrimitiveU32 {
             value,
             specialty: _,

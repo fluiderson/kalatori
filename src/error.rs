@@ -275,6 +275,9 @@ pub enum ErrorChain {
 
     #[error("Storage entry decoding error: {0}")]
     StorageDecodeError(StorageError<()>),
+
+    #[error("Type registry error: {0}")]
+    RegistryError(RegistryError<()>),
 }
 
 impl From<ClientError> for ErrorChain {
@@ -316,6 +319,12 @@ impl From<ParserError<()>> for ErrorChain {
 impl From<StorageError<()>> for ErrorChain {
     fn from(e: StorageError<()>) -> Self {
         ErrorChain::StorageDecodeError(e)
+    }
+}
+
+impl From<RegistryError<()>> for ErrorChain {
+    fn from(e: RegistryError<()>) -> Self {
+        ErrorChain::RegistryError(e)
     }
 }
 
@@ -455,6 +464,9 @@ pub enum NotHex {
 
     #[error("Encoded metadata string is not a valid hexadecimal.")]
     Metadata,
+
+    #[error("Encoded storage key string is not a valid hexadecimal.")]
+    StorageKey,
 
     #[error("Encoded storage value string is not a valid hexadecimal.")]
     StorageValue,
