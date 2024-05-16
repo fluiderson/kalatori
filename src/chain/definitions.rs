@@ -1,10 +1,8 @@
 //! Common objects for chain interaction system
 
-use frame_metadata::v15::RuntimeMetadataV15;
-use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
+use jsonrpsee::ws_client::WsClient;
 use primitive_types::H256;
 use substrate_crypto_light::common::{AccountId32, AsBase58};
-use substrate_parser::ShortSpecs;
 use tokio::sync::oneshot;
 
 use crate::{
@@ -12,7 +10,7 @@ use crate::{
         rpc::{asset_balance_at_account, system_balance_at_account},
         tracker::ChainWatcher,
     },
-    definitions::{api_v2::OrderInfo, Balance, Chain},
+    definitions::{api_v2::OrderInfo, Balance},
     error::{ErrorChain, NotHex},
     utils::unhex,
 };
@@ -96,7 +94,7 @@ pub struct WatchAccount {
     pub address: AccountId32,
     pub currency: String,
     pub amount: Balance,
-    pub recipient: Option<AccountId32>,
+    pub recipient: AccountId32,
     pub res: oneshot::Sender<Result<(), ErrorChain>>,
 }
 
@@ -104,7 +102,7 @@ impl WatchAccount {
     pub fn new(
         id: String,
         order: OrderInfo,
-        recipient: Option<AccountId32>,
+        recipient: AccountId32,
         res: oneshot::Sender<Result<(), ErrorChain>>,
     ) -> Result<WatchAccount, ErrorChain> {
         Ok(WatchAccount {
@@ -133,7 +131,7 @@ pub struct Invoice {
     pub address: AccountId32,
     pub currency: String,
     pub amount: Balance,
-    pub recipient: Option<AccountId32>,
+    pub recipient: AccountId32,
 }
 
 impl Invoice {

@@ -27,6 +27,9 @@ use tracker::start_chain_watch;
 /// Logging filter
 pub const MODULE: &str = module_path!();
 
+/// Wait this long before forgetting about stuck chain watcher
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(120000);
+
 /// RPC server handle
 #[derive(Clone, Debug)]
 pub struct ChainManager {
@@ -51,7 +54,10 @@ impl ChainManager {
 
         // start network monitors
         for c in chain {
-            let (chain_tx, mut chain_rx) = mpsc::channel(1024);
+            if c.endpoints.is_empty() {
+                return Err(Error::EmptyEndpoints(c.name));
+            }
+            let (chain_tx, chain_rx) = mpsc::channel(1024);
             watch_chain.insert(c.name.clone(), chain_tx.clone());
             if let Some(ref a) = c.native_token {
                 if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
@@ -66,7 +72,6 @@ impl ChainManager {
 
             start_chain_watch(
                 c,
-                &currency_map,
                 chain_tx.clone(),
                 chain_rx,
                 state.interface(),
@@ -119,7 +124,9 @@ impl ChainManager {
                             for (name, chain) in watch_chain.drain() {
                                 let (tx, rx) = oneshot::channel();
                                 if chain.send(ChainTrackerRequest::Shutdown(tx)).await.is_ok() {
-                                    let _ = rx.await;
+                                    if timeout(SHUTDOWN_TIMEOUT, rx).await.is_err() {
+                                        tracing::error!("Chain monitor for {name} took too much time to wind down, probably it was frozen. Discarding it.");
+                                    };
                                 }
                             }
                             let _ = res.send(());
@@ -134,11 +141,16 @@ impl ChainManager {
         Ok(Self { tx })
     }
 
-    pub async fn add_invoice(&self, id: String, order: OrderInfo) -> Result<(), ErrorChain> {
+    pub async fn add_invoice(
+        &self,
+        id: String,
+        order: OrderInfo,
+        recipient: AccountId32,
+    ) -> Result<(), ErrorChain> {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(ChainRequest::WatchAccount(WatchAccount::new(
-                id, order, None, res,
+                id, order, recipient, res,
             )?))
             .await
             .map_err(|_| ErrorChain::MessageDropped)?;
@@ -154,10 +166,7 @@ impl ChainManager {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(ChainRequest::Reap(WatchAccount::new(
-                id,
-                order,
-                Some(recipient),
-                res,
+                id, order, recipient, res,
             )?))
             .await
             .map_err(|_| ErrorChain::MessageDropped)?;

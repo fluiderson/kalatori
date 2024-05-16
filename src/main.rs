@@ -7,11 +7,9 @@ use std::{
     fs,
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    ops::Deref,
     panic, str,
 };
 use substrate_crypto_light::common::{AccountId32, AsBase58};
-use substrate_crypto_light::{common::cut_path, sr25519::Pair};
 use tokio::{
     signal,
     sync::{mpsc, oneshot},
@@ -20,7 +18,6 @@ use tokio::{
 use tokio_util::{sync::CancellationToken, task};
 use tracing_subscriber::{fmt::time::UtcTime, EnvFilter};
 
-mod asset;
 mod callback;
 mod chain;
 mod database;
@@ -127,7 +124,7 @@ async fn main() -> Result<(), Error> {
 
     let db = database::Database::init(database_path, task_tracker.clone())?;
 
-    let (cm_tx, mut cm_rx) = oneshot::channel();
+    let (cm_tx, cm_rx) = oneshot::channel();
 
     let state = State::initialise(
         currencies,

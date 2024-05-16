@@ -24,6 +24,9 @@ pub enum Error {
     #[error("failed to parse the config parameter {0}")]
     ConfigParse(String),
 
+    #[error("chain {0} doesn't have any `endpoints` in the config")]
+    EmptyEndpoints(String),
+
     #[error("RPC server error: {0:?}")]
     ErrorChain(ErrorChain),
 
@@ -93,6 +96,10 @@ impl From<std::io::Error> for Error {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ErrorChain {
+    // TODO: this should be prevented by typesafety
+    #[error("Asset id is missing")]
+    AssetId,
+
     #[error("Asset id is not u32")]
     AssetIdFormat,
 
@@ -113,6 +120,12 @@ pub enum ErrorChain {
 
     #[error("expected map with single entry, got multiple entries")]
     AssetMetadataMapSize,
+
+    #[error("Asset balance format is unexpected")]
+    AssetBalanceFormat,
+
+    #[error("No balance field in asset record")]
+    AssetBalanceNotFound,
 
     #[error("Format of fetched base58 prefix {value} is not supported.")]
     Base58PrefixFormatNotSupported { value: String },
@@ -141,26 +154,20 @@ pub enum ErrorChain {
     #[error("Unexpected genesis hash format.")]
     GenesisHashFormat,
 
-    #[error("Unexpected genesis hash length.")]
-    GenesisHashLength,
-
     #[error("...")]
     MetadataFormat,
 
     #[error("...")]
     MetadataNotDecodeable,
 
-    #[error("{0}")]
-    MetadataVersion(MetaVersionErrorPallets),
-
     #[error("No base58 prefix is fetched as system properties or found in the metadata.")]
     NoBase58Prefix,
 
+    #[error("Block number definition not found")]
+    NoBlockNumberDefinition,
+
     #[error("No decimals value is fetched.")]
     NoDecimals,
-
-    #[error("No existing metadata and specs entry before metadata update for hash {}. Remove entry and start over.", hex::encode(.0))]
-    NoExistingEntryMetadataUpdate(H256),
 
     #[error("Metadata v15 not available through rpc.")]
     NoMetadataV15,
@@ -168,20 +175,20 @@ pub enum ErrorChain {
     #[error("Metadata must start with `meta` prefix.")]
     NoMetaPrefix,
 
-    #[error("{0}")]
-    NotHex(NotHex),
+    #[error("Pallet not found")]
+    NoPallet,
 
-    #[error("Fetched values were not sent through successfully.")]
-    NotSent,
+    #[error("No pallets with storage found")]
+    NoStorage,
+
+    #[error("Pallet System not found")]
+    NoSystem,
+
+    #[error("No storage variants in system pallet")]
+    NoStorageInSystem,
 
     #[error("No unit value is fetched.")]
     NoUnit,
-
-    #[error("Only Sr25519 encryption, 0x01, is supported. Received transaction has encoded encryption 0x{}", hex::encode([*.0]))]
-    OnlySr25519(u8),
-
-    #[error("...")]
-    PoisonedLockSelector,
 
     #[error("...")]
     PropertiesFormat,
@@ -189,48 +196,23 @@ pub enum ErrorChain {
     #[error("...")]
     RawMetadataNotDecodeable,
 
-    #[error("Can't read data through the interface. Receiver closed.")]
-    ReceiverClosed,
-
-    #[error("Can't read data through the interface. Receiver guard is poisoned.")]
-    ReceiverGuardPoisoned,
-
-    #[error("Received QR payload is too short.")]
-    TooShort,
-
-    #[error("Received transaction could not be parsed. {0}.")]
-    TransactionNotParsable(SignableError<(), RuntimeMetadataV15>),
-
-    #[error("Unexpected payload type, 0x{}", hex::encode([*.0]))]
-    UnknownPayloadType(u8),
-
     #[error("Format of fetched unit {value} is not supported.")]
     UnitFormatNotSupported { value: String },
 
-    #[error("Try updating metadata. Metadata version in transaction {as_decoded} does not match the version of the available metadata entry {in_metadata}.")]
-    UpdateMetadata {
-        as_decoded: String,
-        in_metadata: String,
-    },
+    #[error("Unexpected storage value format for key {0:?}")]
+    StorageValueFormat(Value),
 
-    #[error("Unexpected storage value format for key {0}")]
-    StorageValueFormat(String),
+    //#[error("Chain returned zero for block time")]
+    //ZeroBlockTime,
 
-    #[error("Chain returned zero for block time")]
-    ZeroBlockTime,
+    //#[error("Runtime api call response should be String, but received {0:?}")]
+    //StateCallResponse(Value),
 
-    #[error("chain doesn't have any `endpoints` in the config")]
-    EmptyEndpoints,
+    //#[error("Could not fetch BABE expected block time")]
+    //BabeExpectedBlockTime,
 
-    #[error("Runtime api call response should be String, but received {0:?}")]
-    StateCallResponse(Value),
-
-    #[error("Could not fetch BABE expected block time")]
-    BabeExpectedBlockTime,
-
-    #[error("Aura slot duration could not be parsed as u64")]
-    AuraSlotDurationFormat,
-
+    //#[error("Aura slot duration could not be parsed as u64")]
+    //AuraSlotDurationFormat,
     #[error("Internal error: {0:?}")] // TODO this should be replaced by specific errors
     ErrorUtil(ErrorUtil),
 
@@ -261,9 +243,6 @@ pub enum ErrorChain {
     #[error("Storage query could not be formed")]
     StorageQuery,
 
-    #[error("Storage format error")]
-    StorageFormatError,
-
     #[error("Events could not be fetched")]
     EventsMissing,
 
@@ -275,11 +254,44 @@ pub enum ErrorChain {
 
     #[error("Storage entry decoding error: {0}")]
     StorageDecodeError(StorageError<()>),
+
+    #[error("Type registry error: {0}")]
+    RegistryError(RegistryError<()>),
+
+    #[error("Substrate constructor error: {0:?}")]
+    SubstrateConstructor(ErrorFixMe<(), RuntimeMetadataV15>),
+
+    #[error("Transaction is not ready to be signed: {0}")]
+    TransactionNotSignable(String),
+
+    #[error("Signing failed: {0}")]
+    Signer(ErrorSigner),
+
+    #[error("Transaction could not be completed")]
+    NothingToSend,
+
+    #[error("Storage entry is not a map")]
+    StorageEntryNotMap,
+
+    #[error("Storage entry map has more than one records")]
+    StorageEntryMapMultiple,
+
+    #[error("Storage key {0} not found")]
+    StorageKeyNotFound(String),
+
+    #[error("Storage key is not u32")]
+    StorageKeyNotU32,
 }
 
 impl From<ClientError> for ErrorChain {
     fn from(e: ClientError) -> Self {
         ErrorChain::Client(e)
+    }
+}
+
+impl From<ErrorSigner> for ErrorChain {
+    fn from(e: ErrorSigner) -> Self {
+        ErrorChain::Signer(e)
     }
 }
 
@@ -316,6 +328,18 @@ impl From<ParserError<()>> for ErrorChain {
 impl From<StorageError<()>> for ErrorChain {
     fn from(e: StorageError<()>) -> Self {
         ErrorChain::StorageDecodeError(e)
+    }
+}
+
+impl From<RegistryError<()>> for ErrorChain {
+    fn from(e: RegistryError<()>) -> Self {
+        ErrorChain::RegistryError(e)
+    }
+}
+
+impl From<ErrorFixMe<(), RuntimeMetadataV15>> for ErrorChain {
+    fn from(e: ErrorFixMe<(), RuntimeMetadataV15>) -> Self {
+        ErrorChain::SubstrateConstructor(e)
     }
 }
 
@@ -384,9 +408,6 @@ pub enum ErrorOrder {
     #[error("Order parameter invalid: {0}")]
     InvalidParameter(String),
 
-    #[error("Order already processed: {0:?}")]
-    AlreadyProcessed(Box<OrderStatus>),
-
     #[error("Internal error")]
     InternalError,
 }
@@ -450,11 +471,11 @@ pub enum NotHex {
     #[error("Block hash string is not a valid hexadecimal.")]
     BlockHash,
 
-    #[error("Genesis hash string is not a valid hexadecimal.")]
-    GenesisHash,
-
     #[error("Encoded metadata string is not a valid hexadecimal.")]
     Metadata,
+
+    #[error("Encoded storage key string is not a valid hexadecimal.")]
+    StorageKey,
 
     #[error("Encoded storage value string is not a valid hexadecimal.")]
     StorageValue,

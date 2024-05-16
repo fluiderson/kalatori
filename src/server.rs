@@ -163,9 +163,6 @@ async fn order(
                 }]),
             )
                 .into_response(),
-            ErrorOrder::AlreadyProcessed(order_status) => {
-                (StatusCode::CONFLICT, Json(order_status)).into_response()
-            }
             ErrorOrder::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
     }
