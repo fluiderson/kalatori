@@ -114,6 +114,12 @@ pub enum ErrorChain {
     #[error("expected map with single entry, got multiple entries")]
     AssetMetadataMapSize,
 
+    #[error("Asset balance format is unexpected")]
+    AssetBalanceFormat,
+
+    #[error("No balance field in asset record")]
+    AssetBalanceNotFound,
+
     #[error("Format of fetched base58 prefix {value} is not supported.")]
     Base58PrefixFormatNotSupported { value: String },
 

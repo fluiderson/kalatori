@@ -537,12 +537,12 @@ pub async fn asset_balance_at_account(
                     return Ok(Balance(value));
                 }
             }
-            panic!();
+            Err(ErrorChain::AssetBalanceNotFound)
         } else {
-            panic!()
+            Err(ErrorChain::AssetBalanceFormat)
         }
     } else {
-        panic!()
+        Err(ErrorChain::StorageFormatError)
     }
 }
 
