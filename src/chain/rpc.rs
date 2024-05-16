@@ -70,7 +70,7 @@ pub async fn subscribe_blocks(client: &WsClient) -> Result<Subscription<BlockHea
         .subscribe(
             "chain_subscribeFinalizedHeads",
             rpc_params![],
-            "unsubscribe blocks",
+            "chain_unsubscribeFinalizedHeads",
         )
         .await?)
 }
