@@ -2,23 +2,20 @@
 
 use crate::{
     chain::{
-        definitions::{BlockHash, EventFilter, WatchAccount},
+        definitions::{BlockHash, EventFilter},
         utils::{
-            asset_balance_query, base58prefix, block_number_query, events_entry_metadata,
-            hashed_key_element, pallet_index, storage_key, system_balance_query,
-            system_properties_to_short_specs, unit, was_balance_received_at_account,
+            asset_balance_query, block_number_query, events_entry_metadata,
+            hashed_key_element, system_balance_query,
+            system_properties_to_short_specs,
         },
     },
-    definitions::api_v2::{CurrencyProperties, OrderInfo},
+    definitions::api_v2::CurrencyProperties,
     definitions::{
-        api_v2::{AssetId, BlockNumber, CurrencyInfo, Decimals, TokenKind},
-        AssetInfo, Balance, Chain, NativeToken, Nonce, PalletIndex, Timestamp,
+        api_v2::{AssetId, TokenKind},
+        Balance,
     },
-    error::{Error, ErrorChain, NotHex},
-    signer::Signer,
-    state::State,
+    error::{ErrorChain, NotHex},
     utils::unhex,
-    TaskTracker,
 };
 use frame_metadata::{
     v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
@@ -26,21 +23,19 @@ use frame_metadata::{
 };
 use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
 use jsonrpsee::rpc_params;
-use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
-use parity_scale_codec::{Decode, DecodeAll, Encode};
+use jsonrpsee::ws_client::WsClient;
+use parity_scale_codec::{DecodeAll, Encode};
 use scale_info::{form::PortableForm, PortableRegistry, TypeDef, TypeDefPrimitive};
-use serde::{Deserialize, Deserializer};
-use serde_json::{Map, Number, Value};
-use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
+use serde::Deserialize;
+use serde_json::{Number, Value};
+use sp_crypto_hashing::twox_128;
 use std::{
-    borrow::Cow,
-    collections::{hash_map::Entry, HashMap},
+    collections::HashMap,
     fmt::Debug,
-    num::NonZeroU64,
 };
-use substrate_crypto_light::common::{AccountId32, AsBase58};
+use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
-    cards::{Event, ExtendedData, FieldData, ParsedData, Sequence},
+    cards::{Event, ParsedData, Sequence},
     decode_all_as_type, decode_as_storage_entry,
     special_indicators::SpecialtyUnsignedInteger,
     storage_data::{KeyData, KeyPart},
@@ -542,7 +537,7 @@ pub async fn asset_balance_at_account(
             Err(ErrorChain::AssetBalanceFormat)
         }
     } else {
-        Err(ErrorChain::StorageFormatError)
+        Err(ErrorChain::StorageValueFormat(value_fetch))
     }
 }
 
@@ -624,7 +619,7 @@ pub async fn events_at_block(
                 let value_bytes = if let Value::String(data_from_storage) = data_from_storage {
                     unhex(&data_from_storage, NotHex::StorageValue)?
                 } else {
-                    return Err(ErrorChain::StorageFormatError);
+                    return Err(ErrorChain::StorageValueFormat(data_from_storage));
                 };
                 let storage_data = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
                     &key_bytes.as_ref(),
@@ -676,9 +671,9 @@ pub async fn current_block_number(
     block: &BlockHash,
 ) -> Result<u32, ErrorChain> {
     let block_number_query = block_number_query(metadata);
-    if let Value::String(hex_data) =
-        get_value_from_storage(client, &block_number_query.key, block).await?
-    {
+    let fetched_value = get_value_from_storage(client, &block_number_query.key, block).await?;
+    if let Value::String(hex_data) = fetched_value
+            {
         let value_data = unhex(&hex_data, NotHex::StorageValue)?;
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
             &block_number_query.value_ty,
@@ -696,7 +691,7 @@ pub async fn current_block_number(
             Err(ErrorChain::BlockNumberFormat)
         }
     } else {
-        Err(ErrorChain::StorageFormatError)
+        Err(ErrorChain::StorageValueFormat(fetched_value))
     }
 }
 
@@ -716,7 +711,7 @@ pub async fn send_stuff(client: &WsClient, data: &str) -> Result<(), ErrorChain>
     let mut subscription: Subscription<Value> = client
         .subscribe("author_submitAndWatchExtrinsic", rpc_params, "")
         .await?;
-    let reply = subscription.next().await.unwrap();
+    let _reply = subscription.next().await.unwrap();
     //println!("{reply:?}"); // TODO!
     Ok(())
 }

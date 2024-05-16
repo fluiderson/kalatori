@@ -24,6 +24,9 @@ pub enum Error {
     #[error("failed to parse the config parameter {0}")]
     ConfigParse(String),
 
+    #[error("chain {0} doesn't have any `endpoints` in the config")]
+    EmptyEndpoints(String),
+
     #[error("RPC server error: {0:?}")]
     ErrorChain(ErrorChain),
 
@@ -147,17 +150,11 @@ pub enum ErrorChain {
     #[error("Unexpected genesis hash format.")]
     GenesisHashFormat,
 
-    #[error("Unexpected genesis hash length.")]
-    GenesisHashLength,
-
     #[error("...")]
     MetadataFormat,
 
     #[error("...")]
     MetadataNotDecodeable,
-
-    #[error("{0}")]
-    MetadataVersion(MetaVersionErrorPallets),
 
     #[error("No base58 prefix is fetched as system properties or found in the metadata.")]
     NoBase58Prefix,
@@ -165,29 +162,14 @@ pub enum ErrorChain {
     #[error("No decimals value is fetched.")]
     NoDecimals,
 
-    #[error("No existing metadata and specs entry before metadata update for hash {}. Remove entry and start over.", hex::encode(.0))]
-    NoExistingEntryMetadataUpdate(H256),
-
     #[error("Metadata v15 not available through rpc.")]
     NoMetadataV15,
 
     #[error("Metadata must start with `meta` prefix.")]
     NoMetaPrefix,
 
-    #[error("{0}")]
-    NotHex(NotHex),
-
-    #[error("Fetched values were not sent through successfully.")]
-    NotSent,
-
     #[error("No unit value is fetched.")]
     NoUnit,
-
-    #[error("Only Sr25519 encryption, 0x01, is supported. Received transaction has encoded encryption 0x{}", hex::encode([*.0]))]
-    OnlySr25519(u8),
-
-    #[error("...")]
-    PoisonedLockSelector,
 
     #[error("...")]
     PropertiesFormat,
@@ -195,47 +177,23 @@ pub enum ErrorChain {
     #[error("...")]
     RawMetadataNotDecodeable,
 
-    #[error("Can't read data through the interface. Receiver closed.")]
-    ReceiverClosed,
-
-    #[error("Can't read data through the interface. Receiver guard is poisoned.")]
-    ReceiverGuardPoisoned,
-
-    #[error("Received QR payload is too short.")]
-    TooShort,
-
-    #[error("Received transaction could not be parsed. {0}.")]
-    TransactionNotParsable(SignableError<(), RuntimeMetadataV15>),
-
-    #[error("Unexpected payload type, 0x{}", hex::encode([*.0]))]
-    UnknownPayloadType(u8),
-
     #[error("Format of fetched unit {value} is not supported.")]
     UnitFormatNotSupported { value: String },
 
-    #[error("Try updating metadata. Metadata version in transaction {as_decoded} does not match the version of the available metadata entry {in_metadata}.")]
-    UpdateMetadata {
-        as_decoded: String,
-        in_metadata: String,
-    },
+    #[error("Unexpected storage value format for key {0:?}")]
+    StorageValueFormat(Value),
 
-    #[error("Unexpected storage value format for key {0}")]
-    StorageValueFormat(String),
+    //#[error("Chain returned zero for block time")]
+    //ZeroBlockTime,
 
-    #[error("Chain returned zero for block time")]
-    ZeroBlockTime,
+    //#[error("Runtime api call response should be String, but received {0:?}")]
+    //StateCallResponse(Value),
 
-    #[error("chain doesn't have any `endpoints` in the config")]
-    EmptyEndpoints,
+    //#[error("Could not fetch BABE expected block time")]
+    //BabeExpectedBlockTime,
 
-    #[error("Runtime api call response should be String, but received {0:?}")]
-    StateCallResponse(Value),
-
-    #[error("Could not fetch BABE expected block time")]
-    BabeExpectedBlockTime,
-
-    #[error("Aura slot duration could not be parsed as u64")]
-    AuraSlotDurationFormat,
+    //#[error("Aura slot duration could not be parsed as u64")]
+    //AuraSlotDurationFormat,
 
     #[error("Internal error: {0:?}")] // TODO this should be replaced by specific errors
     ErrorUtil(ErrorUtil),
@@ -267,8 +225,8 @@ pub enum ErrorChain {
     #[error("Storage query could not be formed")]
     StorageQuery,
 
-    #[error("Storage format error")]
-    StorageFormatError,
+    //#[error("Storage format error")]
+    //StorageFormatError,
 
     #[error("Events could not be fetched")]
     EventsMissing,
@@ -399,9 +357,6 @@ pub enum ErrorOrder {
     #[error("Order parameter invalid: {0}")]
     InvalidParameter(String),
 
-    #[error("Order already processed: {0:?}")]
-    AlreadyProcessed(Box<OrderStatus>),
-
     #[error("Internal error")]
     InternalError,
 }
@@ -464,9 +419,6 @@ impl From<CryptoError> for ErrorSigner {
 pub enum NotHex {
     #[error("Block hash string is not a valid hexadecimal.")]
     BlockHash,
-
-    #[error("Genesis hash string is not a valid hexadecimal.")]
-    GenesisHash,
 
     #[error("Encoded metadata string is not a valid hexadecimal.")]
     Metadata,

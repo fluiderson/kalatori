@@ -3,22 +3,21 @@
 use std::collections::HashMap;
 
 use frame_metadata::v15::RuntimeMetadataV15;
-use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use substrate_parser::ShortSpecs;
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::mpsc,
     time::{timeout, Duration},
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     chain::{
-        definitions::{BlockHash, ChainRequest, ChainTrackerRequest, EventFilter, Invoice},
+        definitions::{BlockHash, ChainTrackerRequest, EventFilter, Invoice},
         payout::payout,
         rpc::{
             assets_set_at_block, block_hash, events_at_block, genesis_hash, metadata, next_block,
-            next_block_number, specs, subscribe_blocks, BlockHead,
+            next_block_number, specs, subscribe_blocks,
         },
         utils::{events_entry_metadata, was_balance_received_at_account},
     },
@@ -31,7 +30,6 @@ use crate::{
 
 pub fn start_chain_watch(
     c: Chain,
-    currency_map: &HashMap<String, String>,
     chain_tx: mpsc::Sender<ChainTrackerRequest>,
     mut chain_rx: mpsc::Receiver<ChainTrackerRequest>,
     state: State,
@@ -79,14 +77,14 @@ pub fn start_chain_watch(
                                     Ok(a) => a,
                                     Err(e) => {
                                         tracing::info!(
-                                        "Failed to receive block in chain {}, due to {} switching RPC server...",
-                                        c.name,
-                                        e
-                            );
-                            continue;
-
+                                            "Failed to receive block in chain {}, due to {} switching RPC server...",
+                                            c.name,
+                                            e
+                                        );
+                                        continue;
                                     },
                                 };
+                                // TODO: continue and reconnect if spec_version changed
                                 let events = events_at_block(
                                     &client,
                                     &block,

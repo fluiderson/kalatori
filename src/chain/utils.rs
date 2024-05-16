@@ -6,10 +6,9 @@ use frame_metadata::{
     v14::StorageHasher,
     v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
 };
-use parity_scale_codec::{Decode, Encode};
-use primitive_types::H256;
+use parity_scale_codec::Encode;
 use scale_info::{form::PortableForm, TypeDef, TypeDefPrimitive};
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
 use substrate_constructor::{
     fill_prepare::{
@@ -23,14 +22,14 @@ use substrate_constructor::{
         StorageSelector, StorageSelectorFunctional,
     },
 };
-use substrate_crypto_light::common::{AccountId32, DeriveJunction, FullDerivation};
+use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
     cards::{ExtendedData, FieldData, ParsedData},
     decode_all_as_type,
     decoding_sci::Ty,
     propagated::Propagated,
     special_indicators::SpecialtyUnsignedInteger,
-    AsMetadata, ShortSpecs,
+    ShortSpecs,
 };
 
 pub struct AssetTransferConstructor<'a> {

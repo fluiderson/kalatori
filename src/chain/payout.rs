@@ -23,7 +23,6 @@ use crate::{
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::WsClientBuilder;
 use substrate_constructor::fill_prepare::{SpecialTypeToFill, TypeContentToFill};
-use substrate_crypto_light::common::AccountId32;
 
 /// Single function that should completely handle payout attmept. Just do not call anything else.
 ///

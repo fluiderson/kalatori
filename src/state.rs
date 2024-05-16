@@ -22,7 +22,7 @@ use tokio::sync::oneshot;
 /// it should go through here.
 #[derive(Clone, Debug)]
 pub struct State {
-    pub tx: tokio::sync::mpsc::Sender<StateAccessRequest>,
+    tx: tokio::sync::mpsc::Sender<StateAccessRequest>,
 }
 
 impl State {
