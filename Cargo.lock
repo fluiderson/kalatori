@@ -1244,6 +1244,7 @@ dependencies = [
  "frame-metadata",
  "hex",
  "jsonrpsee",
+ "lazy_static",
  "mnemonic-external",
  "names",
  "parity-scale-codec",
