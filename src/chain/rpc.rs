@@ -692,11 +692,10 @@ pub async fn current_block_number(
     metadata: &RuntimeMetadataV15,
     block: &BlockHash,
 ) -> Result<u32, ErrorChain> {
-    let block_number_query = block_number_query(metadata);
-    if let Value::String(hex_data) =
-        get_value_from_storage(client, &block_number_query.key, block).await?
-    {
-        let value_data = hex::decode(hex_data.trim_start_matches("0x")).unwrap();
+    let block_number_query = block_number_query(metadata)?;
+    let fetched_value = get_value_from_storage(client, &block_number_query.key, block).await?;
+    if let Value::String(hex_data) = fetched_value {
+        let value_data = unhex(&hex_data, NotHex::StorageValue)?;
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
             &block_number_query.value_ty,
             &value_data.as_ref(),
