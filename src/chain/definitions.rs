@@ -22,7 +22,7 @@ pub struct BlockHash(pub primitive_types::H256);
 impl BlockHash {
     /// Convert block hash to RPC-friendly format
     pub fn to_string(&self) -> String {
-        hex::encode(&self.0)
+        format!("0x{}", hex::encode(&self.0))
     }
 
     /// Convert string returned by RPC to typesafe block
