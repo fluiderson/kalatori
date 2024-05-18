@@ -281,9 +281,6 @@ pub enum ErrorChain {
 
     #[error("Storage key is not u32")]
     StorageKeyNotU32,
-
-    #[error("Storage value unsupported format error")]
-    StorageFormatError,
 }
 
 impl From<ClientError> for ErrorChain {

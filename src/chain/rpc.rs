@@ -2,23 +2,19 @@
 
 use crate::{
     chain::{
-        definitions::{BlockHash, EventFilter, WatchAccount},
+        definitions::{BlockHash, EventFilter},
         utils::{
-            asset_balance_query, base58prefix, block_number_query, events_entry_metadata,
-            hashed_key_element, pallet_index, storage_key, system_balance_query,
-            system_properties_to_short_specs, unit, was_balance_received_at_account,
+            asset_balance_query, block_number_query, events_entry_metadata, hashed_key_element,
+            system_balance_query, system_properties_to_short_specs,
         },
     },
-    definitions::api_v2::{CurrencyProperties, OrderInfo},
+    definitions::api_v2::CurrencyProperties,
     definitions::{
-        api_v2::{AssetId, BlockNumber, CurrencyInfo, Decimals, TokenKind},
-        AssetInfo, Balance, Chain, NativeToken, Nonce, PalletIndex, Timestamp,
+        api_v2::{AssetId, TokenKind},
+        Balance,
     },
-    error::{Error, ErrorChain, NotHex},
-    signer::Signer,
-    state::State,
+    error::{ErrorChain, NotHex},
     utils::unhex,
-    TaskTracker,
 };
 use frame_metadata::{
     v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
@@ -26,25 +22,20 @@ use frame_metadata::{
 };
 use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
 use jsonrpsee::rpc_params;
-use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
-use parity_scale_codec::{Decode, DecodeAll, Encode};
+use jsonrpsee::ws_client::WsClient;
+use parity_scale_codec::{DecodeAll, Encode};
 use scale_info::{form::PortableForm, PortableRegistry, TypeDef, TypeDefPrimitive};
-use serde::{Deserialize, Deserializer};
-use serde_json::{Map, Number, Value};
-use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
-use std::{
-    borrow::Cow,
-    collections::{hash_map::Entry, HashMap},
-    fmt::Debug,
-    num::NonZeroU64,
-};
-use substrate_crypto_light::common::{AccountId32, AsBase58};
+use serde::Deserialize;
+use serde_json::{Number, Value};
+use sp_crypto_hashing::twox_128;
+use std::{collections::HashMap, fmt::Debug};
+use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
-    cards::{Event, ExtendedData, FieldData, ParsedData, Sequence},
+    cards::{Event, ParsedData, Sequence},
     decode_all_as_type, decode_as_storage_entry,
     special_indicators::SpecialtyUnsignedInteger,
     storage_data::{KeyData, KeyPart},
-    AsMetadata, ShortSpecs,
+    AsMetadata, ResolveType, ShortSpecs,
 };
 
 const MAX_BLOCK_NUMBER_ERROR: &str = "block number type overflow is occurred";
@@ -101,7 +92,7 @@ pub async fn get_keys_from_storage(
         hex::encode(twox_128(storage_name.as_bytes()))
     );
 
-    let count = 100; // I expect it to always work, but will it actually?
+    let count = 100; // TODO make full scan just in case
     let start_key: Option<&str> = None; // Start from the beginning
 
     let mut params = vec![
@@ -308,9 +299,8 @@ pub async fn assets_set_at_block(
                 if let Value::String(string_key) = key {
                     let value_fetch = get_value_from_storage(client, string_key, block).await?;
                     if let Value::String(ref string_value) = value_fetch {
-                        let key_data = hex::decode(string_key.trim_start_matches("0x")).unwrap();
-                        let value_data =
-                            hex::decode(string_value.trim_start_matches("0x")).unwrap();
+                        let key_data = unhex(string_key, NotHex::StorageKey)?;
+                        let value_data = unhex(string_value, NotHex::StorageValue)?;
                         let storage_entry = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
                             &key_data.as_ref(),
                             &value_data.as_ref(),
@@ -366,8 +356,7 @@ pub async fn assets_set_at_block(
                                         let hasher = &hashers[0];
                                         match metadata_v15
                                             .types
-                                            .resolve(key_ty.id)
-                                            .unwrap()
+                                            .resolve_ty(key_ty.id, &mut ())?
                                             .type_def
                                         {
                                             TypeDef::Primitive(TypeDefPrimitive::U32) => {
@@ -488,20 +477,21 @@ pub async fn assets_set_at_block(
                                                                 break;
                                                             }
                                                         }
-                                                        //let name = name.unwrap();
-                                                        let symbol = symbol.unwrap();
-                                                        let decimals = decimals.unwrap();
-                                                        assets_set.insert(
-                                                            symbol,
-                                                            CurrencyProperties {
-                                                                chain_name: chain_name.clone(),
-                                                                kind: TokenKind::Asset,
-                                                                decimals,
-                                                                rpc_url: rpc_url.to_string(),
-                                                                asset_id: Some(asset_id),
-                                                                ss58: specs.base58prefix,
-                                                            },
-                                                        );
+                                                        if let (Some(symbol), Some(decimals)) =
+                                                            (symbol, decimals)
+                                                        {
+                                                            assets_set.insert(
+                                                                symbol,
+                                                                CurrencyProperties {
+                                                                    chain_name: chain_name.clone(),
+                                                                    kind: TokenKind::Asset,
+                                                                    decimals,
+                                                                    rpc_url: rpc_url.to_string(),
+                                                                    asset_id: Some(asset_id),
+                                                                    ss58: specs.base58prefix,
+                                                                },
+                                                            );
+                                                        }
                                                     } else {
                                                         return Err(
                                                             ErrorChain::AssetMetadataUnexpected,
@@ -554,12 +544,12 @@ pub async fn asset_balance_at_account(
                     return Ok(Balance(value));
                 }
             }
-            panic!();
+            Err(ErrorChain::AssetBalanceNotFound)
         } else {
-            panic!()
+            Err(ErrorChain::AssetBalanceFormat)
         }
     } else {
-        panic!()
+        Err(ErrorChain::StorageValueFormat(value_fetch))
     }
 }
 
@@ -573,7 +563,7 @@ pub async fn system_balance_at_account(
 
     let value_fetch = get_value_from_storage(client, &query.key, block).await?;
     if let Value::String(ref string_value) = value_fetch {
-        let value_data = hex::decode(string_value.trim_start_matches("0x")).unwrap();
+        let value_data = unhex(string_value, NotHex::StorageValue)?;
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
             &query.value_ty,
             &value_data.as_ref(),
@@ -641,7 +631,7 @@ pub async fn events_at_block(
                 let value_bytes = if let Value::String(data_from_storage) = data_from_storage {
                     unhex(&data_from_storage, NotHex::StorageValue)?
                 } else {
-                    return Err(ErrorChain::StorageFormatError);
+                    return Err(ErrorChain::StorageValueFormat(data_from_storage));
                 };
                 let storage_data = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
                     &key_bytes.as_ref(),
@@ -701,8 +691,7 @@ pub async fn current_block_number(
             &value_data.as_ref(),
             &mut (),
             &metadata.types,
-        )
-        .unwrap();
+        )?;
         if let ParsedData::PrimitiveU32 {
             value,
             specialty: _,
@@ -713,7 +702,7 @@ pub async fn current_block_number(
             Err(ErrorChain::BlockNumberFormat)
         }
     } else {
-        Err(ErrorChain::StorageFormatError)
+        Err(ErrorChain::StorageValueFormat(fetched_value))
     }
 }
 
@@ -733,7 +722,7 @@ pub async fn send_stuff(client: &WsClient, data: &str) -> Result<(), ErrorChain>
     let mut subscription: Subscription<Value> = client
         .subscribe("author_submitAndWatchExtrinsic", rpc_params, "")
         .await?;
-    let reply = subscription.next().await.unwrap();
+    let _reply = subscription.next().await.unwrap();
     //println!("{reply:?}"); // TODO!
     Ok(())
 }

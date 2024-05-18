@@ -10,6 +10,10 @@ readme = true
 keywords = ["substrate", "blockchain", "finance", "service", "middleware"]
 categories = ["finance"]
 
+[dev-dependencies]
+reqwest = { version = "0.12.4", features = ["json"] }
+lazy_static = "1.4.0" 
+
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["tokio", "http1", "query", "json", "matched-path"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["smallvec", "ansi", "env-filter", "time"] }
@@ -19,7 +23,6 @@ names = { version = "0.14", default-features = false }
 
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.11", features = ["json"] }
 
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
@@ -40,7 +43,6 @@ sp-crypto-hashing = "0.1.0"
 toml = "0.8.12"
 sled = "0.34.7"
 zeroize = "1.7.0"
-lazy_static = "1.4.0"
 
 [profile.release]
 strip = true
