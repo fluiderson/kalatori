@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
+use serde_json::Value;
 use substrate_parser::ShortSpecs;
 use tokio::{
     sync::mpsc,
@@ -17,7 +18,7 @@ use crate::{
         payout::payout,
         rpc::{
             assets_set_at_block, block_hash, events_at_block, genesis_hash, metadata, next_block,
-            next_block_number, specs, subscribe_blocks,
+            next_block_number, runtime_version_identifier, specs, subscribe_blocks,
         },
         utils::{events_entry_metadata, was_balance_received_at_account},
     },
@@ -44,6 +45,7 @@ pub fn start_chain_watch(
             let watchdog = 30000;
             let mut watched_accounts = HashMap::new();
             let mut shutdown = false;
+            // TODO: random pick instead
             for endpoint in c.endpoints.iter().cycle() {
                 // not restarting chain if shutdown is in progress
                 if shutdown || cancellation_token.is_cancelled() {
@@ -81,10 +83,14 @@ pub fn start_chain_watch(
                                             c.name,
                                             e
                                         );
-                                        continue;
+                                        break;
                                     },
                                 };
                                 // TODO: continue and reconnect if spec_version changed
+                                if watcher.version != runtime_version_identifier(&client, &block).await? { 
+                                    tracing::info!("Different runtime version reported! Restarting connection...");
+                                    break;
+                                }
                                 let events = events_at_block(
                                     &client,
                                     &block,
@@ -152,6 +158,7 @@ pub struct ChainWatcher {
     pub metadata: RuntimeMetadataV15,
     pub specs: ShortSpecs,
     pub assets: HashMap<String, CurrencyProperties>,
+    version: Value,
 }
 
 impl ChainWatcher {
@@ -166,6 +173,7 @@ impl ChainWatcher {
         let genesis_hash = genesis_hash(&client).await?;
         let mut blocks = subscribe_blocks(&client).await?;
         let block = next_block(client, &mut blocks).await?;
+        let version = runtime_version_identifier(client, &block).await?;
         let metadata = metadata(&client, &block).await?;
         let specs = specs(&client, &metadata, &block).await?;
         let assets =
@@ -176,6 +184,7 @@ impl ChainWatcher {
             metadata,
             specs,
             assets,
+            version,
         };
 
         // check monitored accounts

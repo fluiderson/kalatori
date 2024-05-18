@@ -1215,3 +1215,4 @@ pub fn unit(x: &Map<String, Value>) -> Result<String, ErrorChain> {
         None => Err(ErrorChain::NoUnit),
     }
 }
+
