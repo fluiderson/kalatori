@@ -56,6 +56,20 @@ const TRANSFER: &str = "Transfer";
 
 const AURA: &str = "AuraApi";
 
+/// Fetch some runtime version identifier.
+///
+/// This does not have to be typesafe or anything; this could be used only to check if returned
+/// value changes - and reboot the whole connection then, regardless of nature of change.
+pub async fn runtime_version_identifier(client: &WsClient, block: &BlockHash) -> Result<Value, ErrorChain> {
+    let value = client
+        .request(
+            "state_getRuntimeVersion",
+            rpc_params![block.to_string()],
+        )
+        .await?;
+    Ok(value)
+}
+
 pub async fn subscribe_blocks(client: &WsClient) -> Result<Subscription<BlockHead>, ErrorChain> {
     Ok(client
         .subscribe(
@@ -189,7 +203,6 @@ pub async fn specs(
     let specs_request: Value = client
         .request("system_properties", rpc_params![block.to_string()])
         .await?;
-    //.map_err(ErrorChain::Client)?;
     match specs_request {
         Value::Object(properties) => system_properties_to_short_specs(&properties, &metadata),
         _ => return Err(ErrorChain::PropertiesFormat),
