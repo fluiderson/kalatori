@@ -80,7 +80,7 @@ pub mod api_v2 {
     use std::collections::HashMap;
 
     use parity_scale_codec::{Decode, Encode};
-    use serde::{Serialize, Serializer};
+    use serde::{Deserialize, Serialize, Serializer};
 
     pub const AMOUNT: &str = "amount";
     pub const CURRENCY: &str = "currency";
@@ -166,7 +166,7 @@ pub mod api_v2 {
         Completed,
     }
 
-    #[derive(Clone, Debug, Serialize)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct ServerStatus {
         pub server_info: ServerInfo,
         pub supported_currencies: HashMap<std::string::String, CurrencyProperties>,
@@ -220,7 +220,7 @@ pub mod api_v2 {
         }
     }
 
-    #[derive(Clone, Debug, Serialize)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct CurrencyProperties {
         pub chain_name: String,
         pub kind: TokenKind,
@@ -246,16 +246,16 @@ pub mod api_v2 {
         }
     }
 
-    #[derive(Clone, Copy, Debug, Serialize, Decode, Encode)]
+    #[derive(Clone, Copy, Debug, Serialize, Decode, Encode, Deserialize)]
     #[serde(rename_all = "lowercase")]
     pub enum TokenKind {
         Asset,
         Balances,
     }
 
-    #[derive(Clone, Debug, Serialize)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct ServerInfo {
-        pub version: &'static str,
+        pub version: String,
         pub instance_id: String,
         pub debug: bool,
         pub kalatori_remark: String,

@@ -208,7 +208,7 @@ fn set_panic_hook(shutdown_notification: CancellationToken) {
         };
 
         tracing::error!(
-            "A panic detected{at}{formatted_message}\nThis is a bug. Please report it at {}.",
+            "A panic detected{at}{formatted_message}\nThis is a bug. Please report it at {}/issues.",
             env!("CARGO_PKG_REPOSITORY")
         );
 

@@ -10,6 +10,10 @@ readme = true
 keywords = ["substrate", "blockchain", "finance", "service", "middleware"]
 categories = ["finance"]
 
+[dev-dependencies]
+reqwest = { version = "0.12.4", features = ["json"] }
+lazy_static = "1.4.0" 
+
 [dependencies]
 axum = { version = "0.7", default-features = false, features = ["tokio", "http1", "query", "json", "matched-path"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["smallvec", "ansi", "env-filter", "time"] }

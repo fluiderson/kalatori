@@ -86,19 +86,34 @@ pub async fn get_keys_from_storage(
     storage_name: &str,
     block: &BlockHash,
 ) -> Result<Value, ErrorChain> {
+    let storage_key_prefix = format!(
+        "0x{}{}",
+        hex::encode(twox_128(prefix.as_bytes())),
+        hex::encode(twox_128(storage_name.as_bytes()))
+    );
+
+    let count = 100; // TODO make full scan just in case
+    let start_key: Option<&str> = None; // Start from the beginning
+
+    let mut params = vec![
+        serde_json::to_value(storage_key_prefix.clone()).unwrap(),
+        serde_json::to_value(count).unwrap(),
+    ];
+
+    if let Some(start_key) = start_key {
+        params.push(serde_json::to_value(start_key).unwrap());
+    }
+
+    params.push(serde_json::to_value(block.to_string()).unwrap());
+
     let keys: Value = client
         .request(
-            "state_getKeys",
-            rpc_params![
-                format!(
-                    "0x{}{}",
-                    hex::encode(twox_128(prefix.as_bytes())),
-                    hex::encode(twox_128(storage_name.as_bytes()))
-                ),
-                block.to_string()
-            ],
+            "state_getKeysPaged",
+            params
         )
-        .await?;
+        .await
+        .map_err(ErrorChain::Client)?;
+
     Ok(keys)
 }
 
@@ -150,7 +165,7 @@ pub async fn metadata(
             rpc_params![
                 "Metadata_metadata_at_version",
                 "0x0f000000",
-                &block.to_string()
+                block.to_string()
             ],
         )
         .await
@@ -445,7 +460,7 @@ pub async fn assets_set_at_block(
                                                                         }
                                                                     },
                                                                     _ => {},
-                               },
+                                                                },
                                                                 "decimals" => {
                                                                     if let ParsedData::PrimitiveU8{value, specialty: _} = field_data.data.data {
                                                                         decimals = Some(value);

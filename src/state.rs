@@ -57,7 +57,7 @@ impl State {
 
         let server_info = ServerInfo {
             // TODO
-            version: env!("CARGO_PKG_VERSION"),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             instance_id: instance_id.clone(),
             debug,
             kalatori_remark: remark.clone(),

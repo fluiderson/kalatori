@@ -1,2 +1,6 @@
 target
-kalatori.db
+*.db
+
+# IDE
+.vscode
+.idea
