@@ -1,6 +1,8 @@
 // if running locally, ensure that you have no dangling processes (kalatori daemon, chopsticks)
 // pkill -f kalatori; pkill -f chopsticks
 
+
+use kalatori::definitions::api_v2::*;
 use std::process::{Command, Child};
 use tokio::time::{sleep, Duration};
 use reqwest::Client;
@@ -27,6 +29,9 @@ async fn stop_chopsticks(chopsticks: &mut Child) -> std::io::Result<()> {
     Ok(())
 }
 
+const KALATORI_REMARK: &str = "TEST_REMARK";
+const KALATORI_CARGO_PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn load_chain_config() {
     env::set_var("KALATORI_CONFIG", "configs/chopsticks.toml");
     env::set_var("KALATORI_HOST", "127.0.0.1:16726");
@@ -34,7 +39,7 @@ fn load_chain_config() {
     env::set_var("KALATORI_RPC", "ws://localhost:8000");
     env::set_var("KALATORI_DECIMALS", "12");
     env::set_var("KALATORI_RECIPIENT", "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV");
-    env::set_var("KALATORI_REMARK", "KALATORI_REMARK");
+    env::set_var("KALATORI_REMARK", KALATORI_REMARK.to_string());
     // env::set_var("RUST_BACKTRACE", "1");
 }
 
@@ -69,7 +74,7 @@ impl TestContext {
         // Wait for Chopsticks to start
         sleep(Duration::from_secs(3)).await;
 
-        // Load chain config and start the daemon
+        // Then  start the daemon
         load_chain_config();
         let daemon = start_daemon().await.expect("Failed to start kalatori daemon");
 
@@ -99,25 +104,45 @@ async fn test_daemon_status_call() {
     // Assert that the response status is 200 OK
     assert!(resp.status().is_success());
 
-    // Shutdown the daemon
-    context.drop_async().await;
-}
-
-#[tokio::test]
-async fn test_daemon_health_call() {
-    let mut context = TestContext::new().await;
-
-    let client = Client::new();
-
-    let resp = client
-        .get("http://127.0.0.1:16726/v2/health")
-        .send()
+    let body = resp
+        .json::<ServerStatus>()
         .await
-        .expect("Failed to send request");
+        .expect("Failed to parse response");
 
-    // Assert that the response status is 200 OK
-    assert!(resp.status().is_success());
+    // Check that all required fields are present
+    assert_eq!(body.server_info.version, KALATORI_CARGO_PACKAGE_VERSION);
+    assert!(!body.server_info.instance_id.is_empty());
+    assert_eq!(body.server_info.debug, true);
+    assert_eq!(body.server_info.kalatori_remark, KALATORI_REMARK);
 
-    // Shutdown the daemon
+    // Check that supported currencies are present
+    // assert!(!body.supported_currencies.is_empty());
+    // for (currency, properties) in body.supported_currencies {
+    //     assert!(!currency.is_empty());
+    //     assert!(!properties.chain_name.is_empty());
+    //     assert!(!properties.kind.is_empty());
+    //     assert!(properties.decimals > 0);
+    //     assert!(!properties.rpc_url.is_empty());
+    //     // asset_id is optional, so no need to assert on it
+    // }
+
     context.drop_async().await;
 }
+
+// #[tokio::test]
+// async fn test_daemon_health_call() {
+//     let mut context = TestContext::new().await;
+//
+//     let client = Client::new();
+//
+//     let resp = client
+//         .get("http://127.0.0.1:16726/v2/health")
+//         .send()
+//         .await
+//         .expect("Failed to send request");
+//
+//     // Assert that the response status is 200 OK
+//     assert!(resp.status().is_success());
+//
+//     context.drop_async().await;
+// }

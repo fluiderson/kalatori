@@ -159,14 +159,13 @@ pub async fn metadata(
     client: &WsClient,
     block: &BlockHash,
 ) -> Result<RuntimeMetadataV15, ErrorChain> {
-    let block_str = format!("0x{}", block.to_string());
     let metadata_request: Value = client
         .request(
             "state_call",
             rpc_params![
                 "Metadata_metadata_at_version",
                 "0x0f000000",
-                &block_str
+                block.to_string()
             ],
         )
         .await
