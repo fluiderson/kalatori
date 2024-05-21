@@ -60,12 +60,12 @@ const AURA: &str = "AuraApi";
 ///
 /// This does not have to be typesafe or anything; this could be used only to check if returned
 /// value changes - and reboot the whole connection then, regardless of nature of change.
-pub async fn runtime_version_identifier(client: &WsClient, block: &BlockHash) -> Result<Value, ErrorChain> {
+pub async fn runtime_version_identifier(
+    client: &WsClient,
+    block: &BlockHash,
+) -> Result<Value, ErrorChain> {
     let value = client
-        .request(
-            "state_getRuntimeVersion",
-            rpc_params![block.to_string()],
-        )
+        .request("state_getRuntimeVersion", rpc_params![block.to_string()])
         .await?;
     Ok(value)
 }
@@ -121,10 +121,7 @@ pub async fn get_keys_from_storage(
     params.push(serde_json::to_value(block.to_string()).unwrap());
 
     let keys: Value = client
-        .request(
-            "state_getKeysPaged",
-            params
-        )
+        .request("state_getKeysPaged", params)
         .await
         .map_err(ErrorChain::Client)?;
 

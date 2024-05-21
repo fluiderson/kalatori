@@ -86,7 +86,7 @@ pub fn start_chain_watch(
                                     },
                                 };
                                 // TODO: continue and reconnect if spec_version changed
-                                if watcher.version != runtime_version_identifier(&client, &block).await? { 
+                                if watcher.version != runtime_version_identifier(&client, &block).await? {
                                     tracing::info!("Different runtime version reported! Restarting connection...");
                                     break;
                                 }
@@ -116,7 +116,7 @@ pub fn start_chain_watch(
                                             }
                                         }
                                     }
-                                } 
+                                }
                                 for id in id_remove_list {
                                     watched_accounts.remove(&id);
                                 }
@@ -181,12 +181,15 @@ impl ChainWatcher {
 
         // Remove unwanted assets
         assets.retain(|name, properties| {
-                if let Some(native_token) = &chain.native_token {
-                    (native_token.name == *name) && (native_token.decimals == specs.decimals)
-                } else {
-                    chain.asset.iter().any(|a| (a.name == *name) && (Some(a.id) == properties.asset_id))
-                }
-            });
+            if let Some(native_token) = &chain.native_token {
+                (native_token.name == *name) && (native_token.decimals == specs.decimals)
+            } else {
+                chain
+                    .asset
+                    .iter()
+                    .any(|a| (a.name == *name) && (Some(a.id) == properties.asset_id))
+            }
+        });
 
         // Deduplication is done on chain manager level;
         // Check that we have same number of assets as requested (we've checked that we have only
@@ -199,7 +202,7 @@ impl ChainWatcher {
         //
         // TODO: maybe check if at least one endpoint responds with proper assets and if not, shut
         // down
-        if assets.len() != chain.asset.len() + if chain.native_token.is_some() {1} else {0} {
+        if assets.len() != chain.asset.len() + if chain.native_token.is_some() { 1 } else { 0 } {
             return Err(ErrorChain::AssetsInvalid(chain.name));
         }
         // this MUST assert that assets match exactly before reporting it
