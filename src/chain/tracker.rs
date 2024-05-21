@@ -178,6 +178,8 @@ impl ChainWatcher {
         let specs = specs(&client, &metadata, &block).await?;
         let mut assets =
             assets_set_at_block(&client, &block, &metadata, rpc_url, specs.clone()).await?;
+
+        // Remove unwanted assets
         assets.retain(|name, properties| {
                 if let Some(native_token) = &chain.native_token {
                     (native_token.name == *name) && (native_token.decimals == specs.decimals)
@@ -186,8 +188,21 @@ impl ChainWatcher {
                 }
             });
 
-        // TODO: fail on insufficient assets list
-        // thus this MUST assert that assets match exactly
+        // Deduplication is done on chain manager level;
+        // Check that we have same number of assets as requested (we've checked that we have only
+        // wanted ones and performed deduplication before)
+        //
+        // This is probably an optimisation, but I don't have time to analyse perfirmance right
+        // now, it's just simpler to implement
+        //
+        // This could be move verbose on reconnects
+        //
+        // TODO: maybe check if at least one endpoint responds with proper assets and if not, shut
+        // down
+        if assets.len() != chain.asset.len() + if chain.native_token.is_some() {1} else {0} {
+            return Err(ErrorChain::AssetsInvalid(chain.name));
+        }
+        // this MUST assert that assets match exactly before reporting it
 
         state.connect_chain(assets.clone()).await;
 

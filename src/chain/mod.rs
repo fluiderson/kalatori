@@ -59,6 +59,8 @@ impl ChainManager {
             }
             let (chain_tx, chain_rx) = mpsc::channel(1024);
             watch_chain.insert(c.name.clone(), chain_tx.clone());
+
+            // this MUST assert that there are no duplicates in requested assets
             if let Some(ref a) = c.native_token {
                 if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
                     return Err(Error::DuplicateCurrency(a.name.clone()));

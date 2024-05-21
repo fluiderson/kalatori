@@ -103,6 +103,9 @@ pub enum ErrorChain {
     #[error("Asset id is not u32")]
     AssetIdFormat,
 
+    #[error("Invalid assets for chain {0}")]
+    AssetsInvalid(String),
+
     #[error("Asset key has no parceable part")]
     AssetKeyEmpty,
 
