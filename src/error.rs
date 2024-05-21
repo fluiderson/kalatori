@@ -284,6 +284,9 @@ pub enum ErrorChain {
 
     #[error("Storage key is not u32")]
     StorageKeyNotU32,
+
+    #[error("RPC runs unexpected network: instead of {expected}, found {actual} at {rpc}")]
+    WrongNetwork{expected: String, actual: String, rpc: String},
 }
 
 impl From<ClientError> for ErrorChain {

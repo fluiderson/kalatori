@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use serde_json::Value;
-use substrate_parser::ShortSpecs;
+use substrate_parser::{AsMetadata, ShortSpecs};
 use tokio::{
     sync::mpsc,
     time::{timeout, Duration},
@@ -175,6 +175,8 @@ impl ChainWatcher {
         let block = next_block(client, &mut blocks).await?;
         let version = runtime_version_identifier(client, &block).await?;
         let metadata = metadata(&client, &block).await?;
+        let name = <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(&metadata)?.spec_name;
+        if name != chain.name { return Err(ErrorChain::WrongNetwork{expected: chain.name, actual: name, rpc: rpc_url.to_string()}) };
         let specs = specs(&client, &metadata, &block).await?;
         let mut assets =
             assets_set_at_block(&client, &block, &metadata, rpc_url, specs.clone()).await?;

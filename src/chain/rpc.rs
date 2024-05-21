@@ -246,10 +246,6 @@ pub struct BlockHead {
     //state_root: String,
 }
 
-// TODO: add proper errors
-//
-// not urgent since it happens on boot once for now
-//
 /// Get all sufficient assets from a chain
 pub async fn assets_set_at_block(
     client: &WsClient,
