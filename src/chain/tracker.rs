@@ -30,7 +30,7 @@ use crate::{
 };
 
 pub fn start_chain_watch(
-    c: Chain,
+    chain: Chain,
     chain_tx: mpsc::Sender<ChainTrackerRequest>,
     mut chain_rx: mpsc::Receiver<ChainTrackerRequest>,
     state: State,
@@ -38,29 +38,28 @@ pub fn start_chain_watch(
     task_tracker: TaskTracker,
     cancellation_token: CancellationToken,
 ) -> Result<(), ErrorChain> {
-    //let (block_source_tx, mut block_source_rx) = mpsc::channel(16);
     task_tracker
         .clone()
-        .spawn(format!("Chain {} watcher", c.name.clone()), async move {
+        .spawn(format!("Chain {} watcher", chain.name.clone()), async move {
             let watchdog = 30000;
             let mut watched_accounts = HashMap::new();
             let mut shutdown = false;
             // TODO: random pick instead
-            for endpoint in c.endpoints.iter().cycle() {
+            for endpoint in chain.endpoints.iter().cycle() {
                 // not restarting chain if shutdown is in progress
                 if shutdown || cancellation_token.is_cancelled() {
                     break;
                 }
                 if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
                     // prepare chain
-                    let watcher = match ChainWatcher::prepare_chain(&client, &mut watched_accounts, endpoint, chain_tx.clone(), state.interface(), task_tracker.clone())
+                    let watcher = match ChainWatcher::prepare_chain(&client, chain.clone(), &mut watched_accounts, endpoint, chain_tx.clone(), state.interface(), task_tracker.clone())
                         .await
                     {
                         Ok(a) => a,
                         Err(e) => {
                             tracing::info!(
                                 "Failed to connect to chain {}, due to {} switching RPC server...",
-                                c.name,
+                                chain.name,
                                 e
                             );
                             continue;
@@ -80,7 +79,7 @@ pub fn start_chain_watch(
                                     Err(e) => {
                                         tracing::info!(
                                             "Failed to receive block in chain {}, due to {} switching RPC server...",
-                                            c.name,
+                                            chain.name,
                                             e
                                         );
                                         break;
@@ -91,7 +90,7 @@ pub fn start_chain_watch(
                                     tracing::info!("Different runtime version reported! Restarting connection...");
                                     break;
                                 }
-                                let events = events_at_block(
+                                if let Ok(events) = events_at_block(
                                     &client,
                                     &block,
                                     Some(EventFilter {
@@ -101,8 +100,7 @@ pub fn start_chain_watch(
                                     events_entry_metadata(&watcher.metadata)?,
                                     &watcher.metadata.types,
                                     )
-                                    .await
-                                    .unwrap();
+                                    .await {
 
                                 let mut id_remove_list = Vec::new();
                                 for (id, invoice) in watched_accounts.iter() {
@@ -118,11 +116,12 @@ pub fn start_chain_watch(
                                             }
                                         }
                                     }
-                                }
-
+                                } 
                                 for id in id_remove_list {
                                     watched_accounts.remove(&id);
                                 }
+                                    } else {break;}
+
                             }
                             ChainTrackerRequest::WatchAccount(request) => {
                                 watched_accounts.insert(request.id.clone(), Invoice::from_request(request));
@@ -147,7 +146,7 @@ pub fn start_chain_watch(
                     }
                 }
             }
-            Ok(format!("Chain {} monitor shut down", c.name).into())
+            Ok(format!("Chain {} monitor shut down", chain.name).into())
         });
     Ok(())
 }
@@ -164,6 +163,7 @@ pub struct ChainWatcher {
 impl ChainWatcher {
     pub async fn prepare_chain(
         client: &WsClient,
+        chain: Chain,
         watched_accounts: &mut HashMap<String, Invoice>,
         rpc_url: &str,
         chain_tx: mpsc::Sender<ChainTrackerRequest>,
@@ -178,6 +178,12 @@ impl ChainWatcher {
         let specs = specs(&client, &metadata, &block).await?;
         let assets =
             assets_set_at_block(&client, &block, &metadata, rpc_url, specs.clone()).await?;
+
+        // TODO: fail on insufficient assets list
+        // TODO: remove assets that are not requested
+        // thus this MUST assert that assets match exactly
+
+        state.connect_chain(assets.clone()).await;
 
         let chain = ChainWatcher {
             genesis_hash,

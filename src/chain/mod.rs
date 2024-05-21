@@ -84,6 +84,7 @@ impl ChainManager {
         task_tracker
             .clone()
             .spawn("Blockchain connections manager", async move {
+
                 // start requests engine
                 while let Some(request) = rx.recv().await {
                     match request {
@@ -180,3 +181,4 @@ impl ChainManager {
         ()
     }
 }
+

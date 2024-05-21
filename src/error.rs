@@ -18,8 +18,8 @@ pub enum Error {
     #[error("failed to read a config file at {0:?}")]
     ConfigFileRead(String),
 
-    #[error("failed to parse the config at {0:?}")]
-    ConfigFileParse(String),
+    #[error("failed to parse the config at {0}")]
+    ConfigFileParse(toml::de::Error),
 
     #[error("failed to parse the config parameter {0}")]
     ConfigParse(String),
