@@ -176,11 +176,17 @@ impl ChainWatcher {
         let version = runtime_version_identifier(client, &block).await?;
         let metadata = metadata(&client, &block).await?;
         let specs = specs(&client, &metadata, &block).await?;
-        let assets =
+        let mut assets =
             assets_set_at_block(&client, &block, &metadata, rpc_url, specs.clone()).await?;
+        assets.retain(|name, properties| {
+                if let Some(native_token) = &chain.native_token {
+                    (native_token.name == *name) && (native_token.decimals == specs.decimals)
+                } else {
+                    chain.asset.iter().any(|a| (a.name == *name) && (Some(a.id) == properties.asset_id))
+                }
+            });
 
         // TODO: fail on insufficient assets list
-        // TODO: remove assets that are not requested
         // thus this MUST assert that assets match exactly
 
         state.connect_chain(assets.clone()).await;
