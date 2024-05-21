@@ -22,14 +22,14 @@ pub struct Chain {
     pub asset: Vec<AssetInfo>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct NativeToken {
     pub name: String,
     pub decimals: api_v2::Decimals,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AssetInfo {
     pub name: String,
     pub id: api_v2::AssetId,

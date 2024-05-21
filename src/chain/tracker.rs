@@ -179,8 +179,11 @@ impl ChainWatcher {
         let mut assets =
             assets_set_at_block(&client, &block, &metadata, rpc_url, specs.clone()).await?;
 
+        // TODO: make this verbosity less annoying
+        tracing::info!("chain {} requires native token {:?} and {:?}", &chain.name, &chain.native_token, &chain.asset);
         // Remove unwanted assets
         assets.retain(|name, properties| {
+            tracing::info!("chain {} has token {} with properties {:?}", &chain.name, &name, &properties);
             if let Some(native_token) = &chain.native_token {
                 (native_token.name == *name) && (native_token.decimals == specs.decimals)
             } else {
@@ -197,8 +200,6 @@ impl ChainWatcher {
         //
         // This is probably an optimisation, but I don't have time to analyse perfirmance right
         // now, it's just simpler to implement
-        //
-        // This could be move verbose on reconnects
         //
         // TODO: maybe check if at least one endpoint responds with proper assets and if not, shut
         // down
