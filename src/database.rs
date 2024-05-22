@@ -10,14 +10,14 @@ use crate::{
             AssetId, BlockNumber, CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery,
             PaymentStatus, ServerInfo, ServerStatus, WithdrawalStatus,
         },
-        Balance, Nonce, Timestamp,
+        Balance, Nonce,
     },
     error::{Error, ErrorDb},
     TaskTracker,
 };
 use parity_scale_codec::{Compact, Decode, Encode};
 use serde::Deserialize;
-use std::{collections::HashMap, fs::File, io::ErrorKind};
+use std::{collections::HashMap, fs::File, io::ErrorKind, time::Duration};
 use substrate_crypto_light::common::AccountId32;
 use tokio::sync::{mpsc, oneshot};
 
@@ -64,7 +64,7 @@ type PublicSlot = [u8; 32];
 type BalanceSlot = u128;
 type Derivation = [u8; 32];
 pub type Account = [u8; 32];
-
+/*
 #[derive(Encode, Decode)]
 enum ChainKind {
     Id(Vec<Compact<AssetId>>),
@@ -128,7 +128,7 @@ struct TransferTx {
     recipient: Account,
     exact_amount: Option<Compact<BalanceSlot>>,
 }
-
+*/
 /*
 impl Value for Invoice {
     type SelfType<'a> = Self;
@@ -159,9 +159,8 @@ pub struct ConfigWoChains {
     pub recipient: AccountId32,
     pub debug: bool,
     pub remark: String,
-    pub depth: Option<BlockNumber>,
-    pub account_lifetime: BlockNumber,
-    pub rpc: String,
+    //pub depth: Option<Duration>,
+    pub account_lifetime: Duration,
 }
 
 /// Database server handle

@@ -6,12 +6,12 @@ use serde::Deserialize;
 
 pub type Version = u64;
 pub type Nonce = u32;
-pub type Timestamp = u64;
+
 pub type PalletIndex = u8;
 
 pub type Entropy = Vec<u8>; // TODO: maybe enforce something here
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Chain {
     pub name: String,
@@ -22,14 +22,14 @@ pub struct Chain {
     pub asset: Vec<AssetInfo>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct NativeToken {
     pub name: String,
     pub decimals: api_v2::Decimals,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AssetInfo {
     pub name: String,
     pub id: api_v2::AssetId,

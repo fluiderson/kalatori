@@ -18,8 +18,8 @@ pub enum Error {
     #[error("failed to read a config file at {0:?}")]
     ConfigFileRead(String),
 
-    #[error("failed to parse the config at {0:?}")]
-    ConfigFileParse(String),
+    #[error("failed to parse the config at {0}")]
+    ConfigFileParse(toml::de::Error),
 
     #[error("failed to parse the config parameter {0}")]
     ConfigParse(String),
@@ -102,6 +102,9 @@ pub enum ErrorChain {
 
     #[error("Asset id is not u32")]
     AssetIdFormat,
+
+    #[error("Invalid assets for chain {0}")]
+    AssetsInvalid(String),
 
     #[error("Asset key has no parceable part")]
     AssetKeyEmpty,
@@ -281,6 +284,9 @@ pub enum ErrorChain {
 
     #[error("Storage key is not u32")]
     StorageKeyNotU32,
+
+    #[error("RPC runs unexpected network: instead of {expected}, found {actual} at {rpc}")]
+    WrongNetwork{expected: String, actual: String, rpc: String},
 }
 
 impl From<ClientError> for ErrorChain {
