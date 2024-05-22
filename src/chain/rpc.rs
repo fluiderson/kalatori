@@ -599,7 +599,7 @@ pub async fn system_balance_at_account(
     Err(ErrorChain::BalanceNotFound)
 }
 
-async fn transfer_events(
+pub async fn transfer_events(
     client: &WsClient,
     block: &BlockHash,
     metadata_v15: &RuntimeMetadataV15,
@@ -619,7 +619,7 @@ async fn transfer_events(
     .await
 }
 
-pub async fn events_at_block(
+async fn events_at_block(
     client: &WsClient,
     block: &BlockHash,
     optional_filter: Option<EventFilter<'_>>,
@@ -628,46 +628,48 @@ pub async fn events_at_block(
 ) -> Result<Vec<Event>, ErrorChain> {
     let keys_from_storage = get_keys_from_storage(client, "System", "Events", block).await?;
     let mut out = Vec::new();
-    if let Value::Array(ref keys_array) = keys_from_storage {
-        for key in keys_array {
-            if let Value::String(key) = key {
-                let data_from_storage = get_value_from_storage(client, &key, block).await?;
-                let key_bytes = unhex(&key, NotHex::StorageValue)?;
-                let value_bytes = if let Value::String(data_from_storage) = data_from_storage {
-                    unhex(&data_from_storage, NotHex::StorageValue)?
-                } else {
-                    return Err(ErrorChain::StorageValueFormat(data_from_storage));
-                };
-                let storage_data = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
-                    &key_bytes.as_ref(),
-                    &value_bytes.as_ref(),
-                    &mut (),
-                    events_entry_metadata,
-                    types,
-                )
-                .expect("RAM stored metadata access");
-                if let ParsedData::SequenceRaw(sequence_raw) = storage_data.value.data {
-                    for sequence_element in sequence_raw.data {
-                        if let ParsedData::Composite(event_record) = sequence_element {
-                            for event_record_element in event_record {
-                                if event_record_element.field_name == Some("event".to_string()) {
-                                    if let ParsedData::Event(Event(ref event)) =
-                                        event_record_element.data.data
-                                    {
-                                        if let Some(ref filter) = optional_filter {
-                                            if let Some(event_variant) =
-                                                filter.optional_event_variant
-                                            {
-                                                if event.pallet_name == filter.pallet
-                                                    && event.variant_name == event_variant
+    match keys_from_storage {
+        Value::Array(ref keys_array) => {
+            for key in keys_array {
+                if let Value::String(key) = key {
+                    let data_from_storage = get_value_from_storage(client, &key, block).await?;
+                    let key_bytes = unhex(&key, NotHex::StorageValue)?;
+                    let value_bytes = if let Value::String(data_from_storage) = data_from_storage {
+                        unhex(&data_from_storage, NotHex::StorageValue)?
+                    } else {
+                        return Err(ErrorChain::StorageValueFormat(data_from_storage));
+                    };
+                    let storage_data = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
+                        &key_bytes.as_ref(),
+                        &value_bytes.as_ref(),
+                        &mut (),
+                        events_entry_metadata,
+                        types,
+                    )
+                    .expect("RAM stored metadata access");
+                    if let ParsedData::SequenceRaw(sequence_raw) = storage_data.value.data {
+                        for sequence_element in sequence_raw.data {
+                            if let ParsedData::Composite(event_record) = sequence_element {
+                                for event_record_element in event_record {
+                                    if event_record_element.field_name == Some("event".to_string()) {
+                                        if let ParsedData::Event(Event(ref event)) =
+                                            event_record_element.data.data
+                                        {
+                                            if let Some(ref filter) = optional_filter {
+                                                if let Some(event_variant) =
+                                                    filter.optional_event_variant
                                                 {
+                                                    if event.pallet_name == filter.pallet
+                                                        && event.variant_name == event_variant
+                                                    {
+                                                        out.push(Event(event.to_owned()));
+                                                    }
+                                                } else if event.pallet_name == filter.pallet {
                                                     out.push(Event(event.to_owned()));
                                                 }
-                                            } else if event.pallet_name == filter.pallet {
+                                            } else {
                                                 out.push(Event(event.to_owned()));
                                             }
-                                        } else {
-                                            out.push(Event(event.to_owned()));
                                         }
                                     }
                                 }
@@ -675,11 +677,14 @@ pub async fn events_at_block(
                         }
                     }
                 }
-                return Ok(out);
-            }
-        }
+            };
+            return Ok(out);
+        },
+        _ => {
+            tracing::warn!("{keys_from_storage}");
+            return Err(ErrorChain::EventsMissing);
+        },
     }
-    Err(ErrorChain::EventsMissing)
 }
 
 pub async fn current_block_number(

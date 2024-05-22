@@ -161,7 +161,6 @@ pub struct ConfigWoChains {
     pub remark: String,
     //pub depth: Option<Duration>,
     pub account_lifetime: Duration,
-    pub rpc: String,
 }
 
 /// Database server handle

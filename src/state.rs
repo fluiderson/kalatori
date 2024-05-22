@@ -33,7 +33,6 @@ impl State {
             debug,
             remark,
             account_lifetime,
-            rpc,
         }: ConfigWoChains,
         db: Database,
         chain_manager: oneshot::Receiver<ChainManager>,

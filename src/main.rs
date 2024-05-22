@@ -112,8 +112,6 @@ async fn main() -> Result<(), Error> {
 
     let (task_tracker, error_rx) = TaskTracker::new();
 
-    let rpc = env::var("KALATORI_RPC").unwrap();
-
     let recipient = AccountId32::from_base58_string(&recipient)
         .map_err(Error::RecipientAccount)?
         .0;
@@ -132,7 +130,6 @@ async fn main() -> Result<(), Error> {
             remark,
             //depth: config.depth,
             account_lifetime: Duration::from_millis(config.account_lifetime),
-            rpc: rpc.clone(),
         },
         db,
         cm_rx,
