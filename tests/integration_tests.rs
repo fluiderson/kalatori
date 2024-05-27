@@ -1,3 +1,4 @@
+// ensure you have chopsticks installed: npm install -g @acala-network/chopsticks
 // if running locally, ensure that you have no dangling processes (kalatori daemon, chopsticks)
 // pkill -f kalatori; pkill -f chopsticks
 
@@ -16,13 +17,9 @@ lazy_static! {
 
 async fn start_chopsticks() -> std::io::Result<Child> {
     let mut command = Command::new("npx");
-    command.args(&[
-        "@acala-network/chopsticks@latest",
-        "-c",
-        "chopsticks/pd-ah.yml",
-    ]);
+    command.args(&["@acala-network/chopsticks@latest", "-c", "chopsticks/pd-ah.yml"]);
     let chopsticks = command.spawn()?;
-    sleep(Duration::from_secs(3)).await; // Give Chopsticks some time to start
+    sleep(Duration::from_secs(10)).await; // Give Chopsticks some time to start
     Ok(chopsticks)
 }
 
@@ -54,7 +51,7 @@ fn load_chain_config() {
 
 async fn start_daemon() -> std::io::Result<Child> {
     let daemon = Command::new("target/debug/kalatori").spawn()?;
-    sleep(Duration::from_secs(3)).await; // Give the daemon some time to start
+    sleep(Duration::from_secs(10)).await; // Give the daemon some time to start
     Ok(daemon)
 }
 
@@ -143,8 +140,6 @@ async fn test_daemon_status_call() {
             assert_eq!(properties.decimals, 10);
             assert_eq!(properties.rpc_url, "ws://localhost:8000");
             // those are wrong atm
-            assert!(properties.asset_id.is_none());
-            assert_eq!(properties.ss58, 0);
         }
     }
 

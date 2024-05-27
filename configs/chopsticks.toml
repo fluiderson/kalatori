@@ -4,7 +4,7 @@ debug = true
 in-memory-db = true
 
 [[chain]]
-name = "chop-assethub-polkadot"
+name = "statemint"
 endpoints = [
     "ws://localhost:8000"
 ]
