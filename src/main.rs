@@ -8,10 +8,8 @@ use std::{
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     panic, str,
+    time::Duration,
 };
-use frame_metadata::v15::RuntimeMetadataV15;
-use jsonrpsee::ws_client::WsClientBuilder;
-use substrate_constructor::fill_prepare::{SpecialTypeToFill, TypeContentToFill};
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::{
     signal,
@@ -31,17 +29,12 @@ mod signer;
 mod state;
 mod utils;
 
-use crate::definitions::{Chain, Entropy, Timestamp, Version};
-use crate::error::ErrorChain;
+use crate::definitions::{Chain, Entropy, Version};
 use chain::ChainManager;
 use database::ConfigWoChains;
 use error::Error;
 use signer::Signer;
 use state::State;
-use crate::chain::rpc;
-use crate::chain::rpc::{assets_set_at_block, block_hash, current_block_number, metadata, next_block, send_stuff, specs, subscribe_blocks};
-use crate::chain::utils::{AssetTransferConstructor, BalanceTransferConstructor, construct_batch_transaction, construct_single_asset_transfer_call, construct_single_balance_transfer_call};
-use crate::definitions::api_v2::TokenKind;
 
 const CONFIG: &str = "KALATORI_CONFIG";
 const LOG: &str = "KALATORI_LOG";
@@ -119,18 +112,6 @@ async fn main() -> Result<(), Error> {
 
     let (task_tracker, error_rx) = TaskTracker::new();
 
-    //let (chains, currencies) = rpc::prepare(config.chain, config.account_lifetime, config.depth).await
-
-    let rpc = env::var("KALATORI_RPC").unwrap();
-    let mut currencies = HashMap::new();
-    if let Ok(client) = WsClientBuilder::default().build(rpc.clone()).await {
-        let mut blocks = subscribe_blocks(&client).await?;
-        let block = next_block(&client, &mut blocks).await?;
-        let metadata = metadata(&client, &block).await?;
-        let specs = specs(&client, &metadata, &block).await?;
-        currencies.extend(assets_set_at_block(&client, &block, &metadata, &rpc, specs.clone()).await?);
-    }
-
     let recipient = AccountId32::from_base58_string(&recipient)
         .map_err(Error::RecipientAccount)?
         .0;
@@ -142,15 +123,13 @@ async fn main() -> Result<(), Error> {
     let (cm_tx, cm_rx) = oneshot::channel();
 
     let state = State::initialise(
-        currencies,
         signer.interface(),
         ConfigWoChains {
             recipient: recipient.clone(),
             debug: config.debug,
             remark,
-            depth: config.depth,
-            account_lifetime: config.account_lifetime,
-            rpc: rpc.clone(),
+            //depth: config.depth,
+            account_lifetime: Duration::from_millis(config.account_lifetime),
         },
         db,
         cm_rx,
@@ -390,11 +369,12 @@ async fn shutdown_listener(
     Ok("The shutdown signal listener is shut down.".into())
 }
 
+/// User-supplied settings through config file
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct Config {
-    account_lifetime: Timestamp,
-    depth: Option<Timestamp>,
+    account_lifetime: u64,
+    depth: Option<u64>,
     host: Option<String>,
     database: Option<String>,
     debug: bool,
@@ -417,6 +397,6 @@ impl Config {
         let unparsed_config = fs::read_to_string(&config_path)
             .map_err(|_| Error::ConfigFileRead(config_path.clone()))?;
 
-        toml::from_str(&unparsed_config).map_err(|_| Error::ConfigFileParse(config_path))
+        toml::from_str(&unparsed_config).map_err(Error::ConfigFileParse)
     }
 }

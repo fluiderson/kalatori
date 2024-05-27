@@ -1,14 +1,13 @@
 // if running locally, ensure that you have no dangling processes (kalatori daemon, chopsticks)
 // pkill -f kalatori; pkill -f chopsticks
 
-
 use kalatori::definitions::api_v2::*;
-use std::process::{Command, Child};
-use tokio::time::{sleep, Duration};
+use lazy_static::lazy_static;
 use reqwest::Client;
 use std::env;
-use std::sync::{Once, Mutex};
-use lazy_static::lazy_static;
+use std::process::{Child, Command};
+use std::sync::{Mutex, Once};
+use tokio::time::{sleep, Duration};
 
 static INIT: Once = Once::new();
 lazy_static! {
@@ -17,7 +16,11 @@ lazy_static! {
 
 async fn start_chopsticks() -> std::io::Result<Child> {
     let mut command = Command::new("npx");
-    command.args(&["@acala-network/chopsticks@latest", "-c", "chopsticks/pd-ah.yml"]);
+    command.args(&[
+        "@acala-network/chopsticks@latest",
+        "-c",
+        "chopsticks/pd-ah.yml",
+    ]);
     let chopsticks = command.spawn()?;
     sleep(Duration::from_secs(3)).await; // Give Chopsticks some time to start
     Ok(chopsticks)
@@ -35,17 +38,22 @@ const KALATORI_CARGO_PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 fn load_chain_config() {
     env::set_var("KALATORI_CONFIG", "configs/chopsticks.toml");
     env::set_var("KALATORI_HOST", "127.0.0.1:16726");
-    env::set_var("KALATORI_SEED", "bottom drive obey lake curtain smoke basket hold race lonely fit walk");
+    env::set_var(
+        "KALATORI_SEED",
+        "bottom drive obey lake curtain smoke basket hold race lonely fit walk",
+    );
     env::set_var("KALATORI_RPC", "ws://localhost:8000");
     env::set_var("KALATORI_DECIMALS", "12");
-    env::set_var("KALATORI_RECIPIENT", "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV");
+    env::set_var(
+        "KALATORI_RECIPIENT",
+        "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV",
+    );
     env::set_var("KALATORI_REMARK", KALATORI_REMARK.to_string());
     // env::set_var("RUST_BACKTRACE", "1");
 }
 
 async fn start_daemon() -> std::io::Result<Child> {
-    let daemon = Command::new("target/debug/kalatori")
-        .spawn()?;
+    let daemon = Command::new("target/debug/kalatori").spawn()?;
     sleep(Duration::from_secs(3)).await; // Give the daemon some time to start
     Ok(daemon)
 }
@@ -65,7 +73,9 @@ impl TestContext {
         // Start Chopsticks if not already started
         INIT.call_once(|| {
             tokio::spawn(async {
-                let chopsticks = start_chopsticks().await.expect("Failed to start Chopsticks");
+                let chopsticks = start_chopsticks()
+                    .await
+                    .expect("Failed to start Chopsticks");
                 let mut guard = CHOPSTICKS.lock().unwrap();
                 *guard = Some(chopsticks);
             });
@@ -76,7 +86,9 @@ impl TestContext {
 
         // Then  start the daemon
         load_chain_config();
-        let daemon = start_daemon().await.expect("Failed to start kalatori daemon");
+        let daemon = start_daemon()
+            .await
+            .expect("Failed to start kalatori daemon");
 
         TestContext {
             daemon: Some(daemon),

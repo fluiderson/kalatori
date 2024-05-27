@@ -12,7 +12,7 @@ endpoints = [
 ]
 
 [[chain]]
-name = "assethub-polkadot"
+name = "statemint"
 endpoints = [
     "wss://polkadot-asset-hub-rpc.polkadot.io",
     "wss://statemint-rpc.dwellir.com",
@@ -23,5 +23,5 @@ name = "USDC"
 id = 1337
 
 [[chain.asset]]
-name = "USDT"
+name = "USDt"
 id = 1984

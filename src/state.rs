@@ -27,15 +27,12 @@ pub struct State {
 
 impl State {
     pub fn initialise(
-        currencies: HashMap<String, CurrencyProperties>,
         signer: Signer,
         ConfigWoChains {
             recipient,
             debug,
             remark,
-            depth,
             account_lifetime,
-            rpc,
         }: ConfigWoChains,
         db: Database,
         chain_manager: oneshot::Receiver<ChainManager>,
@@ -68,7 +65,8 @@ impl State {
             let chain_manager = chain_manager.await.map_err(|_| Error::Fatal)?;
             let db_wakeup = db.clone();
             let chain_manager_wakeup = chain_manager.clone();
-            let state = StateData {
+            let currencies = HashMap::new();
+            let mut state = StateData {
                 currencies,
                 recipient,
                 server_info,
@@ -90,6 +88,11 @@ impl State {
 
             while let Some(request) = rx.recv().await {
                 match request {
+                    StateAccessRequest::ConnectChain(assets) => {
+                        // it MUST be asserted in chain tracker that assets are those and only
+                        // those that user requested
+                        state.update_currencies(assets);
+                    }
                     StateAccessRequest::GetInvoiceStatus(request) => {
                         request
                             .res
@@ -147,6 +150,10 @@ impl State {
         });
 
         Ok(Self { tx })
+    }
+
+    pub async fn connect_chain(&self, assets: HashMap<String, CurrencyProperties>) {
+        self.tx.send(StateAccessRequest::ConnectChain(assets)).await;
     }
 
     pub async fn order_status(&self, order: &str) -> Result<OrderResponse, Error> {
@@ -217,6 +224,7 @@ impl State {
 }
 
 enum StateAccessRequest {
+    ConnectChain(HashMap<String, CurrencyProperties>),
     GetInvoiceStatus(GetInvoiceStatus),
     CreateInvoice(CreateInvoice),
     ServerStatus(oneshot::Sender<ServerStatus>),
@@ -244,6 +252,10 @@ struct StateData {
 }
 
 impl StateData {
+    fn update_currencies(&mut self, currencies: HashMap<String, CurrencyProperties>) {
+        self.currencies.extend(currencies);
+    }
+
     async fn get_invoice_status(&self, order: String) -> Result<OrderResponse, Error> {
         if let Some(order_info) = self.db.read_order(order.clone()).await? {
             let message = String::new(); //TODO
