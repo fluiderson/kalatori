@@ -1,3 +1,4 @@
+// ensure you have chopsticks installed: npm install -g @acala-network/chopsticks
 // if running locally, ensure that you have no dangling processes (kalatori daemon, chopsticks)
 // pkill -f kalatori; pkill -f chopsticks
 
@@ -16,13 +17,9 @@ lazy_static! {
 
 async fn start_chopsticks() -> std::io::Result<Child> {
     let mut command = Command::new("npx");
-    command.args(&[
-        "@acala-network/chopsticks@latest",
-        "-c",
-        "chopsticks/pd-ah.yml",
-    ]);
+    command.args(&["@acala-network/chopsticks@latest", "-c", "chopsticks/pd-ah.yml"]);
     let chopsticks = command.spawn()?;
-    sleep(Duration::from_secs(3)).await; // Give Chopsticks some time to start
+    sleep(Duration::from_secs(10)).await; // Give Chopsticks some time to start
     Ok(chopsticks)
 }
 
@@ -54,7 +51,7 @@ fn load_chain_config() {
 
 async fn start_daemon() -> std::io::Result<Child> {
     let daemon = Command::new("target/debug/kalatori").spawn()?;
-    sleep(Duration::from_secs(3)).await; // Give the daemon some time to start
+    sleep(Duration::from_secs(10)).await; // Give the daemon some time to start
     Ok(daemon)
 }
 
@@ -117,26 +114,34 @@ async fn test_daemon_status_call() {
     assert!(resp.status().is_success());
 
     let body = resp
-        .json::<ServerStatus>()
+        .json::<serde_json::Value>()
         .await
         .expect("Failed to parse response");
 
-    // Check that all required fields are present
-    assert_eq!(body.server_info.version, KALATORI_CARGO_PACKAGE_VERSION);
-    assert!(!body.server_info.instance_id.is_empty());
-    assert_eq!(body.server_info.debug, true);
-    assert_eq!(body.server_info.kalatori_remark, KALATORI_REMARK);
+    let body_str = body.to_string();
+    let server_status: ServerStatus = serde_json::from_str(&body_str).expect("Failed to deserialize ServerStatus");
 
-    // Check that supported currencies are present
-    // assert!(!body.supported_currencies.is_empty());
-    // for (currency, properties) in body.supported_currencies {
-    //     assert!(!currency.is_empty());
-    //     assert!(!properties.chain_name.is_empty());
-    //     assert!(!properties.kind.is_empty());
-    //     assert!(properties.decimals > 0);
-    //     assert!(!properties.rpc_url.is_empty());
-    //     // asset_id is optional, so no need to assert on it
-    // }
+    assert_eq!(server_status.server_info.version, KALATORI_CARGO_PACKAGE_VERSION);
+    assert!(!server_status.server_info.instance_id.is_empty());
+    assert_eq!(server_status.server_info.debug, true);
+    assert_eq!(server_status.server_info.kalatori_remark, KALATORI_REMARK);
+
+    assert!(!server_status.supported_currencies.is_empty());
+    for (currency, properties) in server_status.supported_currencies {
+        assert!(!currency.is_empty());
+        assert!(!properties.chain_name.is_empty());
+        assert!(matches!(properties.kind, TokenKind::Balances | TokenKind::Asset));
+        assert!(properties.decimals > 0);
+        assert!(!properties.rpc_url.is_empty());
+
+        if currency == "DOT" {
+            assert_eq!(properties.chain_name, "statemint");
+            assert_eq!(properties.kind, TokenKind::Balances);
+            assert_eq!(properties.decimals, 10);
+            assert_eq!(properties.rpc_url, "ws://localhost:8000");
+            // those are wrong atm
+        }
+    }
 
     context.drop_async().await;
 }

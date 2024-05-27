@@ -203,7 +203,7 @@ pub mod api_v2 {
         pub rpc_url: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub asset_id: Option<AssetId>,
-        #[serde(skip_serializing)]
+        // #[serde(skip_serializing)]
         pub ss58: u16,
     }
 
@@ -228,7 +228,7 @@ pub mod api_v2 {
         pub rpc_url: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub asset_id: Option<AssetId>,
-        #[serde(skip_serializing)]
+        // #[serde(skip_serializing)]
         pub ss58: u16,
     }
 
@@ -246,7 +246,7 @@ pub mod api_v2 {
         }
     }
 
-    #[derive(Clone, Copy, Debug, Serialize, Decode, Encode, Deserialize)]
+    #[derive(Clone, Copy, Debug, Serialize, Decode, Encode, Deserialize, PartialEq)]
     #[serde(rename_all = "lowercase")]
     pub enum TokenKind {
         Asset,
