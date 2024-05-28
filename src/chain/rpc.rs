@@ -13,7 +13,7 @@ use crate::{
         api_v2::{AssetId, TokenKind},
         Balance,
     },
-    error::{ErrorChain, NotHex},
+    error::{ChainError, NotHex},
     utils::unhex,
 };
 use frame_metadata::{
@@ -63,14 +63,14 @@ const AURA: &str = "AuraApi";
 pub async fn runtime_version_identifier(
     client: &WsClient,
     block: &BlockHash,
-) -> Result<Value, ErrorChain> {
+) -> Result<Value, ChainError> {
     let value = client
         .request("state_getRuntimeVersion", rpc_params![block.to_string()])
         .await?;
     Ok(value)
 }
 
-pub async fn subscribe_blocks(client: &WsClient) -> Result<Subscription<BlockHead>, ErrorChain> {
+pub async fn subscribe_blocks(client: &WsClient) -> Result<Subscription<BlockHead>, ChainError> {
     Ok(client
         .subscribe(
             "chain_subscribeFinalizedHeads",
@@ -84,7 +84,7 @@ pub async fn get_value_from_storage(
     client: &WsClient,
     whole_key: &str,
     block: &BlockHash,
-) -> Result<Value, ErrorChain> {
+) -> Result<Value, ChainError> {
     let value: Value = client
         .request(
             "state_getStorage",
@@ -99,7 +99,7 @@ pub async fn get_keys_from_storage(
     prefix: &str,
     storage_name: &str,
     block: &BlockHash,
-) -> Result<Value, ErrorChain> {
+) -> Result<Value, ChainError> {
     let storage_key_prefix = format!(
         "0x{}{}",
         hex::encode(twox_128(prefix.as_bytes())),
@@ -123,24 +123,24 @@ pub async fn get_keys_from_storage(
     let keys: Value = client
         .request("state_getKeysPaged", params)
         .await
-        .map_err(ErrorChain::Client)?;
+        .map_err(ChainError::Client)?;
 
     Ok(keys)
 }
 
 /// fetch genesis hash, must be a hexadecimal string transformable into
 /// H256 format
-pub async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
+pub async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ChainError> {
     let genesis_hash_request: Value = client
         .request(
             "chain_getBlockHash",
             rpc_params![Value::Number(Number::from(0u8))],
         )
         .await
-        .map_err(ErrorChain::Client)?;
+        .map_err(ChainError::Client)?;
     match genesis_hash_request {
         Value::String(x) => BlockHash::from_str(&x),
-        _ => return Err(ErrorChain::GenesisHashFormat),
+        _ => return Err(ChainError::GenesisHashFormat),
     }
 }
 
@@ -149,7 +149,7 @@ pub async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ErrorChain> {
 pub async fn block_hash(
     client: &WsClient,
     number: Option<String>,
-) -> Result<BlockHash, ErrorChain> {
+) -> Result<BlockHash, ChainError> {
     let rpc_params = if let Some(a) = number {
         rpc_params![a]
     } else {
@@ -158,10 +158,10 @@ pub async fn block_hash(
     let block_hash_request: Value = client
         .request("chain_getBlockHash", rpc_params)
         .await
-        .map_err(ErrorChain::Client)?;
+        .map_err(ChainError::Client)?;
     match block_hash_request {
         Value::String(x) => BlockHash::from_str(&x),
-        _ => return Err(ErrorChain::BlockHashFormat),
+        _ => return Err(ChainError::BlockHashFormat),
     }
 }
 
@@ -169,7 +169,7 @@ pub async fn block_hash(
 pub async fn metadata(
     client: &WsClient,
     block: &BlockHash,
-) -> Result<RuntimeMetadataV15, ErrorChain> {
+) -> Result<RuntimeMetadataV15, ChainError> {
     let metadata_request: Value = client
         .request(
             "state_call",
@@ -180,29 +180,29 @@ pub async fn metadata(
             ],
         )
         .await
-        .map_err(ErrorChain::Client)?;
+        .map_err(ChainError::Client)?;
     match metadata_request {
         Value::String(x) => {
             let metadata_request_raw = unhex(&x, NotHex::Metadata)?;
             let maybe_metadata_raw = Option::<Vec<u8>>::decode_all(&mut &metadata_request_raw[..])
-                .map_err(|_| ErrorChain::RawMetadataNotDecodeable)?;
+                .map_err(|_| ChainError::RawMetadataNotDecodeable)?;
             if let Some(meta_v15_bytes) = maybe_metadata_raw {
                 if meta_v15_bytes.starts_with(b"meta") {
                     match RuntimeMetadata::decode_all(&mut &meta_v15_bytes[4..]) {
                         Ok(RuntimeMetadata::V15(runtime_metadata_v15)) => {
                             return Ok(runtime_metadata_v15)
                         }
-                        Ok(_) => return Err(ErrorChain::NoMetadataV15),
-                        Err(_) => return Err(ErrorChain::MetadataNotDecodeable),
+                        Ok(_) => return Err(ChainError::NoMetadataV15),
+                        Err(_) => return Err(ChainError::MetadataNotDecodeable),
                     }
                 } else {
-                    return Err(ErrorChain::NoMetaPrefix);
+                    return Err(ChainError::NoMetaPrefix);
                 }
             } else {
-                return Err(ErrorChain::NoMetadataV15);
+                return Err(ChainError::NoMetadataV15);
             }
         }
-        _ => return Err(ErrorChain::MetadataFormat),
+        _ => return Err(ChainError::MetadataFormat),
     };
 }
 
@@ -211,28 +211,28 @@ pub async fn specs(
     client: &WsClient,
     metadata: &RuntimeMetadataV15,
     block: &BlockHash,
-) -> Result<ShortSpecs, ErrorChain> {
+) -> Result<ShortSpecs, ChainError> {
     let specs_request: Value = client
         .request("system_properties", rpc_params![block.to_string()])
         .await?;
     match specs_request {
         Value::Object(properties) => system_properties_to_short_specs(&properties, &metadata),
-        _ => return Err(ErrorChain::PropertiesFormat),
+        _ => return Err(ChainError::PropertiesFormat),
     }
 }
 
-pub async fn next_block_number(blocks: &mut Subscription<BlockHead>) -> Result<String, ErrorChain> {
+pub async fn next_block_number(blocks: &mut Subscription<BlockHead>) -> Result<String, ChainError> {
     match blocks.next().await {
         Some(Ok(a)) => Ok(a.number),
         Some(Err(e)) => Err(e.into()),
-        None => Err(ErrorChain::BlockSubscriptionTerminated),
+        None => Err(ChainError::BlockSubscriptionTerminated),
     }
 }
 
 pub async fn next_block(
     client: &WsClient,
     blocks: &mut Subscription<BlockHead>,
-) -> Result<BlockHash, ErrorChain> {
+) -> Result<BlockHash, ChainError> {
     block_hash(&client, Some(next_block_number(blocks).await?)).await
 }
 
@@ -253,7 +253,7 @@ pub async fn assets_set_at_block(
     metadata_v15: &RuntimeMetadataV15,
     rpc_url: &str,
     specs: ShortSpecs,
-) -> Result<HashMap<String, CurrencyProperties>, ErrorChain> {
+) -> Result<HashMap<String, CurrencyProperties>, ChainError> {
     let mut assets_set = HashMap::new();
     let chain_name =
         <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(metadata_v15)?.spec_name;
@@ -323,13 +323,13 @@ pub async fn assets_set_at_block(
                                     {
                                         Ok(value)
                                     } else {
-                                        Err(ErrorChain::AssetIdFormat)
+                                        Err(ChainError::AssetIdFormat)
                                     }
                                 } else {
-                                    Err(ErrorChain::AssetKeyEmpty)
+                                    Err(ChainError::AssetKeyEmpty)
                                 }
                             } else {
-                                Err(ErrorChain::AssetKeyNotSingleHash)
+                                Err(ChainError::AssetKeyNotSingleHash)
                             }
                         }?;
                         let mut verified_sufficient = false;
@@ -350,7 +350,7 @@ pub async fn assets_set_at_block(
                         if verified_sufficient {
                             match &assets_metadata_storage_metadata.ty {
                                 StorageEntryType::Plain(_) => {
-                                    return Err(ErrorChain::AssetMetadataPlain)
+                                    return Err(ChainError::AssetMetadataPlain)
                                 }
                                 StorageEntryType::Map {
                                     hashers,
@@ -499,16 +499,16 @@ pub async fn assets_set_at_block(
                                                         }
                                                     } else {
                                                         return Err(
-                                                            ErrorChain::AssetMetadataUnexpected,
+                                                            ChainError::AssetMetadataUnexpected,
                                                         );
                                                     }
                                                 }
                                             }
 
-                                            _ => return Err(ErrorChain::AssetMetadataType),
+                                            _ => return Err(ChainError::AssetMetadataType),
                                         }
                                     } else {
-                                        return Err(ErrorChain::AssetMetadataMapSize);
+                                        return Err(ChainError::AssetMetadataMapSize);
                                     }
                                 }
                             }
@@ -527,7 +527,7 @@ pub async fn asset_balance_at_account(
     metadata_v15: &RuntimeMetadataV15,
     account_id: &AccountId32,
     asset_id: AssetId,
-) -> Result<Balance, ErrorChain> {
+) -> Result<Balance, ChainError> {
     let query = asset_balance_query(metadata_v15, account_id, asset_id)?;
 
     let value_fetch = get_value_from_storage(client, &query.key, block).await?;
@@ -549,12 +549,12 @@ pub async fn asset_balance_at_account(
                     return Ok(Balance(value));
                 }
             }
-            Err(ErrorChain::AssetBalanceNotFound)
+            Err(ChainError::AssetBalanceNotFound)
         } else {
-            Err(ErrorChain::AssetBalanceFormat)
+            Err(ChainError::AssetBalanceFormat)
         }
     } else {
-        Err(ErrorChain::StorageValueFormat(value_fetch))
+        Err(ChainError::StorageValueFormat(value_fetch))
     }
 }
 
@@ -563,7 +563,7 @@ pub async fn system_balance_at_account(
     block: &BlockHash,
     metadata_v15: &RuntimeMetadataV15,
     account_id: &AccountId32,
-) -> Result<Balance, ErrorChain> {
+) -> Result<Balance, ChainError> {
     let query = system_balance_query(metadata_v15, account_id)?;
 
     let value_fetch = get_value_from_storage(client, &query.key, block).await?;
@@ -596,14 +596,14 @@ pub async fn system_balance_at_account(
         }
     }
 
-    Err(ErrorChain::BalanceNotFound)
+    Err(ChainError::BalanceNotFound)
 }
 
 pub async fn transfer_events(
     client: &WsClient,
     block: &BlockHash,
     metadata_v15: &RuntimeMetadataV15,
-) -> Result<Vec<Event>, ErrorChain> {
+) -> Result<Vec<Event>, ChainError> {
     let events_entry_metadata = events_entry_metadata(&metadata_v15)?;
 
     events_at_block(
@@ -625,7 +625,7 @@ async fn events_at_block(
     optional_filter: Option<EventFilter<'_>>,
     events_entry_metadata: &StorageEntryMetadata<PortableForm>,
     types: &PortableRegistry,
-) -> Result<Vec<Event>, ErrorChain> {
+) -> Result<Vec<Event>, ChainError> {
     let keys_from_storage = get_keys_from_storage(client, "System", "Events", block).await?;
     let mut out = Vec::new();
     match keys_from_storage {
@@ -637,7 +637,7 @@ async fn events_at_block(
                     let value_bytes = if let Value::String(data_from_storage) = data_from_storage {
                         unhex(&data_from_storage, NotHex::StorageValue)?
                     } else {
-                        return Err(ErrorChain::StorageValueFormat(data_from_storage));
+                        return Err(ChainError::StorageValueFormat(data_from_storage));
                     };
                     let storage_data = decode_as_storage_entry::<&[u8], (), RuntimeMetadataV15>(
                         &key_bytes.as_ref(),
@@ -682,7 +682,7 @@ async fn events_at_block(
         },
         _ => {
             tracing::warn!("{keys_from_storage}");
-            return Err(ErrorChain::EventsMissing);
+            return Err(ChainError::EventsMissing);
         },
     }
 }
@@ -691,7 +691,7 @@ pub async fn current_block_number(
     client: &WsClient,
     metadata: &RuntimeMetadataV15,
     block: &BlockHash,
-) -> Result<u32, ErrorChain> {
+) -> Result<u32, ChainError> {
     let block_number_query = block_number_query(metadata)?;
     let fetched_value = get_value_from_storage(client, &block_number_query.key, block).await?;
     if let Value::String(hex_data) = fetched_value {
@@ -709,10 +709,10 @@ pub async fn current_block_number(
         {
             Ok(value)
         } else {
-            Err(ErrorChain::BlockNumberFormat)
+            Err(ChainError::BlockNumberFormat)
         }
     } else {
-        Err(ErrorChain::StorageValueFormat(fetched_value))
+        Err(ChainError::StorageValueFormat(fetched_value))
     }
 }
 
@@ -727,7 +727,7 @@ pub async fn get_nonce(
     Ok(())
 }
 
-pub async fn send_stuff(client: &WsClient, data: &str) -> Result<(), ErrorChain> {
+pub async fn send_stuff(client: &WsClient, data: &str) -> Result<(), ChainError> {
     let rpc_params = rpc_params![data];
     let mut subscription: Subscription<Value> = client
         .subscribe("author_submitAndWatchExtrinsic", rpc_params, "")

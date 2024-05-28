@@ -1,6 +1,6 @@
 use crate::{
     definitions::api_v2::*,
-    error::{Error, ErrorForceWithdrawal, ErrorOrder, ErrorServer},
+    error::{Error, ForceWithdrawalError, OrderError, ServerError},
     state::State,
 };
 use axum::{
@@ -22,7 +22,7 @@ pub async fn new(
     shutdown_notification: CancellationToken,
     host: SocketAddr,
     state: State,
-) -> Result<impl Future<Output = Result<Cow<'static, str>, Error>>, ErrorServer> {
+) -> Result<impl Future<Output = Result<Cow<'static, str>, Error>>, ServerError> {
     let v2: Router<State> = Router::new()
         .route("/order/:order_id", routing::post(order))
         .route(
@@ -43,13 +43,13 @@ pub async fn new(
 
     let listener = TcpListener::bind(host)
         .await
-        .map_err(|_| ErrorServer::TcpListenerBind(host))?;
+        .map_err(|_| ServerError::TcpListenerBind(host))?;
 
     Ok(async {
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_notification.cancelled_owned())
             .await
-            .map_err(|_| ErrorServer::ThreadError)?;
+            .map_err(|_| ServerError::ThreadError)?;
 
         Ok("The server module is shut down.".into())
     })
@@ -66,41 +66,41 @@ async fn process_order(
     matched_path: &MatchedPath,
     path_result: Result<RawPathParams, RawPathParamsRejection>,
     query: &HashMap<String, String>,
-) -> Result<OrderResponse, ErrorOrder> {
+) -> Result<OrderResponse, OrderError> {
     const ORDER_ID: &str = "order_id";
 
     let path_parameters =
-        path_result.map_err(|_| ErrorOrder::InvalidParameter(matched_path.as_str().to_owned()))?;
+        path_result.map_err(|_| OrderError::InvalidParameter(matched_path.as_str().to_owned()))?;
     let order = path_parameters
         .iter()
         .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
-        .ok_or_else(|| ErrorOrder::MissingParameter(ORDER_ID.into()))?
+        .ok_or_else(|| OrderError::MissingParameter(ORDER_ID.into()))?
         .to_owned();
 
     if query.is_empty() {
         state
             .order_status(&order)
             .await
-            .map_err(|_| ErrorOrder::InternalError)
+            .map_err(|_| OrderError::InternalError)
     } else {
         let get_parameter = |parameter: &str| {
             query
                 .get(parameter)
-                .ok_or_else(|| ErrorOrder::MissingParameter(parameter.into()))
+                .ok_or_else(|| OrderError::MissingParameter(parameter.into()))
         };
 
         let currency = get_parameter(CURRENCY)?.to_owned();
         let callback = get_parameter(CALLBACK)?.to_owned();
         let amount = get_parameter(AMOUNT)?
             .parse()
-            .map_err(|_| ErrorOrder::InvalidParameter(AMOUNT.into()))?;
+            .map_err(|_| OrderError::InvalidParameter(AMOUNT.into()))?;
 
         if currency != "USDC" {
-            return Err(ErrorOrder::UnknownCurrency);
+            return Err(OrderError::UnknownCurrency);
         }
 
         if amount < 0.07 {
-            return Err(ErrorOrder::LessThanExistentialDeposit(0.07));
+            return Err(OrderError::LessThanExistentialDeposit(0.07));
         }
 
         state
@@ -111,7 +111,7 @@ async fn process_order(
                 currency,
             })
             .await
-            .map_err(|_| ErrorOrder::InternalError)
+            .map_err(|_| OrderError::InternalError)
     }
 }
 
@@ -131,7 +131,7 @@ async fn order(
             OrderResponse::NotFound => (StatusCode::NOT_FOUND, "").into_response(),
         },
         Err(error) => match error {
-            ErrorOrder::LessThanExistentialDeposit(existential_deposit) => (
+            OrderError::LessThanExistentialDeposit(existential_deposit) => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
                     parameter: AMOUNT.into(),
@@ -139,7 +139,7 @@ async fn order(
                 }]),
             )
                 .into_response(),
-            ErrorOrder::UnknownCurrency => (
+            OrderError::UnknownCurrency => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
                     parameter: CURRENCY.into(),
@@ -147,7 +147,7 @@ async fn order(
                 }]),
             )
                 .into_response(),
-            ErrorOrder::MissingParameter(parameter) => (
+            OrderError::MissingParameter(parameter) => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
                     parameter,
@@ -155,7 +155,7 @@ async fn order(
                 }]),
             )
                 .into_response(),
-            ErrorOrder::InvalidParameter(parameter) => (
+            OrderError::InvalidParameter(parameter) => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
                     parameter,
@@ -163,7 +163,7 @@ async fn order(
                 }]),
             )
                 .into_response(),
-            ErrorOrder::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            OrderError::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
     }
 }
@@ -172,20 +172,20 @@ async fn process_force_withdrawal(
     state: State,
     matched_path: &MatchedPath,
     path_result: Result<RawPathParams, RawPathParamsRejection>,
-) -> Result<OrderStatus, ErrorForceWithdrawal> {
+) -> Result<OrderStatus, ForceWithdrawalError> {
     const ORDER_ID: &str = "order_id";
 
     let path_parameters = path_result
-        .map_err(|_| ErrorForceWithdrawal::InvalidParameter(matched_path.as_str().to_owned()))?;
+        .map_err(|_| ForceWithdrawalError::InvalidParameter(matched_path.as_str().to_owned()))?;
     let order = path_parameters
         .iter()
         .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
-        .ok_or_else(|| ErrorForceWithdrawal::MissingParameter(ORDER_ID.into()))?
+        .ok_or_else(|| ForceWithdrawalError::MissingParameter(ORDER_ID.into()))?
         .to_owned();
     state
         .force_withdrawal(order)
         .await
-        .map_err(ErrorForceWithdrawal::WithdrawalError)
+        .map_err(|e| ForceWithdrawalError::WithdrawalError(e.into()))
 }
 
 #[debug_handler]
@@ -196,10 +196,10 @@ async fn force_withdrawal(
 ) -> Response {
     match process_force_withdrawal(state, &matched_path, path_result).await {
         Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
-        Err(ErrorForceWithdrawal::WithdrawalError(a)) => {
+        Err(ForceWithdrawalError::WithdrawalError(a)) => {
             (StatusCode::BAD_REQUEST, Json(a)).into_response()
         }
-        Err(ErrorForceWithdrawal::MissingParameter(parameter)) => (
+        Err(ForceWithdrawalError::MissingParameter(parameter)) => (
             StatusCode::BAD_REQUEST,
             Json([InvalidParameter {
                 parameter,
@@ -207,7 +207,7 @@ async fn force_withdrawal(
             }]),
         )
             .into_response(),
-        Err(ErrorForceWithdrawal::InvalidParameter(parameter)) => (
+        Err(ForceWithdrawalError::InvalidParameter(parameter)) => (
             StatusCode::BAD_REQUEST,
             Json([InvalidParameter {
                 parameter,

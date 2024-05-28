@@ -1,6 +1,6 @@
 //! Utils to process chain data without accessing the chain
 
-use crate::{chain::definitions::BlockHash, definitions::api_v2::AssetId, error::ErrorChain};
+use crate::{chain::definitions::BlockHash, definitions::api_v2::AssetId, error::ChainError};
 use frame_metadata::{
     v14::StorageHasher,
     v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
@@ -40,7 +40,7 @@ pub struct AssetTransferConstructor<'a> {
 pub fn construct_single_asset_transfer_call(
     metadata: &RuntimeMetadataV15,
     asset_transfer_constructor: &AssetTransferConstructor,
-) -> Result<CallToFill, ErrorChain> {
+) -> Result<CallToFill, ChainError> {
     let mut call = prepare_type::<(), RuntimeMetadataV15>(
         &Ty::Symbol(&metadata.extrinsic.call_ty),
         &mut (),
@@ -214,7 +214,7 @@ pub fn construct_batch_transaction(
     block: BlockHash,
     block_number: u32,
     nonce: u32,
-) -> Result<TransactionToFill, ErrorChain> {
+) -> Result<TransactionToFill, ChainError> {
     let mut transaction_to_fill = TransactionToFill::init(&mut (), metadata, genesis_hash.0)?;
 
     // deal with author
@@ -309,7 +309,7 @@ pub fn construct_batch_transaction(
 pub fn construct_batch_call(
     metadata: &RuntimeMetadataV15,
     call_set: &[CallToFill],
-) -> Result<CallToFill, ErrorChain> {
+) -> Result<CallToFill, ChainError> {
     let mut call = prepare_type::<(), RuntimeMetadataV15>(
         &Ty::Symbol(&metadata.extrinsic.call_ty),
         &mut (),
@@ -387,7 +387,7 @@ pub fn construct_batch_call(
 pub fn construct_single_balance_transfer_call(
     metadata: &RuntimeMetadataV15,
     balance_transfer_constructor: &BalanceTransferConstructor,
-) -> Result<CallToFill, ErrorChain> {
+) -> Result<CallToFill, ChainError> {
     let mut call = prepare_type::<(), RuntimeMetadataV15>(
         &Ty::Symbol(&metadata.extrinsic.call_ty),
         &mut (),
@@ -547,7 +547,7 @@ pub fn construct_single_balance_transfer_call(
 
 pub fn block_number_query(
     metadata_v15: &RuntimeMetadataV15,
-) -> Result<FinalizedStorageQuery, ErrorChain> {
+) -> Result<FinalizedStorageQuery, ChainError> {
     let storage_selector = StorageSelector::init(&mut (), metadata_v15)?;
 
     if let StorageSelector::Functional(mut storage_selector_functional) = storage_selector {
@@ -601,24 +601,24 @@ pub fn block_number_query(
                         .query
                         .finalize()
                         .transpose()
-                        .ok_or(ErrorChain::StorageQuery)??)
+                        .ok_or(ChainError::StorageQuery)??)
                 } else {
-                    Err(ErrorChain::NoBlockNumberDefinition)
+                    Err(ChainError::NoBlockNumberDefinition)
                 }
             } else {
-                Err(ErrorChain::NoStorageInSystem)
+                Err(ChainError::NoStorageInSystem)
             }
         } else {
-            Err(ErrorChain::NoSystem)
+            Err(ChainError::NoSystem)
         }
     } else {
-        Err(ErrorChain::NoStorage)
+        Err(ChainError::NoStorage)
     }
 }
 
 pub fn events_entry_metadata(
     metadata: &RuntimeMetadataV15,
-) -> Result<&StorageEntryMetadata<PortableForm>, ErrorChain> {
+) -> Result<&StorageEntryMetadata<PortableForm>, ChainError> {
     let mut found_events_entry_metadata = None;
     for pallet in &metadata.pallets {
         if let Some(storage) = &pallet.storage {
@@ -634,7 +634,7 @@ pub fn events_entry_metadata(
     }
     match found_events_entry_metadata {
         Some(a) => Ok(a),
-        None => Err(ErrorChain::EventsNonexistant),
+        None => Err(ChainError::EventsNonexistant),
     }
 }
 
@@ -668,7 +668,7 @@ pub fn asset_balance_query(
     metadata_v15: &RuntimeMetadataV15,
     account_id: &AccountId32,
     asset_id: AssetId,
-) -> Result<FinalizedStorageQuery, ErrorChain> {
+) -> Result<FinalizedStorageQuery, ChainError> {
     let storage_selector = StorageSelector::init(&mut (), metadata_v15)?;
 
     if let StorageSelector::Functional(mut storage_selector_functional) = storage_selector {
@@ -761,16 +761,16 @@ pub fn asset_balance_query(
         storage_selector_functional
             .query
             .finalize()?
-            .ok_or(ErrorChain::StorageQuery)
+            .ok_or(ChainError::StorageQuery)
     } else {
-        Err(ErrorChain::StorageQuery)
+        Err(ChainError::StorageQuery)
     }
 }
 
 pub fn system_balance_query(
     metadata_v15: &RuntimeMetadataV15,
     account_id: &AccountId32,
-) -> Result<FinalizedStorageQuery, ErrorChain> {
+) -> Result<FinalizedStorageQuery, ChainError> {
     let storage_selector = StorageSelector::init(&mut (), metadata_v15)?;
     let mut index_system_in_pallet_selector = None;
 
@@ -838,9 +838,9 @@ pub fn system_balance_query(
         storage_selector_functional
             .query
             .finalize()?
-            .ok_or(ErrorChain::StorageQuery)
+            .ok_or(ChainError::StorageQuery)
     } else {
-        Err(ErrorChain::StorageQuery)
+        Err(ChainError::StorageQuery)
     }
 }
 
@@ -861,7 +861,7 @@ pub fn whole_key_u32_value(
     storage_name: &str,
     metadata_v15: &RuntimeMetadataV15,
     entered_data: u32,
-) -> Result<String, ErrorChain> {
+) -> Result<String, ChainError> {
     for pallet in metadata_v15.pallets.iter() {
         if let Some(storage) = &pallet.storage {
             if storage.prefix == prefix {
@@ -869,7 +869,7 @@ pub fn whole_key_u32_value(
                     if entry.name == storage_name {
                         match &entry.ty {
                             StorageEntryType::Plain(_) => {
-                                return Err(ErrorChain::StorageEntryNotMap)
+                                return Err(ChainError::StorageEntryNotMap)
                             }
                             StorageEntryType::Map {
                                 hashers,
@@ -894,23 +894,23 @@ pub fn whole_key_u32_value(
                                                 ))
                                             ))
                                         }
-                                        _ => return Err(ErrorChain::StorageKeyNotU32),
+                                        _ => return Err(ChainError::StorageKeyNotU32),
                                     }
                                 } else {
-                                    return Err(ErrorChain::StorageEntryMapMultiple);
+                                    return Err(ChainError::StorageEntryMapMultiple);
                                 }
                             }
                         }
                     }
                 }
-                return Err(ErrorChain::StorageKeyNotFound(storage_name.to_string()));
+                return Err(ChainError::StorageKeyNotFound(storage_name.to_string()));
             }
         }
     }
-    Err(ErrorChain::NoPallet)
+    Err(ChainError::NoPallet)
 }
 
-pub fn decimals(x: &Map<String, Value>) -> Result<u8, ErrorChain> {
+pub fn decimals(x: &Map<String, Value>) -> Result<u8, ChainError> {
     match x.get("tokenDecimals") {
         // decimals info is fetched in `system_properties` rpc call
         Some(a) => match a {
@@ -923,15 +923,11 @@ pub fn decimals(x: &Map<String, Value>) -> Result<u8, ErrorChain> {
                     Ok(d) => Ok(d),
 
                     // this `u64` does not fit into `u8`, this is an error
-                    Err(_) => Err(ErrorChain::DecimalsFormatNotSupported {
-                        value: a.to_string(),
-                    }),
+                    Err(_) => Err(ChainError::DecimalsFormatNotSupported(a.to_string())),
                 },
 
                 // number could not be represented as `u64`, this is an error
-                None => Err(ErrorChain::DecimalsFormatNotSupported {
-                    value: a.to_string(),
-                }),
+                None => Err(ChainError::DecimalsFormatNotSupported(a.to_string())),
             },
 
             // fetched decimals is an array
@@ -952,39 +948,31 @@ pub fn decimals(x: &Map<String, Value>) -> Result<u8, ErrorChain> {
 
                                 // this `u64` does not fit into `u8`, this is an
                                 // error
-                                Err(_) => Err(ErrorChain::DecimalsFormatNotSupported {
-                                    value: a.to_string(),
-                                }),
+                                Err(_) => {
+                                    Err(ChainError::DecimalsFormatNotSupported(a.to_string()))
+                                }
                             },
 
                             // number could not be represented as `u64`, this is
                             // an error
-                            None => Err(ErrorChain::DecimalsFormatNotSupported {
-                                value: a.to_string(),
-                            }),
+                            None => Err(ChainError::DecimalsFormatNotSupported(a.to_string())),
                         }
                     } else {
                         // element is not a number, this is an error
-                        Err(ErrorChain::DecimalsFormatNotSupported {
-                            value: a.to_string(),
-                        })
+                        Err(ChainError::DecimalsFormatNotSupported(a.to_string()))
                     }
                 } else {
                     // decimals are an array with more than one element
-                    Err(ErrorChain::DecimalsFormatNotSupported {
-                        value: a.to_string(),
-                    })
+                    Err(ChainError::DecimalsFormatNotSupported(a.to_string()))
                 }
             }
 
             // unexpected decimals format
-            _ => Err(ErrorChain::DecimalsFormatNotSupported {
-                value: a.to_string(),
-            }),
+            _ => Err(ChainError::DecimalsFormatNotSupported(a.to_string())),
         },
 
         // decimals are missing
-        None => Err(ErrorChain::NoDecimals),
+        None => Err(ChainError::NoDecimals),
     }
 }
 
@@ -1071,7 +1059,7 @@ pub fn fetch_constant(
 pub fn system_properties_to_short_specs(
     system_properties: &Map<String, Value>,
     metadata: &RuntimeMetadataV15,
-) -> Result<ShortSpecs, ErrorChain> {
+) -> Result<ShortSpecs, ChainError> {
     let optional_prefix_from_meta = optional_prefix_from_meta(metadata);
     let base58prefix = base58prefix(system_properties, optional_prefix_from_meta)?;
     let decimals = decimals(system_properties)?;
@@ -1103,7 +1091,7 @@ pub fn storage_key(prefix: &str, storage_name: &str) -> String {
 pub fn base58prefix(
     x: &Map<String, Value>,
     optional_prefix_from_meta: Option<u16>,
-) -> Result<u16, ErrorChain> {
+) -> Result<u16, ChainError> {
     let base58prefix: u16 = match x.get("ss58Format") {
         // base58 prefix is fetched in `system_properties` rpc call
         Some(a) => match a {
@@ -1123,7 +1111,7 @@ pub fn base58prefix(
                             if prefix_from_meta == d {
                                 d
                             } else {
-                                return Err(ErrorChain::Base58PrefixMismatch {
+                                return Err(ChainError::Base58PrefixMismatch {
                                     specs: d,
                                     meta: prefix_from_meta,
                                 });
@@ -1137,27 +1125,17 @@ pub fn base58prefix(
                     // `u64` value does not fit into `u16` base58 prefix format,
                     // this is an error
                     Err(_) => {
-                        return Err(ErrorChain::Base58PrefixFormatNotSupported {
-                            value: a.to_string(),
-                        })
+                        return Err(ChainError::Base58PrefixFormatNotSupported(a.to_string()))
                     }
                 },
 
                 // base58 prefix value could not be presented as `u64` number,
                 // this is an error
-                None => {
-                    return Err(ErrorChain::Base58PrefixFormatNotSupported {
-                        value: a.to_string(),
-                    })
-                }
+                None => return Err(ChainError::Base58PrefixFormatNotSupported(a.to_string())),
             },
 
             // base58 prefix value is not a number, this is an error
-            _ => {
-                return Err(ErrorChain::Base58PrefixFormatNotSupported {
-                    value: a.to_string(),
-                })
-            }
+            _ => return Err(ChainError::Base58PrefixFormatNotSupported(a.to_string())),
         },
 
         // no base58 prefix fetched in `system_properties` rpc call
@@ -1167,13 +1145,13 @@ pub fn base58prefix(
             Some(prefix_from_meta) => prefix_from_meta,
 
             // no base58 prefix at all, this is an error
-            None => return Err(ErrorChain::NoBase58Prefix),
+            None => return Err(ChainError::NoBase58Prefix),
         },
     };
     Ok(base58prefix)
 }
 
-pub fn unit(x: &Map<String, Value>) -> Result<String, ErrorChain> {
+pub fn unit(x: &Map<String, Value>) -> Result<String, ChainError> {
     match x.get("tokenSymbol") {
         // unit info is fetched in `system_properties` rpc call
         Some(a) => match a {
@@ -1193,25 +1171,19 @@ pub fn unit(x: &Map<String, Value>) -> Result<String, ErrorChain> {
                         Ok(c.to_string())
                     } else {
                         // element is not a `String`, this is an error
-                        Err(ErrorChain::UnitFormatNotSupported {
-                            value: a.to_string(),
-                        })
+                        Err(ChainError::UnitFormatNotSupported(a.to_string()))
                     }
                 } else {
                     // units are an array with more than one element
-                    Err(ErrorChain::UnitFormatNotSupported {
-                        value: a.to_string(),
-                    })
+                    Err(ChainError::UnitFormatNotSupported(a.to_string()))
                 }
             }
 
             // unexpected unit format
-            _ => Err(ErrorChain::UnitFormatNotSupported {
-                value: a.to_string(),
-            }),
+            _ => Err(ChainError::UnitFormatNotSupported(a.to_string())),
         },
 
         // unit missing
-        None => Err(ErrorChain::NoUnit),
+        None => Err(ChainError::NoUnit),
     }
 }

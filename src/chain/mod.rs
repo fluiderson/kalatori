@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     definitions::{api_v2::OrderInfo, Chain},
-    error::{Error, ErrorChain},
+    error::{Error, ChainError},
     Signer, State, TaskTracker,
 };
 
@@ -99,12 +99,12 @@ impl ChainManager {
                                 } else {
                                     let _unused = request
                                         .res
-                                        .send(Err(ErrorChain::InvalidChain(chain.to_string())));
+                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
                                 }
                             } else {
                                 let _unused = request
                                     .res
-                                    .send(Err(ErrorChain::InvalidCurrency(request.currency)));
+                                    .send(Err(ChainError::InvalidCurrency(request.currency)));
                             }
                         }
                         ChainRequest::Reap(request) => {
@@ -115,12 +115,12 @@ impl ChainManager {
                                 } else {
                                     let _unused = request
                                         .res
-                                        .send(Err(ErrorChain::InvalidChain(chain.to_string())));
+                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
                                 }
                             } else {
                                 let _unused = request
                                     .res
-                                    .send(Err(ErrorChain::InvalidCurrency(request.currency)));
+                                    .send(Err(ChainError::InvalidCurrency(request.currency)));
                             }
                         }
                         ChainRequest::Shutdown(res) => {
@@ -149,15 +149,15 @@ impl ChainManager {
         id: String,
         order: OrderInfo,
         recipient: AccountId32,
-    ) -> Result<(), ErrorChain> {
+    ) -> Result<(), ChainError> {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(ChainRequest::WatchAccount(WatchAccount::new(
                 id, order, recipient, res,
             )?))
             .await
-            .map_err(|_| ErrorChain::MessageDropped)?;
-        rx.await.map_err(|_| ErrorChain::MessageDropped)?
+            .map_err(|_| ChainError::MessageDropped)?;
+        rx.await.map_err(|_| ChainError::MessageDropped)?
     }
 
     pub async fn reap(
@@ -165,15 +165,15 @@ impl ChainManager {
         id: String,
         order: OrderInfo,
         recipient: AccountId32,
-    ) -> Result<(), ErrorChain> {
+    ) -> Result<(), ChainError> {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(ChainRequest::Reap(WatchAccount::new(
                 id, order, recipient, res,
             )?))
             .await
-            .map_err(|_| ErrorChain::MessageDropped)?;
-        rx.await.map_err(|_| ErrorChain::MessageDropped)?
+            .map_err(|_| ChainError::MessageDropped)?;
+        rx.await.map_err(|_| ChainError::MessageDropped)?
     }
 
     pub async fn shutdown(&self) -> () {

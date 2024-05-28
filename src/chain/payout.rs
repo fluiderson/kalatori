@@ -16,7 +16,7 @@ use crate::{
         },
     },
     definitions::api_v2::TokenKind,
-    error::ErrorChain,
+    error::ChainError,
     signer::Signer,
     state::State,
 };
@@ -34,7 +34,7 @@ pub async fn payout(
     state: State,
     chain: ChainWatcher,
     signer: Signer,
-) -> Result<(), ErrorChain> {
+) -> Result<(), ChainError> {
     // TODO: make this retry and rotate RPCs maybe
     //
     // after some retries record a failure
@@ -47,7 +47,7 @@ pub async fn payout(
         let currency = chain
             .assets
             .get(&order.currency)
-            .ok_or(ErrorChain::InvalidCurrency(order.currency))?;
+            .ok_or(ChainError::InvalidCurrency(order.currency))?;
 
         // Payout operation logic
         let transactions = match balance.0 - order.amount.0 {
@@ -65,7 +65,7 @@ pub async fn payout(
                 }
                 TokenKind::Asset => {
                     let asset_transfer_constructor = AssetTransferConstructor {
-                        asset_id: currency.asset_id.ok_or(ErrorChain::AssetId)?,
+                        asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
                         amount: order.amount.0,
                         to_account: &order.recipient,
                     };
@@ -97,7 +97,7 @@ pub async fn payout(
 
         let sign_this = batch_transaction
             .sign_this()
-            .ok_or(ErrorChain::TransactionNotSignable(format!(
+            .ok_or(ChainError::TransactionNotSignable(format!(
                 "{batch_transaction:?}"
             )))?;
 
@@ -108,7 +108,7 @@ pub async fn payout(
 
         let extrinsic = batch_transaction
             .send_this_signed::<(), RuntimeMetadataV15>(&chain.metadata)?
-            .ok_or(ErrorChain::NothingToSend)?;
+            .ok_or(ChainError::NothingToSend)?;
 
         send_stuff(&client, &format!("0x{}", hex::encode(extrinsic))).await?;
 

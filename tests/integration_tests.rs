@@ -2,7 +2,7 @@
 // if running locally, ensure that you have no dangling processes (kalatori daemon, chopsticks)
 // pkill -f kalatori; pkill -f chopsticks
 
-use kalatori::definitions::api_v2::*;
+use kalatori::definitions::api_v2::{ServerStatus, TokenKind};
 use lazy_static::lazy_static;
 use reqwest::Client;
 use std::env;
@@ -17,7 +17,11 @@ lazy_static! {
 
 async fn start_chopsticks() -> std::io::Result<Child> {
     let mut command = Command::new("npx");
-    command.args(&["@acala-network/chopsticks@latest", "-c", "chopsticks/pd-ah.yml"]);
+    command.args(&[
+        "@acala-network/chopsticks@latest",
+        "-c",
+        "chopsticks/pd-ah.yml",
+    ]);
     let chopsticks = command.spawn()?;
     sleep(Duration::from_secs(10)).await; // Give Chopsticks some time to start
     Ok(chopsticks)
@@ -119,9 +123,13 @@ async fn test_daemon_status_call() {
         .expect("Failed to parse response");
 
     let body_str = body.to_string();
-    let server_status: ServerStatus = serde_json::from_str(&body_str).expect("Failed to deserialize ServerStatus");
+    let server_status: ServerStatus =
+        serde_json::from_str(&body_str).expect("Failed to deserialize ServerStatus");
 
-    assert_eq!(server_status.server_info.version, KALATORI_CARGO_PACKAGE_VERSION);
+    assert_eq!(
+        server_status.server_info.version,
+        KALATORI_CARGO_PACKAGE_VERSION
+    );
     assert!(!server_status.server_info.instance_id.is_empty());
     assert_eq!(server_status.server_info.debug, true);
     assert_eq!(server_status.server_info.kalatori_remark, KALATORI_REMARK);
@@ -130,7 +138,10 @@ async fn test_daemon_status_call() {
     for (currency, properties) in server_status.supported_currencies {
         assert!(!currency.is_empty());
         assert!(!properties.chain_name.is_empty());
-        assert!(matches!(properties.kind, TokenKind::Balances | TokenKind::Asset));
+        assert!(matches!(
+            properties.kind,
+            TokenKind::Balances | TokenKind::Asset
+        ));
         assert!(properties.decimals > 0);
         assert!(!properties.rpc_url.is_empty());
 

@@ -24,7 +24,7 @@ use crate::{
         utils::{events_entry_metadata, was_balance_received_at_account},
     },
     definitions::{api_v2::CurrencyProperties, Chain},
-    error::ErrorChain,
+    error::ChainError,
     signer::Signer,
     state::State,
     TaskTracker,
@@ -38,7 +38,7 @@ pub fn start_chain_watch(
     signer: Signer,
     task_tracker: TaskTracker,
     cancellation_token: CancellationToken,
-) -> Result<(), ErrorChain> {
+) -> Result<(), ChainError> {
     task_tracker
         .clone()
         .spawn(format!("Chain {} watcher", chain.name.clone()), async move {
@@ -173,14 +173,14 @@ impl ChainWatcher {
         chain_tx: mpsc::Sender<ChainTrackerRequest>,
         state: State,
         task_tracker: TaskTracker,
-    ) -> Result<Self, ErrorChain> {
+    ) -> Result<Self, ChainError> {
         let genesis_hash = genesis_hash(&client).await?;
         let mut blocks = subscribe_blocks(&client).await?;
         let block = next_block(client, &mut blocks).await?;
         let version = runtime_version_identifier(client, &block).await?;
         let metadata = metadata(&client, &block).await?;
         let name = <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(&metadata)?.spec_name;
-        if name != chain.name { return Err(ErrorChain::WrongNetwork{expected: chain.name, actual: name, rpc: rpc_url.to_string()}) };
+        if name != chain.name { return Err(ChainError::WrongNetwork{expected: chain.name, actual: name, rpc: rpc_url.to_string()}) };
         let specs = specs(&client, &metadata, &block).await?;
         let mut assets =
             assets_set_at_block(&client, &block, &metadata, rpc_url, specs.clone()).await?;
@@ -210,7 +210,7 @@ impl ChainWatcher {
         // TODO: maybe check if at least one endpoint responds with proper assets and if not, shut
         // down
         if assets.len() != chain.asset.len() + if chain.native_token.is_some() { 1 } else { 0 } {
-            return Err(ErrorChain::AssetsInvalid(chain.name));
+            return Err(ChainError::AssetsInvalid(chain.name));
         }
         // this MUST assert that assets match exactly before reporting it
 

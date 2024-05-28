@@ -8,7 +8,7 @@ use crate::{
         },
         Entropy,
     },
-    error::{Error, ErrorOrder},
+    error::{Error, OrderError},
     signer::Signer,
     ConfigWoChains, TaskTracker,
 };
@@ -278,7 +278,7 @@ impl StateData {
         let currency = self
             .currencies
             .get(&order_query.currency)
-            .ok_or(ErrorOrder::UnknownCurrency)?;
+            .ok_or(OrderError::UnknownCurrency)?;
         let currency = currency.info(order_query.currency.clone());
         let payment_account = self.signer.public(order.clone(), currency.ss58).await?;
         let order_info = OrderInfo::new(order_query, currency, payment_account);

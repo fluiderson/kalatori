@@ -11,7 +11,7 @@ use crate::{
         tracker::ChainWatcher,
     },
     definitions::{api_v2::OrderInfo, Balance},
-    error::{ErrorChain, NotHex},
+    error::{ChainError, NotHex},
     utils::unhex,
 };
 
@@ -28,12 +28,12 @@ impl BlockHash {
     /// Convert string returned by RPC to typesafe block
     ///
     /// TODO: integrate nicely with serde
-    pub fn from_str(s: &str) -> Result<Self, crate::error::ErrorChain> {
+    pub fn from_str(s: &str) -> Result<Self, crate::error::ChainError> {
         let block_hash_raw = unhex(&s, NotHex::BlockHash)?;
         Ok(BlockHash(H256(
             block_hash_raw
                 .try_into()
-                .map_err(|_| ErrorChain::BlockHashLength)?,
+                .map_err(|_| ChainError::BlockHashLength)?,
         )))
     }
 }
@@ -95,7 +95,7 @@ pub struct WatchAccount {
     pub currency: String,
     pub amount: Balance,
     pub recipient: AccountId32,
-    pub res: oneshot::Sender<Result<(), ErrorChain>>,
+    pub res: oneshot::Sender<Result<(), ChainError>>,
 }
 
 impl WatchAccount {
@@ -103,12 +103,12 @@ impl WatchAccount {
         id: String,
         order: OrderInfo,
         recipient: AccountId32,
-        res: oneshot::Sender<Result<(), ErrorChain>>,
-    ) -> Result<WatchAccount, ErrorChain> {
+        res: oneshot::Sender<Result<(), ChainError>>,
+    ) -> Result<WatchAccount, ChainError> {
         Ok(WatchAccount {
             id,
             address: AccountId32::from_base58_string(&order.payment_account)
-                .map_err(ErrorChain::InvoiceAccount)?
+                .map_err(ChainError::InvoiceAccount)?
                 .0,
             currency: order.currency.currency,
             amount: Balance::parse(order.amount, order.currency.decimals),
@@ -151,11 +151,11 @@ impl Invoice {
         client: &WsClient,
         chain_watcher: &ChainWatcher,
         block: &BlockHash,
-    ) -> Result<Balance, ErrorChain> {
+    ) -> Result<Balance, ChainError> {
         let currency = chain_watcher
             .assets
             .get(&self.currency)
-            .ok_or(ErrorChain::InvalidCurrency(self.currency.clone()))?;
+            .ok_or(ChainError::InvalidCurrency(self.currency.clone()))?;
         if let Some(asset_id) = currency.asset_id {
             let balance = asset_balance_at_account(
                 client,
@@ -179,7 +179,7 @@ impl Invoice {
         client: &WsClient,
         chain_watcher: &ChainWatcher,
         block: &BlockHash,
-    ) -> Result<bool, ErrorChain> {
+    ) -> Result<bool, ChainError> {
         Ok(self.balance(client, chain_watcher, block).await? >= self.amount)
     }
 }
