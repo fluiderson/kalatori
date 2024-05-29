@@ -49,15 +49,6 @@ substrate-constructor = { git = "https://github.com/Alzymologist/substrate-const
 mnemonic-external = { git = "https://github.com/Alzymologist/mnemonic-external" }
 substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-crypto-light" }
 
-[patch."https://github.com/Alzymologist/substrate-crypto-light"]
-substrate-crypto-light = { git = "https://github.com/fluiderson/scl", branch = "thiserror" }
-
-[patch."https://github.com/Alzymologist/substrate-constructor"]
-substrate-constructor = { git = "https://github.com/fluiderson/sc", branch = "thiserror" }
-
-[patch."https://github.com/Alzymologist/mnemonic-external"]
-mnemonic-external = { git = "https://github.com/fluiderson/me", branch = "thiserror" }
-
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
 lazy_static = "1"
