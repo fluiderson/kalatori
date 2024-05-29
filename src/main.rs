@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use std::{
     borrow::Cow,
-    collections::HashMap,
     env::{self, VarError},
     error::Error as _,
     fs,
@@ -29,10 +28,10 @@ mod signer;
 mod state;
 mod utils;
 
-use crate::definitions::{Chain, Entropy, Version};
 use chain::ChainManager;
 use database::ConfigWoChains;
-use error::Error;
+use definitions::{Chain, Version};
+use error::{Error, PrettyCause};
 use signer::Signer;
 use state::State;
 
@@ -48,8 +47,17 @@ const DEFAULT_CONFIG: &str = "configs/polkadot.toml";
 const DEFAULT_SOCKET: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 16726);
 const DEFAULT_DATABASE: &str = "kalatori.db";
 
+fn main() {
+    if let Err(error) = try_main() {
+        println!(
+            "Badbye! The daemon's got a fatal error during an initialization: {error}.{}",
+            error.pretty_cause()
+        );
+    }
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn try_main() -> Result<(), Error> {
     let shutdown_notification = CancellationToken::new();
 
     set_panic_hook(shutdown_notification.clone());
@@ -318,7 +326,10 @@ impl TaskTracker {
         drop(self.error_tx);
 
         while let Some((from, error)) = error_rx.recv().await {
-            tracing::error!("Received a fatal error from {from}:\n{error:?}");
+            tracing::error!(
+                "Received a fatal error from {from}:\n{error:?}.{}",
+                error.pretty_cause()
+            );
 
             if !shutdown_notification.is_cancelled() {
                 tracing::info!("Initialising the shutdown...");

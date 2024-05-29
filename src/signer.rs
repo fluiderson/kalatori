@@ -11,7 +11,7 @@
 
 use crate::{
     definitions::Entropy,
-    error::{Error, ErrorSigner},
+    error::{Error, SignerError},
     TaskTracker,
 };
 
@@ -77,22 +77,22 @@ impl Signer {
         Ok(Self { tx })
     }
 
-    pub async fn public(&self, id: String, ss58: u16) -> Result<String, ErrorSigner> {
+    pub async fn public(&self, id: String, ss58: u16) -> Result<String, SignerError> {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(SignerRequest::PublicKey(PublicKeyRequest { id, ss58, res }))
             .await
-            .map_err(|_| ErrorSigner::SignerDown)?;
-        rx.await.map_err(|_| ErrorSigner::SignerDown)?
+            .map_err(|_| SignerError::SignerDown)?;
+        rx.await.map_err(|_| SignerError::SignerDown)?
     }
 
-    pub async fn sign(&self, id: String, signable: Vec<u8>) -> Result<Signature, ErrorSigner> {
+    pub async fn sign(&self, id: String, signable: Vec<u8>) -> Result<Signature, SignerError> {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(SignerRequest::Sign(Sign { id, signable, res }))
             .await
-            .map_err(|_| ErrorSigner::SignerDown)?;
-        rx.await.map_err(|_| ErrorSigner::SignerDown)?
+            .map_err(|_| SignerError::SignerDown)?;
+        rx.await.map_err(|_| SignerError::SignerDown)?
     }
 
     pub async fn shutdown(&self) {
@@ -125,25 +125,25 @@ enum SignerRequest {
 struct PublicKeyRequest {
     id: String,
     ss58: u16,
-    res: oneshot::Sender<Result<String, ErrorSigner>>,
+    res: oneshot::Sender<Result<String, SignerError>>,
 }
 
 /// Bytes to sign, with callback
 struct Sign {
     id: String,
     signable: Vec<u8>,
-    res: oneshot::Sender<Result<Signature, ErrorSigner>>,
+    res: oneshot::Sender<Result<Signature, SignerError>>,
 }
 
 /// Read seeds from env
 ///
 /// TODO: read also old seeds and do something about them
-fn parse_seeds() -> Result<Entropy, ErrorSigner> {
-    entropy_from_phrase(&env::var(SEED).map_err(|_| ErrorSigner::Env(SEED.to_string()))?)
+fn parse_seeds() -> Result<Entropy, SignerError> {
+    entropy_from_phrase(&env::var(SEED).map_err(|_| SignerError::Env(SEED.to_string()))?)
 }
 
 /// Convert seed phrase to entropy
-pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, ErrorSigner> {
+pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, SignerError> {
     let mut word_set = WordSet::new();
     for word in seed.split(' ') {
         word_set.add_word(&word, &InternalWordList)?;

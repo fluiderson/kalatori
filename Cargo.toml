@@ -10,39 +10,48 @@ readme = true
 keywords = ["substrate", "blockchain", "finance", "service", "middleware"]
 categories = ["finance"]
 
-[dev-dependencies]
-reqwest = { version = "0.12.4", features = ["json"] }
-lazy_static = "1.4.0" 
-
 [dependencies]
-axum = { version = "0.7", default-features = false, features = ["tokio", "http1", "query", "json", "matched-path"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["smallvec", "ansi", "env-filter", "time"] }
+axum = { version = "0.7", default-features = false, features = [
+    "tokio",
+    "http1",
+    "query",
+    "json",
+    "matched-path",
+] }
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "smallvec",
+    "ansi",
+    "env-filter",
+    "time",
+] }
 ureq = { version = "2", default-features = false, features = ["json"] }
-
 names = { version = "0.14", default-features = false }
-
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio = { version = "1", features = ["full"] }
-
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 scale-info = "2"
-axum-macros = "0.4.1"
-primitive-types = { version = "0.12.2", features = ["codec"] }
-substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-crypto-light" }
-jsonrpsee = { version = "0.22.4", features = ["ws-client"] }
-mnemonic-external = { git = "https://github.com/Alzymologist/mnemonic-external" }
-thiserror = "1.0.58"
+axum-macros = "0.4"
+primitive-types = { version = "0.12", features = ["codec"] }
+jsonrpsee = { version = "0.22", features = ["ws-client"] }
+thiserror = "1"
+frame-metadata = "16"
+hex = "0.4"
+parity-scale-codec = "3"
+serde_json = "1"
+sp-crypto-hashing = "0.1"
+toml = "0.8"
+sled = "0.34"
+zeroize = "1.7"
+
 substrate_parser = { git = "https://github.com/Alzymologist/substrate-parser" }
 substrate-constructor = { git = "https://github.com/Alzymologist/substrate-constructor" }
-frame-metadata = "16.0.0"
-hex = "0.4.3"
-parity-scale-codec = "3.6.9"
-serde_json = "1.0.116"
-sp-crypto-hashing = "0.1.0"
-toml = "0.8.12"
-sled = "0.34.7"
-zeroize = "1.7.0"
+mnemonic-external = { git = "https://github.com/Alzymologist/mnemonic-external" }
+substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-crypto-light" }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+lazy_static = "1"
 
 [profile.release]
 strip = true
@@ -52,8 +61,10 @@ codegen-units = 1
 [lints.rust]
 future_incompatible = "warn"
 let_underscore = "warn"
-#rust_2018_idioms = "warn"
+rust_2018_idioms = "warn"
 unused = "warn"
+# TODO: https://github.com/rust-lang/cargo/issues/12918
+rust-2024-compatibility = { level = "warn", priority = -1 }
 
 [lints.clippy]
 shadow_reuse = "warn"
@@ -61,4 +72,5 @@ shadow_same = "warn"
 shadow_unrelated = "warn"
 cargo_common_metadata = "warn"
 arithmetic_side_effects = "warn"
-pedantic = "warn"
+# TODO: https://github.com/rust-lang/cargo/issues/12918
+pedantic = { level = "warn", priority = -1 }

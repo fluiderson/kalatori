@@ -12,7 +12,7 @@ use crate::{
         },
         Balance, Nonce,
     },
-    error::{Error, ErrorDb},
+    error::{Error, DbError},
     TaskTracker,
 };
 use parity_scale_codec::{Compact, Decode, Encode};
@@ -175,16 +175,16 @@ impl Database {
         let database = if let Some(path) = path_option {
             tracing::info!("Creating/Opening the database at {path:?}.");
 
-            sled::open(path).map_err(ErrorDb::DbStartError)?
+            sled::open(path).map_err(DbError::DbStartError)?
         } else {
             // TODO
             /*
             tracing::warn!(
                 "The in-memory backend for the database is selected. All saved data will be deleted after the shutdown!"
             );*/
-            sled::open("temp.db").map_err(ErrorDb::DbStartError)?
+            sled::open("temp.db").map_err(DbError::DbStartError)?
         };
-        let orders = database.open_tree(ORDERS).map_err(ErrorDb::DbStartError)?;
+        let orders = database.open_tree(ORDERS).map_err(DbError::DbStartError)?;
 
         task_tracker.spawn("Database server", async move {
             // No process forking beyond this point!
@@ -238,17 +238,17 @@ impl Database {
         Ok(Self { tx })
     }
 
-    pub async fn order_list(&self) -> Result<Vec<(String, OrderInfo)>, ErrorDb> {
+    pub async fn order_list(&self) -> Result<Vec<(String, OrderInfo)>, DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self.tx.send(DbRequest::ActiveOrderList(res)).await;
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+        rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
     pub async fn create_order(
         &self,
         order: String,
         order_info: OrderInfo,
-    ) -> Result<OrderCreateResponse, ErrorDb> {
+    ) -> Result<OrderCreateResponse, DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
             .tx
@@ -258,43 +258,43 @@ impl Database {
                 res,
             }))
             .await;
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+        rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
-    pub async fn read_order(&self, order: String) -> Result<Option<OrderInfo>, ErrorDb> {
+    pub async fn read_order(&self, order: String) -> Result<Option<OrderInfo>, DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
             .tx
             .send(DbRequest::ReadOrder(ReadOrder { order, res }))
             .await;
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+        rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
-    pub async fn mark_paid(&self, order: String) -> Result<OrderInfo, ErrorDb> {
+    pub async fn mark_paid(&self, order: String) -> Result<OrderInfo, DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
             .tx
             .send(DbRequest::MarkPaid(MarkPaid { order, res }))
             .await;
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+        rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
-    pub async fn mark_withdrawn(&self, order: String) -> Result<(), ErrorDb> {
+    pub async fn mark_withdrawn(&self, order: String) -> Result<(), DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
             .tx
             .send(DbRequest::MarkWithdrawn(ModifyOrder { order, res }))
             .await;
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+        rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
-    pub async fn mark_stuck(&self, order: String) -> Result<(), ErrorDb> {
+    pub async fn mark_stuck(&self, order: String) -> Result<(), DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
             .tx
             .send(DbRequest::MarkStuck(ModifyOrder { order, res }))
             .await;
-        rx.await.map_err(|_| ErrorDb::DbEngineDown)?
+        rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
     pub async fn shutdown(&self) {
@@ -306,7 +306,7 @@ impl Database {
 
 enum DbRequest {
     CreateOrder(CreateOrder),
-    ActiveOrderList(oneshot::Sender<Result<Vec<(String, OrderInfo)>, ErrorDb>>),
+    ActiveOrderList(oneshot::Sender<Result<Vec<(String, OrderInfo)>, DbError>>),
     ReadOrder(ReadOrder),
     MarkPaid(MarkPaid),
     MarkWithdrawn(ModifyOrder),
@@ -317,29 +317,29 @@ enum DbRequest {
 pub struct CreateOrder {
     pub order: String,
     pub order_info: OrderInfo,
-    pub res: oneshot::Sender<Result<OrderCreateResponse, ErrorDb>>,
+    pub res: oneshot::Sender<Result<OrderCreateResponse, DbError>>,
 }
 
 pub struct ReadOrder {
     pub order: String,
-    pub res: oneshot::Sender<Result<Option<OrderInfo>, ErrorDb>>,
+    pub res: oneshot::Sender<Result<Option<OrderInfo>, DbError>>,
 }
 
 pub struct ModifyOrder {
     pub order: String,
-    pub res: oneshot::Sender<Result<(), ErrorDb>>,
+    pub res: oneshot::Sender<Result<(), DbError>>,
 }
 
 pub struct MarkPaid {
     pub order: String,
-    pub res: oneshot::Sender<Result<OrderInfo, ErrorDb>>,
+    pub res: oneshot::Sender<Result<OrderInfo, DbError>>,
 }
 
 fn create_order(
     order: String,
     order_info: OrderInfo,
     orders: &sled::Tree,
-) -> Result<OrderCreateResponse, ErrorDb> {
+) -> Result<OrderCreateResponse, DbError> {
     Ok(match orders.get(&order)? {
         Some(record) => {
             let old_order_info = OrderInfo::decode(&mut &record[..])?;
@@ -358,7 +358,7 @@ fn create_order(
     })
 }
 
-fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, ErrorDb> {
+fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, DbError> {
     if let Some(order) = orders.get(order)? {
         Ok(Some(OrderInfo::decode(&mut &order[..])?))
     } else {
@@ -366,7 +366,7 @@ fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, E
     }
 }
 
-fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, ErrorDb> {
+fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
         if order_info.payment_status == PaymentStatus::Pending {
@@ -374,13 +374,13 @@ fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, ErrorDb> {
             orders.insert(order.encode(), order_info.encode())?;
             Ok(order_info)
         } else {
-            Err(ErrorDb::AlreadyPaid(order))
+            Err(DbError::AlreadyPaid(order))
         }
     } else {
-        Err(ErrorDb::OrderNotFound(order))
+        Err(DbError::OrderNotFound(order))
     }
 }
-fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), ErrorDb> {
+fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
         if order_info.payment_status == PaymentStatus::Paid {
@@ -389,16 +389,16 @@ fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), ErrorDb> {
                 orders.insert(order.encode(), order_info.encode())?;
                 Ok(())
             } else {
-                Err(ErrorDb::WithdrawalWasAttempted(order))
+                Err(DbError::WithdrawalWasAttempted(order))
             }
         } else {
-            Err(ErrorDb::NotPaid(order))
+            Err(DbError::NotPaid(order))
         }
     } else {
-        Err(ErrorDb::OrderNotFound(order))
+        Err(DbError::OrderNotFound(order))
     }
 }
-fn mark_stuck(order: String, orders: &sled::Tree) -> Result<(), ErrorDb> {
+fn mark_stuck(order: String, orders: &sled::Tree) -> Result<(), DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
         if order_info.payment_status == PaymentStatus::Paid {
@@ -407,13 +407,13 @@ fn mark_stuck(order: String, orders: &sled::Tree) -> Result<(), ErrorDb> {
                 orders.insert(order.encode(), order_info.encode())?;
                 Ok(())
             } else {
-                Err(ErrorDb::WithdrawalWasAttempted(order))
+                Err(DbError::WithdrawalWasAttempted(order))
             }
         } else {
-            Err(ErrorDb::NotPaid(order))
+            Err(DbError::NotPaid(order))
         }
     } else {
-        Err(ErrorDb::OrderNotFound(order))
+        Err(DbError::OrderNotFound(order))
     }
 }
 //impl StateInterface {

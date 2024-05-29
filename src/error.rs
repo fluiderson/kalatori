@@ -1,118 +1,91 @@
-use crate::{definitions::api_v2::OrderStatus, SocketAddr};
+use crate::definitions::api_v2::OrderStatus;
 use frame_metadata::v15::RuntimeMetadataV15;
-use jsonrpsee::core::client::error::Error as ClientError;
+use jsonrpsee::core::ClientError;
 use mnemonic_external::error::ErrorWordList;
-use primitive_types::H256;
+use parity_scale_codec::Error as ScaleError;
 use serde_json::Value;
 use sled::Error as DatabaseError;
-use substrate_constructor::error::*;
+use std::net::SocketAddr;
+use std::{
+    error::Error as StdError,
+    fmt::{Display, Formatter, Result},
+    io::Error as IoError,
+};
+use substrate_constructor::error::{ErrorFixMe, StorageRegistryError};
 use substrate_crypto_light::error::Error as CryptoError;
-use substrate_parser::error::*;
+use substrate_parser::error::{MetaVersionErrorPallets, ParserError, RegistryError, StorageError};
+use thiserror::Error;
 use tokio::task::JoinError;
+use toml::de::Error as TomlError;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 pub enum Error {
-    #[error("failed to read `{0}`")]
+    #[error("failed to read the {0:?} environment variable")]
     Env(String),
 
-    #[error("failed to read a config file at {0:?}")]
+    #[error("failed to read the config file at {0:?}")]
     ConfigFileRead(String),
 
-    #[error("failed to parse the config at {0}")]
-    ConfigFileParse(toml::de::Error),
+    #[error("failed to parse the config")]
+    ConfigFileParse(#[from] TomlError),
 
-    #[error("failed to parse the config parameter {0}")]
+    #[error("failed to parse the config parameter {0:?}")]
     ConfigParse(String),
 
-    #[error("chain {0} doesn't have any `endpoints` in the config")]
+    #[error("chain {0:?} doesn't have any `endpoints` in the config")]
     EmptyEndpoints(String),
 
-    #[error("RPC server error: {0:?}")]
-    ErrorChain(ErrorChain),
+    #[error("RPC server error is occurred")]
+    Chain(#[from] ChainError),
 
-    #[error("Database error: {0:?}")]
-    ErrorDb(ErrorDb),
+    #[error("database error is occurred")]
+    Db(#[from] DbError),
 
-    #[error("Order error: {0:?}")]
-    ErrorOrder(ErrorOrder),
+    #[error("order error is occurred")]
+    Order(#[from] OrderError),
 
-    #[error("Daemon server error: {0:?}")]
-    ErrorServer(ErrorServer),
+    #[error("daemon server error is occurred")]
+    Server(#[from] ServerError),
 
-    #[error("Signer error: {0:?}")]
-    ErrorSigner(ErrorSigner),
+    #[error("signer error is occurred")]
+    Signer(#[from] SignerError),
 
-    #[error("Failed to listen to shutdown signal")]
+    #[error("failed to listen for the shutdown signal")]
     ShutdownSignal,
 
-    #[error("Receiver account could not be parsed: {0:?}")]
-    RecipientAccount(substrate_crypto_light::error::Error),
+    #[error("receiver account couldn't be parsed")]
+    RecipientAccount(#[from] CryptoError),
 
-    #[error("Fatal error. System is shutting down.")]
+    #[error("fatal error is occurred")]
     Fatal,
 
-    #[error("Operating system related I/O error {0:?}")]
-    IoError(std::io::Error),
+    #[error("operating system related I/O error is occurred")]
+    Io(#[from] IoError),
 
-    #[error("Duplicate config record for token {0}")]
+    #[error("found duplicate config record for the token {0:?}")]
     DuplicateCurrency(String),
 }
 
-impl From<ErrorDb> for Error {
-    fn from(e: ErrorDb) -> Error {
-        Error::ErrorDb(e)
-    }
-}
-
-impl From<ErrorChain> for Error {
-    fn from(e: ErrorChain) -> Error {
-        Error::ErrorChain(e)
-    }
-}
-
-impl From<ErrorOrder> for Error {
-    fn from(e: ErrorOrder) -> Error {
-        Error::ErrorOrder(e)
-    }
-}
-
-impl From<ErrorServer> for Error {
-    fn from(e: ErrorServer) -> Error {
-        Error::ErrorServer(e)
-    }
-}
-
-impl From<ErrorSigner> for Error {
-    fn from(e: ErrorSigner) -> Error {
-        Error::ErrorSigner(e)
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::IoError(e)
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ErrorChain {
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum ChainError {
     // TODO: this should be prevented by typesafety
-    #[error("Asset id is missing")]
+    #[error("asset ID is missing")]
     AssetId,
 
-    #[error("Asset id is not u32")]
+    #[error("asset ID isn't `u32`")]
     AssetIdFormat,
 
-    #[error("Invalid assets for chain {0}")]
+    #[error("invalid assets for the chain {0:?}")]
     AssetsInvalid(String),
 
-    #[error("Asset key has no parceable part")]
+    #[error("asset key has no parceable part")]
     AssetKeyEmpty,
 
-    #[error("Asset key is not single hash")]
+    #[error("asset key isn't single hash")]
     AssetKeyNotSingleHash,
 
-    #[error("Asset metadata is not a map")]
+    #[error("asset metadata isn't a map")]
     AssetMetadataPlain,
 
     #[error("unexpected assets metadata value structure")]
@@ -121,40 +94,40 @@ pub enum ErrorChain {
     #[error("wrong data type")]
     AssetMetadataType,
 
-    #[error("expected map with single entry, got multiple entries")]
+    #[error("expected a map with a single entry, got multiple entries")]
     AssetMetadataMapSize,
 
-    #[error("Asset balance format is unexpected")]
+    #[error("asset balance format is unexpected")]
     AssetBalanceFormat,
 
-    #[error("No balance field in asset record")]
+    #[error("no balance field in an asset record")]
     AssetBalanceNotFound,
 
-    #[error("Format of fetched base58 prefix {value} is not supported.")]
-    Base58PrefixFormatNotSupported { value: String },
+    #[error("format of the fetched Base58 prefix {0:?} isn't supported")]
+    Base58PrefixFormatNotSupported(String),
 
-    #[error("Base58 prefixes in metadata {meta} and specs {specs} do not match.")]
+    #[error("Base58 prefixes in metadata ({meta:?}) and specs ({specs:?}) do not match.")]
     Base58PrefixMismatch { specs: u16, meta: u16 },
 
-    #[error("Unexpected block number format.")]
+    #[error("unexpected block number format")]
     BlockNumberFormat,
 
-    #[error("Unexpected block hash format.")]
+    #[error("unexpected block hash format")]
     BlockHashFormat,
 
-    #[error("Unexpected block hash length.")]
+    #[error("unexpected block hash length")]
     BlockHashLength,
 
-    #[error("Ws client error. {0}")]
-    Client(ClientError),
+    #[error("WS client error is occurred")]
+    Client(#[from] ClientError),
 
-    #[error("Threading error. {0}")]
-    Tokio(JoinError),
+    #[error("threading error is occurred")]
+    Tokio(#[from] JoinError),
 
-    #[error("Format of fetched decimals {value} is not supported.")]
-    DecimalsFormatNotSupported { value: String },
+    #[error("format of fetched decimals ({0}) isn't supported")]
+    DecimalsFormatNotSupported(String),
 
-    #[error("Unexpected genesis hash format.")]
+    #[error("unexpected genesis hash format")]
     GenesisHashFormat,
 
     #[error("...")]
@@ -163,34 +136,34 @@ pub enum ErrorChain {
     #[error("...")]
     MetadataNotDecodeable,
 
-    #[error("No base58 prefix is fetched as system properties or found in the metadata.")]
+    #[error("no Base58 prefix is fetched as system properties or found in metadata")]
     NoBase58Prefix,
 
-    #[error("Block number definition not found")]
+    #[error("block number definition isn't found")]
     NoBlockNumberDefinition,
 
-    #[error("No decimals value is fetched.")]
+    #[error("no decimals value is fetched")]
     NoDecimals,
 
-    #[error("Metadata v15 not available through rpc.")]
+    #[error("metadata v15 isn't available through RPC")]
     NoMetadataV15,
 
-    #[error("Metadata must start with `meta` prefix.")]
+    #[error("metadata must start with the `meta` prefix")]
     NoMetaPrefix,
 
-    #[error("Pallet not found")]
+    #[error("pallet isn't found")]
     NoPallet,
 
-    #[error("No pallets with storage found")]
+    #[error("no pallets with a storage found")]
     NoStorage,
 
-    #[error("Pallet System not found")]
+    #[error("\"System\" pallet isn't found")]
     NoSystem,
 
-    #[error("No storage variants in system pallet")]
+    #[error("no storage variants in the \"System\" pallet")]
     NoStorageInSystem,
 
-    #[error("No unit value is fetched.")]
+    #[error("no unit value is fetched")]
     NoUnit,
 
     #[error("...")]
@@ -199,10 +172,10 @@ pub enum ErrorChain {
     #[error("...")]
     RawMetadataNotDecodeable,
 
-    #[error("Format of fetched unit {value} is not supported.")]
-    UnitFormatNotSupported { value: String },
+    #[error("format of the fetched unit ({0}) isn't supported")]
+    UnitFormatNotSupported(String),
 
-    #[error("Unexpected storage value format for key {0:?}")]
+    #[error("unexpected storage value format for the key \"{0:?}\"")]
     StorageValueFormat(Value),
 
     //#[error("Chain returned zero for block time")]
@@ -216,273 +189,255 @@ pub enum ErrorChain {
 
     //#[error("Aura slot duration could not be parsed as u64")]
     //AuraSlotDurationFormat,
-    #[error("Internal error: {0:?}")] // TODO this should be replaced by specific errors
-    ErrorUtil(ErrorUtil),
+    #[error("internal error is occurred")] // TODO this should be replaced by specific errors
+    Util(#[from] UtilError),
 
-    #[error("Invoice account could not be parsed: {0:?}")]
-    InvoiceAccount(substrate_crypto_light::error::Error),
+    #[error("invoice account couldn't be parsed")]
+    InvoiceAccount(#[from] CryptoError),
 
-    #[error("Chain {0} not found")]
+    #[error("chain {0:?} isn't found")]
     InvalidChain(String),
 
-    #[error("Currency {0} not found")]
+    #[error("currency {0:?} isn't found")]
     InvalidCurrency(String),
 
-    #[error("Chain manager dropped a message, probably due to chain disconnect; maybe it should be sent again")]
+    #[error("chain manager dropped a message, probably due to a chain disconnect; maybe it should be sent again")]
     MessageDropped,
 
-    #[error("Block subscription terminated")]
+    #[error("block subscription is terminated")]
     BlockSubscriptionTerminated,
 
-    #[error("Metadata error: {0:?}")]
-    MetaVersionErrorPallets(MetaVersionErrorPallets),
+    #[error("metadata error is occurred")]
+    MetaVersionErrorPallets(#[from] MetaVersionErrorPallets),
 
-    #[error("Storage registry error: {0:?}")]
-    StorageRegistryError(StorageRegistryError),
+    #[error("storage registry error is occurred")]
+    StorageRegistryError(#[from] StorageRegistryError),
 
-    #[error("Balance was not found")]
+    #[error("balance wasn't found")]
     BalanceNotFound,
 
-    #[error("Storage query could not be formed")]
+    #[error("storage query couldn't be formed")]
     StorageQuery,
 
-    #[error("Events could not be fetched")]
+    #[error("events couldn't be fetched")]
     EventsMissing,
 
-    #[error("Events do not exist in this chain")]
+    #[error("no events in this chain")]
     EventsNonexistant,
 
-    #[error("Substrate parser error: {0}")]
-    ParserError(ParserError<()>),
+    #[error("substrate parser error is occurred")]
+    ParserError(#[from] ParserError<()>),
 
-    #[error("Storage entry decoding error: {0}")]
-    StorageDecodeError(StorageError<()>),
+    #[error("storage entry decoding error is occurred")]
+    StorageDecodeError(#[from] StorageError<()>),
 
-    #[error("Type registry error: {0}")]
-    RegistryError(RegistryError<()>),
+    #[error("type registry error is occurred")]
+    RegistryError(#[from] RegistryError<()>),
 
-    #[error("Substrate constructor error: {0:?}")]
-    SubstrateConstructor(ErrorFixMe<(), RuntimeMetadataV15>),
+    #[error("substrate constructor error is occurred")]
+    SubstrateConstructor(#[from] ErrorFixMe<(), RuntimeMetadataV15>),
 
-    #[error("Transaction is not ready to be signed: {0}")]
+    #[error("transaction isn't ready to be signed: {0:?}")]
     TransactionNotSignable(String),
 
-    #[error("Signing failed: {0}")]
-    Signer(ErrorSigner),
+    #[error("signing was failed")]
+    Signer(#[from] SignerError),
 
-    #[error("Transaction could not be completed")]
+    #[error("transaction couldn't be completed")]
     NothingToSend,
 
-    #[error("Storage entry is not a map")]
+    #[error("storage entry isn't a map")]
     StorageEntryNotMap,
 
-    #[error("Storage entry map has more than one records")]
+    #[error("storage entry map has more than one record")]
     StorageEntryMapMultiple,
 
-    #[error("Storage key {0} not found")]
+    #[error("storage key {0:?} isn't found")]
     StorageKeyNotFound(String),
 
-    #[error("Storage key is not u32")]
+    #[error("storage key isn't `u32`")]
     StorageKeyNotU32,
 
-    #[error("RPC runs unexpected network: instead of {expected}, found {actual} at {rpc}")]
-    WrongNetwork{expected: String, actual: String, rpc: String},
+    #[error(
+        "RPC runs on an unexpected network: instead of {expected:?}, found {actual:?} at {rpc:?}"
+    )]
+    WrongNetwork {
+        expected: String,
+        actual: String,
+        rpc: String,
+    },
 }
 
-impl From<ClientError> for ErrorChain {
-    fn from(e: ClientError) -> Self {
-        ErrorChain::Client(e)
-    }
-}
-
-impl From<ErrorSigner> for ErrorChain {
-    fn from(e: ErrorSigner) -> Self {
-        ErrorChain::Signer(e)
-    }
-}
-
-impl From<JoinError> for ErrorChain {
-    fn from(e: JoinError) -> Self {
-        ErrorChain::Tokio(e)
-    }
-}
-
-impl From<ErrorUtil> for ErrorChain {
-    fn from(e: ErrorUtil) -> Self {
-        ErrorChain::ErrorUtil(e)
-    }
-}
-
-impl From<MetaVersionErrorPallets> for ErrorChain {
-    fn from(e: MetaVersionErrorPallets) -> Self {
-        ErrorChain::MetaVersionErrorPallets(e)
-    }
-}
-
-impl From<StorageRegistryError> for ErrorChain {
-    fn from(e: StorageRegistryError) -> Self {
-        ErrorChain::StorageRegistryError(e)
-    }
-}
-
-impl From<ParserError<()>> for ErrorChain {
-    fn from(e: ParserError<()>) -> Self {
-        ErrorChain::ParserError(e)
-    }
-}
-
-impl From<StorageError<()>> for ErrorChain {
-    fn from(e: StorageError<()>) -> Self {
-        ErrorChain::StorageDecodeError(e)
-    }
-}
-
-impl From<RegistryError<()>> for ErrorChain {
-    fn from(e: RegistryError<()>) -> Self {
-        ErrorChain::RegistryError(e)
-    }
-}
-
-impl From<ErrorFixMe<(), RuntimeMetadataV15>> for ErrorChain {
-    fn from(e: ErrorFixMe<(), RuntimeMetadataV15>) -> Self {
-        ErrorChain::SubstrateConstructor(e)
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ErrorDb {
-    #[error("Currency key is not found")]
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum DbError {
+    #[error("currency key isn't found")]
     CurrencyKeyNotFound,
 
-    #[error("Database engine is not running")]
+    #[error("database engine isn't running")]
     DbEngineDown,
 
-    #[error("Database internal error: {0:?}")]
-    DbInternalError(DatabaseError),
+    #[error("database internal error is occurred")]
+    DbInternalError(#[from] DatabaseError),
 
-    #[error("Could not start database service: {0:?}")]
+    #[error("failed to start the database service")]
     DbStartError(DatabaseError),
 
-    #[error("Operating system related I/O error {0:?}")]
-    IoError(std::io::Error),
+    #[error("operating system related I/O error is occurred")]
+    IoError(#[from] IoError),
 
-    #[error("Database storage decoding error: {0:?}")]
-    CodecError(parity_scale_codec::Error),
+    #[error("database storage decoding error is occurred")]
+    CodecError(#[from] ScaleError),
 
-    #[error("Order {0} not found")]
+    #[error("order {0:?} isn't found")]
     OrderNotFound(String),
 
-    #[error("Order {0} was already paid")]
+    #[error("order {0:?} was already paid")]
     AlreadyPaid(String),
 
-    #[error("Order {0} is not paid yet")]
+    #[error("order {0:?} isn't paid yet")]
     NotPaid(String),
 
-    #[error("There was already an attempt to withdraw order {0}")]
+    #[error("there was already an attempt to withdraw order {0:?}")]
     WithdrawalWasAttempted(String),
 }
 
-impl From<sled::Error> for ErrorDb {
-    fn from(e: sled::Error) -> Self {
-        ErrorDb::DbInternalError(e)
-    }
-}
-
-impl From<parity_scale_codec::Error> for ErrorDb {
-    fn from(e: parity_scale_codec::Error) -> Self {
-        ErrorDb::CodecError(e)
-    }
-}
-
-impl From<std::io::Error> for ErrorDb {
-    fn from(e: std::io::Error) -> Self {
-        ErrorDb::IoError(e)
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ErrorOrder {
-    #[error("Invoice amount is less than existential deposit")]
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum OrderError {
+    #[error("invoice amount is less than the existential deposit")]
     LessThanExistentialDeposit(f64),
 
-    #[error("Unknown currency")]
+    #[error("unknown currency")]
     UnknownCurrency,
 
-    #[error("Order parameter missing: {0}")]
+    #[error("order parameter is missing: {0:?}")]
     MissingParameter(String),
 
-    #[error("Order parameter invalid: {0}")]
+    #[error("order parameter invalid: {0:?}")]
     InvalidParameter(String),
 
-    #[error("Internal error")]
+    #[error("internal error is occurred")]
     InternalError,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ErrorForceWithdrawal {
-    #[error("Order parameter missing: {0}")]
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum ForceWithdrawalError {
+    #[error("order parameter is missing: {0:?}")]
     MissingParameter(String),
 
-    #[error("Order parameter invalid: {0}")]
+    #[error("order parameter is invalid: {0:?}")]
     InvalidParameter(String),
 
-    #[error("Withdrawal failed: {0:?}")]
-    WithdrawalError(OrderStatus),
+    #[error("withdrawal was failed: \"{0:?}\"")]
+    WithdrawalError(Box<OrderStatus>),
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ErrorServer {
-    #[error("failed to bind the TCP listener to {0:?}")]
+#[allow(clippy::module_name_repetitions)]
+pub enum ServerError {
+    #[error("failed to bind the TCP listener to \"{0:?}\"")]
     TcpListenerBind(SocketAddr),
 
-    #[error("Internal threading error")]
+    #[error("internal threading error is occurred")]
     ThreadError,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ErrorUtil {
-    #[error("{0}")]
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum UtilError {
+    #[error("...")]
     NotHex(NotHex),
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ErrorSigner {
-    #[error("failed to read `{0}`")]
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum SignerError {
+    #[error("failed to read {0:?}")]
     Env(String),
 
-    #[error("Signer is down")]
+    #[error("signer is down")]
     SignerDown,
 
-    #[error("Seed phrase invalid: {0:?}")]
-    InvalidSeed(ErrorWordList),
+    #[error("seed phrase is invalid")]
+    InvalidSeed(#[from] ErrorWordList),
 
-    #[error("Derivation failed: {0:?}")]
-    InvalidDerivation(CryptoError),
-}
-
-impl From<ErrorWordList> for ErrorSigner {
-    fn from(e: ErrorWordList) -> Self {
-        ErrorSigner::InvalidSeed(e)
-    }
-}
-
-impl From<CryptoError> for ErrorSigner {
-    fn from(e: CryptoError) -> Self {
-        ErrorSigner::InvalidDerivation(e)
-    }
+    #[error("derivation was failed")]
+    InvalidDerivation(#[from] CryptoError),
 }
 
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum NotHex {
-    #[error("Block hash string is not a valid hexadecimal.")]
+    #[error("block hash string isn't a valid hexadecimal")]
     BlockHash,
 
-    #[error("Encoded metadata string is not a valid hexadecimal.")]
+    #[error("encoded metadata string isn't a valid hexadecimal")]
     Metadata,
 
-    #[error("Encoded storage key string is not a valid hexadecimal.")]
+    #[error("encoded storage key string isn't a valid hexadecimal")]
     StorageKey,
 
-    #[error("Encoded storage value string is not a valid hexadecimal.")]
+    #[error("encoded storage value string isn't a valid hexadecimal")]
     StorageValue,
+}
+
+pub struct PrettyCauseWrapper<'a, T>(&'a T);
+
+pub trait PrettyCause<T> {
+    fn pretty_cause(&self) -> PrettyCauseWrapper<'_, T>;
+}
+
+impl<T: StdError> PrettyCause<T> for T {
+    fn pretty_cause(&self) -> PrettyCauseWrapper<'_, T> {
+        PrettyCauseWrapper(self)
+    }
+}
+
+impl<T: StdError> Display for PrettyCauseWrapper<'_, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        let Some(cause) = self.0.source() else {
+            // If an error has no source, print nothing.
+            return Ok(());
+        };
+
+        f.write_str("\n\nCaused by:")?;
+
+        let Some(mut another_cause) = cause.source() else {
+            // If an error's source error has no source, print a cause in one line.
+
+            f.write_str(" ")?;
+
+            Display::fmt(&cause, f)?;
+
+            return f.write_str(".");
+        };
+        let mut number = 0u64;
+
+        let mut print_cause = |cause_to_print, number_to_print| {
+            f.write_str("\n")?;
+
+            write!(f, "{number_to_print:>5}: ")?;
+
+            Display::fmt(cause_to_print, f)?;
+
+            f.write_str(".")
+        };
+
+        // Otherwise, print a numbered list of error sources.
+
+        print_cause(cause, number)?;
+
+        loop {
+            number = number.saturating_add(1);
+
+            print_cause(another_cause, number)?;
+
+            if let Some(one_more_cause) = another_cause.source() {
+                another_cause = one_more_cause;
+            } else {
+                break Ok(());
+            }
+        }
+    }
 }
