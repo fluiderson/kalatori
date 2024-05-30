@@ -12,12 +12,17 @@ use crate::{
         },
         Balance, Nonce,
     },
-    error::{Error, DbError},
+    error::{DbError, Error},
     TaskTracker,
 };
 use parity_scale_codec::{Compact, Decode, Encode};
 use serde::Deserialize;
-use std::{collections::HashMap, fs::File, io::ErrorKind, time::Duration};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::ErrorKind,
+    time::{Duration, Instant, SystemTime},
+};
 use substrate_crypto_light::common::AccountId32;
 use tokio::sync::{mpsc, oneshot};
 
@@ -160,7 +165,6 @@ pub struct ConfigWoChains {
     pub debug: bool,
     pub remark: String,
     //pub depth: Option<Duration>,
-    pub account_lifetime: Duration,
 }
 
 /// Database server handle
@@ -170,7 +174,11 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn init(path_option: Option<String>, task_tracker: TaskTracker) -> Result<Self, Error> {
+    pub fn init(
+        path_option: Option<String>,
+        task_tracker: TaskTracker,
+        account_lifetime: u64,
+    ) -> Result<Self, Error> {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let database = if let Some(path) = path_option {
             tracing::info!("Creating/Opening the database at {path:?}.");
@@ -195,13 +203,12 @@ impl Database {
                             .iter()
                             .filter_map(|a| a.ok())
                             .filter_map(|(a, b)| {
-                                match (String::decode(&mut &a[..]), OrderInfo::decode(&mut &b[..]))
-                                {
+                                match (String::decode(&mut &a[..]), OrderDb::decode(&mut &b[..])) {
                                     (Ok(a), Ok(b)) => Some((a, b)),
                                     _ => None,
                                 }
                             })
-                            .filter(|(a, b)| b.payment_status == PaymentStatus::Pending)
+                            .filter(|(a, b)| b.inner.payment_status == PaymentStatus::Pending)
                             .collect()));
                     }
                     DbRequest::CreateOrder(request) => {
@@ -209,6 +216,7 @@ impl Database {
                             request.order,
                             request.order_info,
                             &orders,
+                            account_lifetime,
                         ));
                     }
                     DbRequest::ReadOrder(request) => {
@@ -238,7 +246,7 @@ impl Database {
         Ok(Self { tx })
     }
 
-    pub async fn order_list(&self) -> Result<Vec<(String, OrderInfo)>, DbError> {
+    pub async fn order_list(&self) -> Result<Vec<(String, OrderDb)>, DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self.tx.send(DbRequest::ActiveOrderList(res)).await;
         rx.await.map_err(|_| DbError::DbEngineDown)?
@@ -270,7 +278,7 @@ impl Database {
         rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
-    pub async fn mark_paid(&self, order: String) -> Result<OrderInfo, DbError> {
+    pub async fn mark_paid(&self, order: String) -> Result<OrderDb, DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
             .tx
@@ -306,7 +314,7 @@ impl Database {
 
 enum DbRequest {
     CreateOrder(CreateOrder),
-    ActiveOrderList(oneshot::Sender<Result<Vec<(String, OrderInfo)>, DbError>>),
+    ActiveOrderList(oneshot::Sender<Result<Vec<(String, OrderDb)>, DbError>>),
     ReadOrder(ReadOrder),
     MarkPaid(MarkPaid),
     MarkWithdrawn(ModifyOrder),
@@ -332,45 +340,74 @@ pub struct ModifyOrder {
 
 pub struct MarkPaid {
     pub order: String,
-    pub res: oneshot::Sender<Result<OrderInfo, DbError>>,
+    pub res: oneshot::Sender<Result<OrderDb, DbError>>,
+}
+
+#[derive(Encode, Decode)]
+pub struct OrderDb {
+    pub inner: OrderInfo,
+    pub start: u64,
+    pub death: u64,
 }
 
 fn create_order(
     order: String,
-    order_info: OrderInfo,
+    order_inner: OrderInfo,
     orders: &sled::Tree,
+    account_lifetime: u64,
 ) -> Result<OrderCreateResponse, DbError> {
-    Ok(match orders.get(&order)? {
-        Some(record) => {
-            let old_order_info = OrderInfo::decode(&mut &record[..])?;
-            match order_info.payment_status {
-                PaymentStatus::Pending => {
-                    drop(orders.insert(order.encode(), order_info.encode())?);
-                    OrderCreateResponse::Modified
-                }
-                PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info),
+    Ok(if let Some(record) = orders.get(&order)? {
+        let old_order_info = OrderDb::decode(&mut &record[..])?;
+        match order_inner.payment_status {
+            PaymentStatus::Pending => {
+                drop(
+                    orders.insert(
+                        order.encode(),
+                        OrderDb {
+                            inner: order_inner,
+                            start: old_order_info.start,
+                            death: old_order_info.death,
+                        }
+                        .encode(),
+                    )?,
+                );
+                OrderCreateResponse::Modified
             }
+            PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info.inner),
         }
-        None => {
-            orders.insert(order.encode(), order_info.encode())?;
-            OrderCreateResponse::New
-        }
+    } else {
+        let start = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let death = start + account_lifetime;
+
+        orders.insert(
+            order.encode(),
+            OrderDb {
+                inner: order_inner,
+                start,
+                death,
+            }
+            .encode(),
+        )?;
+        OrderCreateResponse::New(death)
     })
 }
 
 fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, DbError> {
     if let Some(order) = orders.get(order)? {
-        Ok(Some(OrderInfo::decode(&mut &order[..])?))
+        Ok(Some(OrderDb::decode(&mut &order[..])?.inner))
     } else {
         Ok(None)
     }
 }
 
-fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, DbError> {
+fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderDb, DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
-        let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
-        if order_info.payment_status == PaymentStatus::Pending {
-            order_info.payment_status = PaymentStatus::Paid;
+        let mut order_info = OrderDb::decode(&mut &order_info[..])?;
+        if order_info.inner.payment_status == PaymentStatus::Pending {
+            order_info.inner.payment_status = PaymentStatus::Paid;
             orders.insert(order.encode(), order_info.encode())?;
             Ok(order_info)
         } else {
@@ -382,10 +419,10 @@ fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, DbError> {
 }
 fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
-        let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
-        if order_info.payment_status == PaymentStatus::Paid {
-            if order_info.withdrawal_status == WithdrawalStatus::Waiting {
-                order_info.withdrawal_status = WithdrawalStatus::Completed;
+        let mut order_info = OrderDb::decode(&mut &order_info[..])?;
+        if order_info.inner.payment_status == PaymentStatus::Paid {
+            if order_info.inner.withdrawal_status == WithdrawalStatus::Waiting {
+                order_info.inner.withdrawal_status = WithdrawalStatus::Completed;
                 orders.insert(order.encode(), order_info.encode())?;
                 Ok(())
             } else {
@@ -400,10 +437,10 @@ fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), DbError> {
 }
 fn mark_stuck(order: String, orders: &sled::Tree) -> Result<(), DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
-        let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
-        if order_info.payment_status == PaymentStatus::Paid {
-            if order_info.withdrawal_status == WithdrawalStatus::Waiting {
-                order_info.withdrawal_status = WithdrawalStatus::Failed;
+        let mut order_info = OrderDb::decode(&mut &order_info[..])?;
+        if order_info.inner.payment_status == PaymentStatus::Paid {
+            if order_info.inner.withdrawal_status == WithdrawalStatus::Waiting {
+                order_info.inner.withdrawal_status = WithdrawalStatus::Failed;
                 orders.insert(order.encode(), order_info.encode())?;
                 Ok(())
             } else {

@@ -32,7 +32,6 @@ impl State {
             recipient,
             debug,
             remark,
-            account_lifetime,
         }: ConfigWoChains,
         db: Database,
         chain_manager: oneshot::Receiver<ChainManager>,
@@ -80,7 +79,12 @@ impl State {
             task_tracker.spawn("Restore saved orders", async move {
                 for (order, order_details) in order_list {
                     chain_manager_wakeup
-                        .add_invoice(order, order_details, state.recipient)
+                        .add_invoice(
+                            order,
+                            order_details.inner,
+                            order_details.death,
+                            state.recipient,
+                        )
                         .await;
                 }
                 Ok("All saved orders restored".into())
@@ -117,7 +121,12 @@ impl State {
                         match state.db.mark_paid(id.clone()).await {
                             Ok(order) => {
                                 // TODO: callback here
-                                drop(state.chain_manager.reap(id, order, state.recipient).await);
+                                drop(
+                                    state
+                                        .chain_manager
+                                        .reap(id, order.inner, order.death, state.recipient)
+                                        .await,
+                                );
                             }
                             Err(e) => {
                                 tracing::error!(
@@ -287,9 +296,9 @@ impl StateData {
             .create_order(order.clone(), order_info.clone())
             .await?
         {
-            OrderCreateResponse::New => {
+            OrderCreateResponse::New(death) => {
                 self.chain_manager
-                    .add_invoice(order.clone(), order_info.clone(), self.recipient)
+                    .add_invoice(order.clone(), order_info.clone(), death, self.recipient)
                     .await?;
                 Ok(OrderResponse::NewOrder(self.order_status(
                     order,

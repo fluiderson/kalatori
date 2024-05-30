@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     definitions::{api_v2::OrderInfo, Chain},
-    error::{Error, ChainError},
+    error::{ChainError, Error},
     Signer, State, TaskTracker,
 };
 
@@ -80,7 +80,7 @@ impl ChainManager {
                 signer.interface(),
                 task_tracker.clone(),
                 cancellation_token.clone(),
-            )?;
+            );
         }
 
         task_tracker
@@ -148,12 +148,13 @@ impl ChainManager {
         &self,
         id: String,
         order: OrderInfo,
+        death: u64,
         recipient: AccountId32,
     ) -> Result<(), ChainError> {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(ChainRequest::WatchAccount(WatchAccount::new(
-                id, order, recipient, res,
+                id, order, recipient, res, death,
             )?))
             .await
             .map_err(|_| ChainError::MessageDropped)?;
@@ -164,12 +165,13 @@ impl ChainManager {
         &self,
         id: String,
         order: OrderInfo,
+        death: u64,
         recipient: AccountId32,
     ) -> Result<(), ChainError> {
         let (res, rx) = oneshot::channel();
         self.tx
             .send(ChainRequest::Reap(WatchAccount::new(
-                id, order, recipient, res,
+                id, order, recipient, res, death,
             )?))
             .await
             .map_err(|_| ChainError::MessageDropped)?;

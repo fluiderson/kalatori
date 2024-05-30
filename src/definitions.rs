@@ -146,7 +146,7 @@ pub mod api_v2 {
     }
 
     pub enum OrderCreateResponse {
-        New,
+        New(u64),
         Modified,
         Collision(OrderInfo),
     }

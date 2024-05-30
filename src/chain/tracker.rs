@@ -1,6 +1,6 @@
 //! A tracker that follows individual chain
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::SystemTime};
 
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
@@ -17,9 +17,8 @@ use crate::{
         definitions::{BlockHash, ChainTrackerRequest, EventFilter, Invoice},
         payout::payout,
         rpc::{
-            assets_set_at_block, block_hash, genesis_hash, metadata, next_block,
-            next_block_number, runtime_version_identifier, specs, subscribe_blocks,
-            transfer_events,
+            assets_set_at_block, block_hash, genesis_hash, metadata, next_block, next_block_number,
+            runtime_version_identifier, specs, subscribe_blocks, transfer_events,
         },
         utils::{events_entry_metadata, was_balance_received_at_account},
     },
@@ -30,6 +29,7 @@ use crate::{
     TaskTracker,
 };
 
+#[allow(clippy::too_many_lines)]
 pub fn start_chain_watch(
     chain: Chain,
     chain_tx: mpsc::Sender<ChainTrackerRequest>,
@@ -38,7 +38,7 @@ pub fn start_chain_watch(
     signer: Signer,
     task_tracker: TaskTracker,
     cancellation_token: CancellationToken,
-) -> Result<(), ChainError> {
+) {
     task_tracker
         .clone()
         .spawn(format!("Chain {} watcher", chain.name.clone()), async move {
@@ -102,7 +102,9 @@ pub fn start_chain_watch(
                                     .await {
                                         Ok(events) => {
                                         let mut id_remove_list = Vec::new();
-                                        for (id, invoice) in watched_accounts.iter() {
+                                        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
+
+                                        for (id, invoice) in &watched_accounts {
                                             if events.iter().any(|event| was_balance_received_at_account(&invoice.address, &event.0.fields)) {
                                                 match invoice.check(&client, &watcher, &block).await {
                                                     Ok(true) => {
@@ -110,6 +112,21 @@ pub fn start_chain_watch(
                                                         id_remove_list.push(id.to_owned());
                                                     }
                                                     Ok(false) => (),
+                                                    Err(e) => {
+                                                        tracing::warn!("account fetch error: {0:?}", e);
+                                                    }
+                                                }
+                                            }
+
+                                            if invoice.death >= now {
+                                                match invoice.check(&client, &watcher, &block).await {
+                                                    Ok(paid) => {
+                                                        if paid {
+                                                            state.order_paid(id.clone()).await;
+                                                        }
+
+                                                        id_remove_list.push(id.to_owned());
+                                                    }
                                                     Err(e) => {
                                                         tracing::warn!("account fetch error: {0:?}", e);
                                                     }
@@ -138,7 +155,7 @@ pub fn start_chain_watch(
                                 let signer_for_reaper = signer.interface();
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
                                     payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
-                                    Ok(format!("Payout attempt for order {} terminated", id).into())
+                                    Ok(format!("Payout attempt for order {id} terminated").into())
                                 });
                             }
                             ChainTrackerRequest::Shutdown(res) => {
@@ -152,7 +169,6 @@ pub fn start_chain_watch(
             }
             Ok(format!("Chain {} monitor shut down", chain.name).into())
         });
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -180,16 +196,32 @@ impl ChainWatcher {
         let version = runtime_version_identifier(client, &block).await?;
         let metadata = metadata(&client, &block).await?;
         let name = <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(&metadata)?.spec_name;
-        if name != chain.name { return Err(ChainError::WrongNetwork{expected: chain.name, actual: name, rpc: rpc_url.to_string()}) };
+        if name != chain.name {
+            return Err(ChainError::WrongNetwork {
+                expected: chain.name,
+                actual: name,
+                rpc: rpc_url.to_string(),
+            });
+        };
         let specs = specs(&client, &metadata, &block).await?;
         let mut assets =
             assets_set_at_block(&client, &block, &metadata, rpc_url, specs.clone()).await?;
 
         // TODO: make this verbosity less annoying
-        tracing::info!("chain {} requires native token {:?} and {:?}", &chain.name, &chain.native_token, &chain.asset);
+        tracing::info!(
+            "chain {} requires native token {:?} and {:?}",
+            &chain.name,
+            &chain.native_token,
+            &chain.asset
+        );
         // Remove unwanted assets
         assets.retain(|name, properties| {
-            tracing::info!("chain {} has token {} with properties {:?}", &chain.name, &name, &properties);
+            tracing::info!(
+                "chain {} has token {} with properties {:?}",
+                &chain.name,
+                &name,
+                &properties
+            );
             if let Some(native_token) = &chain.native_token {
                 (native_token.name == *name) && (native_token.decimals == specs.decimals)
             } else {
@@ -248,16 +280,15 @@ impl ChainWatcher {
                 match next_block_number(&mut blocks).await {
                     Ok(block) => {
                         tracing::debug!("received block {block} from {rpc}");
-                        if let Err(e) = chain_tx
-                            .send(ChainTrackerRequest::NewBlock(block))
-                            .await
-                        {
-                            tracing::warn!("Block watch internal communication error: {e} at {rpc}");
+                        if let Err(e) = chain_tx.send(ChainTrackerRequest::NewBlock(block)).await {
+                            tracing::warn!(
+                                "Block watch internal communication error: {e} at {rpc}"
+                            );
                             break;
                         }
-                    },
+                    }
                     Err(e) => {
-                        tracing::warn!{"Block watch error: {e} at {rpc}"};
+                        tracing::warn! {"Block watch error: {e} at {rpc}"};
                         break;
                     }
                 }

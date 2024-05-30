@@ -96,6 +96,7 @@ pub struct WatchAccount {
     pub amount: Balance,
     pub recipient: AccountId32,
     pub res: oneshot::Sender<Result<(), ChainError>>,
+    pub death: u64,
 }
 
 impl WatchAccount {
@@ -104,6 +105,7 @@ impl WatchAccount {
         order: OrderInfo,
         recipient: AccountId32,
         res: oneshot::Sender<Result<(), ChainError>>,
+        death: u64,
     ) -> Result<WatchAccount, ChainError> {
         Ok(WatchAccount {
             id,
@@ -114,6 +116,7 @@ impl WatchAccount {
             amount: Balance::parse(order.amount, order.currency.decimals),
             recipient,
             res,
+            death,
         })
     }
 }
@@ -132,6 +135,7 @@ pub struct Invoice {
     pub currency: String,
     pub amount: Balance,
     pub recipient: AccountId32,
+    pub death: u64,
 }
 
 impl Invoice {
@@ -143,6 +147,7 @@ impl Invoice {
             currency: watch_account.currency,
             amount: watch_account.amount,
             recipient: watch_account.recipient,
+            death: watch_account.death,
         }
     }
 
