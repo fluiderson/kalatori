@@ -10,7 +10,10 @@ use crate::{
         rpc::{asset_balance_at_account, system_balance_at_account},
         tracker::ChainWatcher,
     },
-    definitions::{api_v2::OrderInfo, Balance},
+    definitions::{
+        api_v2::{OrderInfo, Timestamp},
+        Balance,
+    },
     error::{ChainError, NotHex},
     utils::unhex,
 };
@@ -96,7 +99,7 @@ pub struct WatchAccount {
     pub amount: Balance,
     pub recipient: AccountId32,
     pub res: oneshot::Sender<Result<(), ChainError>>,
-    pub death: u64,
+    pub death: Timestamp,
 }
 
 impl WatchAccount {
@@ -105,7 +108,6 @@ impl WatchAccount {
         order: OrderInfo,
         recipient: AccountId32,
         res: oneshot::Sender<Result<(), ChainError>>,
-        death: u64,
     ) -> Result<WatchAccount, ChainError> {
         Ok(WatchAccount {
             id,
@@ -116,7 +118,7 @@ impl WatchAccount {
             amount: Balance::parse(order.amount, order.currency.decimals),
             recipient,
             res,
-            death,
+            death: order.death,
         })
     }
 }
@@ -135,7 +137,7 @@ pub struct Invoice {
     pub currency: String,
     pub amount: Balance,
     pub recipient: AccountId32,
-    pub death: u64,
+    pub death: Timestamp,
 }
 
 impl Invoice {

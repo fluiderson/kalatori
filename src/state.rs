@@ -3,8 +3,8 @@ use crate::{
     database::Database,
     definitions::{
         api_v2::{
-            CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse,
-            OrderStatus, ServerInfo, ServerStatus,
+            CurrencyProperties, OrderCreateResponse, OrderInfo, OrderInfoWoDeath, OrderQuery,
+            OrderResponse, OrderStatus, ServerInfo, ServerStatus,
         },
         Entropy,
     },
@@ -79,12 +79,7 @@ impl State {
             task_tracker.spawn("Restore saved orders", async move {
                 for (order, order_details) in order_list {
                     chain_manager_wakeup
-                        .add_invoice(
-                            order,
-                            order_details.inner,
-                            order_details.death,
-                            state.recipient,
-                        )
+                        .add_invoice(order, order_details, state.recipient)
                         .await;
                 }
                 Ok("All saved orders restored".into())
@@ -121,12 +116,7 @@ impl State {
                         match state.db.mark_paid(id.clone()).await {
                             Ok(order) => {
                                 // TODO: callback here
-                                drop(
-                                    state
-                                        .chain_manager
-                                        .reap(id, order.inner, order.death, state.recipient)
-                                        .await,
-                                );
+                                drop(state.chain_manager.reap(id, order, state.recipient).await);
                             }
                             Err(e) => {
                                 tracing::error!(
@@ -290,31 +280,31 @@ impl StateData {
             .ok_or(OrderError::UnknownCurrency)?;
         let currency = currency.info(order_query.currency.clone());
         let payment_account = self.signer.public(order.clone(), currency.ss58).await?;
-        let order_info = OrderInfo::new(order_query, currency, payment_account);
         match self
             .db
-            .create_order(order.clone(), order_info.clone())
+            .create_order(
+                order.clone(),
+                OrderInfoWoDeath::new(order_query, currency, payment_account),
+            )
             .await?
         {
-            OrderCreateResponse::New(death) => {
+            OrderCreateResponse::New(new_order_info) => {
                 self.chain_manager
-                    .add_invoice(order.clone(), order_info.clone(), death, self.recipient)
+                    .add_invoice(order.clone(), new_order_info.clone(), self.recipient)
                     .await?;
                 Ok(OrderResponse::NewOrder(self.order_status(
                     order,
-                    order_info,
+                    new_order_info,
                     String::new(),
                 )))
             }
-            OrderCreateResponse::Modified => Ok(OrderResponse::ModifiedOrder(self.order_status(
-                order,
-                order_info,
-                String::new(),
-            ))),
+            OrderCreateResponse::Modified(order_info) => Ok(OrderResponse::ModifiedOrder(
+                self.order_status(order, order_info, String::new()),
+            )),
             OrderCreateResponse::Collision(order_status) => {
                 Ok(OrderResponse::CollidedOrder(self.order_status(
                     order,
-                    order_info,
+                    order_status,
                     String::from("Order with this ID was already processed"),
                 )))
             }

@@ -118,7 +118,7 @@ pub fn start_chain_watch(
                                                 }
                                             }
 
-                                            if invoice.death >= now {
+                                            if invoice.death.0 >= now {
                                                 match invoice.check(&client, &watcher, &block).await {
                                                     Ok(paid) => {
                                                         if paid {
