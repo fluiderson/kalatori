@@ -3,8 +3,8 @@ use crate::{
     database::Database,
     definitions::{
         api_v2::{
-            CurrencyProperties, OrderCreateResponse, OrderInfo, OrderInfoWoDeath, OrderQuery,
-            OrderResponse, OrderStatus, ServerInfo, ServerStatus,
+            CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse,
+            OrderStatus, ServerInfo, ServerStatus,
         },
         Entropy,
     },
@@ -282,10 +282,7 @@ impl StateData {
         let payment_account = self.signer.public(order.clone(), currency.ss58).await?;
         match self
             .db
-            .create_order(
-                order.clone(),
-                OrderInfoWoDeath::new(order_query, currency, payment_account),
-            )
+            .create_order(order.clone(), order_query, currency, payment_account)
             .await?
         {
             OrderCreateResponse::New(new_order_info) => {

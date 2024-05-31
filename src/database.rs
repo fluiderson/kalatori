@@ -7,9 +7,8 @@
 use crate::{
     definitions::{
         api_v2::{
-            AssetId, BlockNumber, CurrencyProperties, OrderCreateResponse, OrderInfo,
-            OrderInfoWoDeath, OrderQuery, PaymentStatus, ServerInfo, ServerStatus, Timestamp,
-            WithdrawalStatus,
+            AssetId, BlockNumber, CurrencyInfo, CurrencyProperties, OrderCreateResponse, OrderInfo,
+            OrderQuery, PaymentStatus, ServerInfo, ServerStatus, Timestamp, WithdrawalStatus,
         },
         Balance, Nonce,
     },
@@ -216,7 +215,9 @@ impl Database {
                     DbRequest::CreateOrder(request) => {
                         let _unused = request.res.send(create_order(
                             request.order,
-                            request.order_info,
+                            request.query,
+                            request.currency,
+                            request.payment_account,
                             &orders,
                             account_lifetime,
                         ));
@@ -257,14 +258,18 @@ impl Database {
     pub async fn create_order(
         &self,
         order: String,
-        order_info: OrderInfoWoDeath,
+        query: OrderQuery,
+        currency: CurrencyInfo,
+        payment_account: String,
     ) -> Result<OrderCreateResponse, DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
             .tx
             .send(DbRequest::CreateOrder(CreateOrder {
                 order,
-                order_info,
+                query,
+                currency,
+                payment_account,
                 res,
             }))
             .await;
@@ -326,7 +331,9 @@ enum DbRequest {
 
 pub struct CreateOrder {
     pub order: String,
-    pub order_info: OrderInfoWoDeath,
+    pub query: OrderQuery,
+    pub currency: CurrencyInfo,
+    pub payment_account: String,
     pub res: oneshot::Sender<Result<OrderCreateResponse, DbError>>,
 }
 
@@ -345,47 +352,39 @@ pub struct MarkPaid {
     pub res: oneshot::Sender<Result<OrderInfo, DbError>>,
 }
 
+fn calculate_death_ts(account_lifetime: u64) -> Timestamp {
+    let start = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    Timestamp(start + account_lifetime)
+}
+
 fn create_order(
     order: String,
-    order_info_wo_death: OrderInfoWoDeath,
+    query: OrderQuery,
+    currency: CurrencyInfo,
+    payment_account: String,
     orders: &sled::Tree,
     account_lifetime: u64,
 ) -> Result<OrderCreateResponse, DbError> {
     Ok(if let Some(record) = orders.get(&order)? {
-        let old_order_info = OrderInfo::decode(&mut &record[..])?;
+        let mut old_order_info = OrderInfo::decode(&mut &record[..])?;
         match old_order_info.payment_status {
             PaymentStatus::Pending => {
-                let order_info_new = OrderInfo {
-                    withdrawal_status: order_info_wo_death.withdrawal_status,
-                    payment_status: order_info_wo_death.payment_status,
-                    amount: order_info_wo_death.amount,
-                    currency: order_info_wo_death.currency,
-                    callback: order_info_wo_death.callback,
-                    transactions: order_info_wo_death.transactions,
-                    payment_account: order_info_wo_death.payment_account,
-                    death: old_order_info.death,
-                };
-                drop(orders.insert(order.encode(), order_info_new.encode())?);
-                OrderCreateResponse::Modified(order_info_new)
+                let death = calculate_death_ts(account_lifetime);
+
+                old_order_info.death = death;
+
+                drop(orders.insert(order.encode(), old_order_info.encode())?);
+                OrderCreateResponse::Modified(old_order_info)
             }
             PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info),
         }
     } else {
-        let start = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-        let death = Timestamp(start + account_lifetime);
-        let order_info_new = OrderInfo {
-            withdrawal_status: order_info_wo_death.withdrawal_status,
-            payment_status: order_info_wo_death.payment_status,
-            amount: order_info_wo_death.amount,
-            currency: order_info_wo_death.currency,
-            callback: order_info_wo_death.callback,
-            transactions: order_info_wo_death.transactions,
-            payment_account: order_info_wo_death.payment_account,
-            death,
-        };
+        let death = calculate_death_ts(account_lifetime);
+        let order_info_new = OrderInfo::new(query, currency, payment_account, death);
 
         orders.insert(order.encode(), order_info_new.encode())?;
         OrderCreateResponse::New(order_info_new)

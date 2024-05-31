@@ -123,31 +123,6 @@ pub mod api_v2 {
     }
 
     #[derive(Clone, Debug, Serialize, Encode, Decode)]
-    pub struct OrderInfoWoDeath {
-        pub withdrawal_status: WithdrawalStatus,
-        pub payment_status: PaymentStatus,
-        pub amount: f64,
-        pub currency: CurrencyInfo,
-        pub callback: String,
-        pub transactions: Vec<TransactionInfo>,
-        pub payment_account: String,
-    }
-
-    impl OrderInfoWoDeath {
-        pub fn new(query: OrderQuery, currency: CurrencyInfo, payment_account: String) -> Self {
-            OrderInfoWoDeath {
-                withdrawal_status: WithdrawalStatus::Waiting,
-                payment_status: PaymentStatus::Pending,
-                amount: query.amount,
-                currency,
-                callback: query.callback,
-                transactions: Vec::new(),
-                payment_account,
-            }
-        }
-    }
-
-    #[derive(Clone, Debug, Serialize, Encode, Decode)]
     pub struct OrderInfo {
         pub withdrawal_status: WithdrawalStatus,
         pub payment_status: PaymentStatus,
