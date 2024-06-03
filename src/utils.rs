@@ -1,4 +1,4 @@
-use crate::error::{UtilError, NotHex};
+use crate::error::{NotHex, UtilError};
 
 pub fn unhex(hex_data: &str, what_is_hex: NotHex) -> Result<Vec<u8>, UtilError> {
     if let Some(stripped) = hex_data.strip_prefix("0x") {

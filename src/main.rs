@@ -126,7 +126,8 @@ async fn try_main() -> Result<(), Error> {
 
     let signer = Signer::init(recipient.clone(), task_tracker.clone())?;
 
-    let db = database::Database::init(database_path, task_tracker.clone())?;
+    let db =
+        database::Database::init(database_path, task_tracker.clone(), config.account_lifetime)?;
 
     let (cm_tx, cm_rx) = oneshot::channel();
 
@@ -137,7 +138,6 @@ async fn try_main() -> Result<(), Error> {
             debug: config.debug,
             remark,
             //depth: config.depth,
-            account_lifetime: Duration::from_millis(config.account_lifetime),
         },
         db,
         cm_rx,

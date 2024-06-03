@@ -76,7 +76,6 @@ pub fn decimal_exponent_product(decimals: api_v2::Decimals) -> f64 {
 
 /// Self-sufficient schemas used by Api v2.0.0
 pub mod api_v2 {
-
     use std::collections::HashMap;
 
     use parity_scale_codec::{Decode, Encode};
@@ -90,6 +89,9 @@ pub mod api_v2 {
     pub type Decimals = u8;
     pub type BlockNumber = u64;
     pub type ExtrinsicIndex = u32;
+
+    #[derive(Encode, Decode, Debug, Clone, Copy, Serialize)]
+    pub struct Timestamp(pub u64);
 
     #[derive(Debug)]
     pub struct OrderQuery {
@@ -129,10 +131,16 @@ pub mod api_v2 {
         pub callback: String,
         pub transactions: Vec<TransactionInfo>,
         pub payment_account: String,
+        pub death: Timestamp,
     }
 
     impl OrderInfo {
-        pub fn new(query: OrderQuery, currency: CurrencyInfo, payment_account: String) -> Self {
+        pub fn new(
+            query: OrderQuery,
+            currency: CurrencyInfo,
+            payment_account: String,
+            death: Timestamp,
+        ) -> Self {
             OrderInfo {
                 withdrawal_status: WithdrawalStatus::Waiting,
                 payment_status: PaymentStatus::Pending,
@@ -141,13 +149,14 @@ pub mod api_v2 {
                 callback: query.callback,
                 transactions: Vec::new(),
                 payment_account,
+                death,
             }
         }
     }
 
     pub enum OrderCreateResponse {
-        New,
-        Modified,
+        New(OrderInfo),
+        Modified(OrderInfo),
         Collision(OrderInfo),
     }
 

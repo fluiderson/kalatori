@@ -32,7 +32,6 @@ impl State {
             recipient,
             debug,
             remark,
-            account_lifetime,
         }: ConfigWoChains,
         db: Database,
         chain_manager: oneshot::Receiver<ChainManager>,
@@ -281,31 +280,28 @@ impl StateData {
             .ok_or(OrderError::UnknownCurrency)?;
         let currency = currency.info(order_query.currency.clone());
         let payment_account = self.signer.public(order.clone(), currency.ss58).await?;
-        let order_info = OrderInfo::new(order_query, currency, payment_account);
         match self
             .db
-            .create_order(order.clone(), order_info.clone())
+            .create_order(order.clone(), order_query, currency, payment_account)
             .await?
         {
-            OrderCreateResponse::New => {
+            OrderCreateResponse::New(new_order_info) => {
                 self.chain_manager
-                    .add_invoice(order.clone(), order_info.clone(), self.recipient)
+                    .add_invoice(order.clone(), new_order_info.clone(), self.recipient)
                     .await?;
                 Ok(OrderResponse::NewOrder(self.order_status(
                     order,
-                    order_info,
+                    new_order_info,
                     String::new(),
                 )))
             }
-            OrderCreateResponse::Modified => Ok(OrderResponse::ModifiedOrder(self.order_status(
-                order,
-                order_info,
-                String::new(),
-            ))),
+            OrderCreateResponse::Modified(order_info) => Ok(OrderResponse::ModifiedOrder(
+                self.order_status(order, order_info, String::new()),
+            )),
             OrderCreateResponse::Collision(order_status) => {
                 Ok(OrderResponse::CollidedOrder(self.order_status(
                     order,
-                    order_info,
+                    order_status,
                     String::from("Order with this ID was already processed"),
                 )))
             }

@@ -10,8 +10,11 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    definitions::{api_v2::OrderInfo, Chain},
-    error::{Error, ChainError},
+    definitions::{
+        api_v2::{OrderInfo, Timestamp},
+        Chain,
+    },
+    error::{ChainError, Error},
     Signer, State, TaskTracker,
 };
 
@@ -80,7 +83,7 @@ impl ChainManager {
                 signer.interface(),
                 task_tracker.clone(),
                 cancellation_token.clone(),
-            )?;
+            );
         }
 
         task_tracker

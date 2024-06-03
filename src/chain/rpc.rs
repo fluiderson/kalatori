@@ -651,7 +651,8 @@ async fn events_at_block(
                         for sequence_element in sequence_raw.data {
                             if let ParsedData::Composite(event_record) = sequence_element {
                                 for event_record_element in event_record {
-                                    if event_record_element.field_name == Some("event".to_string()) {
+                                    if event_record_element.field_name == Some("event".to_string())
+                                    {
                                         if let ParsedData::Event(Event(ref event)) =
                                             event_record_element.data.data
                                         {
@@ -677,13 +678,13 @@ async fn events_at_block(
                         }
                     }
                 }
-            };
+            }
             return Ok(out);
-        },
+        }
         _ => {
             tracing::warn!("{keys_from_storage}");
             return Err(ChainError::EventsMissing);
-        },
+        }
     }
 }
 

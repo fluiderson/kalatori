@@ -7,17 +7,22 @@
 use crate::{
     definitions::{
         api_v2::{
-            AssetId, BlockNumber, CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery,
-            PaymentStatus, ServerInfo, ServerStatus, WithdrawalStatus,
+            AssetId, BlockNumber, CurrencyInfo, CurrencyProperties, OrderCreateResponse, OrderInfo,
+            OrderQuery, PaymentStatus, ServerInfo, ServerStatus, Timestamp, WithdrawalStatus,
         },
         Balance, Nonce,
     },
-    error::{Error, DbError},
+    error::{DbError, Error},
     TaskTracker,
 };
 use parity_scale_codec::{Compact, Decode, Encode};
 use serde::Deserialize;
-use std::{collections::HashMap, fs::File, io::ErrorKind, time::Duration};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::ErrorKind,
+    time::{Duration, Instant, SystemTime},
+};
 use substrate_crypto_light::common::AccountId32;
 use tokio::sync::{mpsc, oneshot};
 
@@ -160,7 +165,6 @@ pub struct ConfigWoChains {
     pub debug: bool,
     pub remark: String,
     //pub depth: Option<Duration>,
-    pub account_lifetime: Duration,
 }
 
 /// Database server handle
@@ -170,7 +174,11 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn init(path_option: Option<String>, task_tracker: TaskTracker) -> Result<Self, Error> {
+    pub fn init(
+        path_option: Option<String>,
+        task_tracker: TaskTracker,
+        account_lifetime: u64,
+    ) -> Result<Self, Error> {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let database = if let Some(path) = path_option {
             tracing::info!("Creating/Opening the database at {path:?}.");
@@ -207,8 +215,11 @@ impl Database {
                     DbRequest::CreateOrder(request) => {
                         let _unused = request.res.send(create_order(
                             request.order,
-                            request.order_info,
+                            request.query,
+                            request.currency,
+                            request.payment_account,
                             &orders,
+                            account_lifetime,
                         ));
                     }
                     DbRequest::ReadOrder(request) => {
@@ -247,14 +258,18 @@ impl Database {
     pub async fn create_order(
         &self,
         order: String,
-        order_info: OrderInfo,
+        query: OrderQuery,
+        currency: CurrencyInfo,
+        payment_account: String,
     ) -> Result<OrderCreateResponse, DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
             .tx
             .send(DbRequest::CreateOrder(CreateOrder {
                 order,
-                order_info,
+                query,
+                currency,
+                payment_account,
                 res,
             }))
             .await;
@@ -316,7 +331,9 @@ enum DbRequest {
 
 pub struct CreateOrder {
     pub order: String,
-    pub order_info: OrderInfo,
+    pub query: OrderQuery,
+    pub currency: CurrencyInfo,
+    pub payment_account: String,
     pub res: oneshot::Sender<Result<OrderCreateResponse, DbError>>,
 }
 
@@ -335,26 +352,42 @@ pub struct MarkPaid {
     pub res: oneshot::Sender<Result<OrderInfo, DbError>>,
 }
 
+fn calculate_death_ts(account_lifetime: u64) -> Timestamp {
+    let start = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    Timestamp(start + account_lifetime)
+}
+
 fn create_order(
     order: String,
-    order_info: OrderInfo,
+    query: OrderQuery,
+    currency: CurrencyInfo,
+    payment_account: String,
     orders: &sled::Tree,
+    account_lifetime: u64,
 ) -> Result<OrderCreateResponse, DbError> {
-    Ok(match orders.get(&order)? {
-        Some(record) => {
-            let old_order_info = OrderInfo::decode(&mut &record[..])?;
-            match order_info.payment_status {
-                PaymentStatus::Pending => {
-                    drop(orders.insert(order.encode(), order_info.encode())?);
-                    OrderCreateResponse::Modified
-                }
-                PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info),
+    Ok(if let Some(record) = orders.get(&order)? {
+        let mut old_order_info = OrderInfo::decode(&mut &record[..])?;
+        match old_order_info.payment_status {
+            PaymentStatus::Pending => {
+                let death = calculate_death_ts(account_lifetime);
+
+                old_order_info.death = death;
+
+                drop(orders.insert(order.encode(), old_order_info.encode())?);
+                OrderCreateResponse::Modified(old_order_info)
             }
+            PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info),
         }
-        None => {
-            orders.insert(order.encode(), order_info.encode())?;
-            OrderCreateResponse::New
-        }
+    } else {
+        let death = calculate_death_ts(account_lifetime);
+        let order_info_new = OrderInfo::new(query, currency, payment_account, death);
+
+        orders.insert(order.encode(), order_info_new.encode())?;
+        OrderCreateResponse::New(order_info_new)
     })
 }
 
