@@ -10,7 +10,7 @@ use crate::{
             AssetId, BlockNumber, CurrencyInfo, CurrencyProperties, OrderCreateResponse, OrderInfo,
             OrderQuery, PaymentStatus, ServerInfo, ServerStatus, Timestamp, WithdrawalStatus,
         },
-        Balance, Nonce,
+        Balance, Nonce, Version,
     },
     error::{DbError, Error},
     TaskTracker,
@@ -27,6 +27,8 @@ use substrate_crypto_light::common::AccountId32;
 use tokio::sync::{mpsc, oneshot};
 
 pub const MODULE: &str = module_path!();
+
+const DB_VERSION: Version = 0;
 
 // Tables
 /*
@@ -162,8 +164,8 @@ impl Value for Invoice {
 
 pub struct ConfigWoChains {
     pub recipient: AccountId32,
-    pub debug: bool,
-    pub remark: String,
+    pub debug: Option<bool>,
+    pub remark: Option<String>,
     //pub depth: Option<Duration>,
 }
 
@@ -177,7 +179,7 @@ impl Database {
     pub fn init(
         path_option: Option<String>,
         task_tracker: TaskTracker,
-        account_lifetime: u64,
+        account_lifetime: Timestamp,
     ) -> Result<Self, Error> {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let database = if let Some(path) = path_option {
@@ -352,13 +354,13 @@ pub struct MarkPaid {
     pub res: oneshot::Sender<Result<OrderInfo, DbError>>,
 }
 
-fn calculate_death_ts(account_lifetime: u64) -> Timestamp {
+fn calculate_death_ts(account_lifetime: Timestamp) -> Timestamp {
     let start = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
 
-    Timestamp(start + account_lifetime)
+    Timestamp(start + account_lifetime.0)
 }
 
 fn create_order(
@@ -367,7 +369,7 @@ fn create_order(
     currency: CurrencyInfo,
     payment_account: String,
     orders: &sled::Tree,
-    account_lifetime: u64,
+    account_lifetime: Timestamp,
 ) -> Result<OrderCreateResponse, DbError> {
     Ok(if let Some(record) = orders.get(&order)? {
         let mut old_order_info = OrderInfo::decode(&mut &record[..])?;

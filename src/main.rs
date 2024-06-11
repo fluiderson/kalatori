@@ -1,22 +1,16 @@
-use serde::Deserialize;
-use std::{
-    borrow::Cow,
-    env::{self, VarError},
-    error::Error as _,
-    fs,
-    future::Future,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    panic, str,
-    time::Duration,
-};
+use clap::Parser;
+use std::{borrow::Cow, future::Future, process::ExitCode, str};
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::{
-    signal,
-    sync::{mpsc, oneshot},
+    runtime::Runtime,
+    sync::{
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        oneshot,
+    },
     task::JoinHandle,
 };
 use tokio_util::{sync::CancellationToken, task};
-use tracing_subscriber::{fmt::time::UtcTime, EnvFilter};
+use tracing::Level;
 
 mod callback;
 mod chain;
@@ -28,83 +22,94 @@ mod signer;
 mod state;
 mod utils;
 
+use arguments::{CliArgs, Config, SeedEnvVars, DATABASE_DEFAULT};
 use chain::ChainManager;
 use database::ConfigWoChains;
-use definitions::{Chain, Version};
 use error::{Error, PrettyCause};
+use shutdown::{ShutdownNotification, ShutdownReason};
 use signer::Signer;
 use state::State;
 
-const CONFIG: &str = "KALATORI_CONFIG";
-const LOG: &str = "KALATORI_LOG";
-const RECIPIENT: &str = "KALATORI_RECIPIENT";
-const REMARK: &str = "KALATORI_REMARK";
-const OLD_SEED: &str = "KALATORI_OLD_SEED_";
+fn main() -> ExitCode {
+    let shutdown_notification = ShutdownNotification::new();
 
-const DB_VERSION: Version = 0;
+    // Sets the panic hook to print directly to the standart output because the logger isn't
+    // initialized yet.
+    shutdown::set_panic_hook(|panic| eprintln!("{panic}"), shutdown_notification.clone());
 
-const DEFAULT_CONFIG: &str = "configs/polkadot.toml";
-const DEFAULT_SOCKET: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 16726);
-const DEFAULT_DATABASE: &str = "kalatori.db";
+    match try_main(shutdown_notification) {
+        Ok(reason) => match reason {
+            ShutdownReason::UserRequested => {
+                tracing::info!("Goodbye!");
 
-fn main() {
-    if let Err(error) = try_main() {
-        println!(
-            "Badbye! The daemon's got a fatal error during an initialization: {error}.{}",
-            error.pretty_cause()
-        );
+                ExitCode::SUCCESS
+            }
+            ShutdownReason::UnrecoverableError => {
+                tracing::error!("Badbye! The daemon's shut down with errors.");
+
+                ExitCode::FAILURE
+            }
+        },
+        Err(error) => {
+            let print = |message| {
+                if tracing::event_enabled!(Level::ERROR) {
+                    tracing::error!("{message}");
+                } else {
+                    eprintln!("{message}");
+                }
+            };
+
+            print(format_args!(
+                "Badbye! The daemon's got a fatal error during an initialization:\n    {error}.{}",
+                error.pretty_cause()
+            ));
+
+            ExitCode::FAILURE
+        }
     }
 }
 
-#[tokio::main]
-async fn try_main() -> Result<(), Error> {
-    let shutdown_notification = CancellationToken::new();
+fn try_main(shutdown_notification: ShutdownNotification) -> Result<ShutdownReason, Error> {
+    let cli_args = CliArgs::parse();
 
-    set_panic_hook(shutdown_notification.clone());
-    initialize_logger()?;
+    logger::initialize(cli_args.log)?;
+    shutdown::set_panic_hook(
+        |panic| tracing::error!("{panic}"),
+        shutdown_notification.clone(),
+    );
 
-    // Read env
+    let seed_env_vars = SeedEnvVars::parse()?;
+    let config = Config::parse(cli_args.config)?;
 
-    let recipient = env::var(RECIPIENT).map_err(|_| Error::Env(RECIPIENT.to_string()))?;
+    Runtime::new()
+        .map_err(Error::Runtime)?
+        .block_on(async_try_main(
+            shutdown_notification,
+            cli_args.recipient,
+            cli_args.remark,
+            config,
+            seed_env_vars,
+        ))
+        .map(ShutdownNotification::reason)
+}
 
-    let remark = env::var(REMARK).map_err(|_| Error::Env(REMARK.to_string()))?;
-
-    let config = Config::load()?;
-
-    let host = if let Some(unparsed_host) = config.host {
-        unparsed_host
-            .parse()
-            .map_err(|_| Error::ConfigParse("host to define a socket address".to_string()))?
-    } else {
-        DEFAULT_SOCKET
-    };
-
-    let debug = config.debug;
-
-    let database_path = 'database: {
-        if debug {
-            if config.in_memory_db.unwrap_or_default() {
-                if config.database.is_some() {
-                    tracing::warn!(
-                        "`database` is set in the config but ignored because `in_memory_db` is \"true\""
-                    );
-                }
-
-                break 'database None;
-            }
-        } else if config.in_memory_db.is_some() {
+async fn async_try_main(
+    shutdown_notification: ShutdownNotification,
+    recipient_string: String,
+    remark: Option<String>,
+    config: Config,
+    seed_env_vars: SeedEnvVars,
+) -> Result<ShutdownNotification, Error> {
+    let database_path = if config.in_memory_db {
+        if config.database.is_some() {
             tracing::warn!(
-                "`in_memory_db` is set in the config but ignored because `debug` isn't set"
+                "`database` is set in the config but ignored because `in_memory_db` is \"true\""
             );
         }
 
-        Some(config.database.unwrap_or_else(|| {
-            tracing::debug!(
-                "`database` isn't present in the config, using the default value instead: {DEFAULT_DATABASE:?}."
-            );
-
-            DEFAULT_DATABASE.into()
-        }))
+        None
+    } else {
+        Some(config.database.unwrap_or_else(|| DATABASE_DEFAULT.into()))
     };
 
     let instance_id = String::from("TODO: add unique ID and save it in db");
@@ -115,16 +120,16 @@ async fn try_main() -> Result<(), Error> {
         "Kalatori {} by {} is starting on {}...",
         env!("CARGO_PKG_VERSION"),
         env!("CARGO_PKG_AUTHORS"),
-        host,
+        config.host,
     );
 
     let (task_tracker, error_rx) = TaskTracker::new();
 
-    let recipient = AccountId32::from_base58_string(&recipient)
+    let recipient = AccountId32::from_base58_string(&recipient_string)
         .map_err(Error::RecipientAccount)?
         .0;
 
-    let signer = Signer::init(recipient.clone(), task_tracker.clone())?;
+    let signer = Signer::init(recipient, task_tracker.clone(), seed_env_vars.seed)?;
 
     let db =
         database::Database::init(database_path, task_tracker.clone(), config.account_lifetime)?;
@@ -134,7 +139,7 @@ async fn try_main() -> Result<(), Error> {
     let state = State::initialise(
         signer.interface(),
         ConfigWoChains {
-            recipient: recipient.clone(),
+            recipient,
             debug: config.debug,
             remark,
             //depth: config.depth,
@@ -143,23 +148,8 @@ async fn try_main() -> Result<(), Error> {
         cm_rx,
         instance_id,
         task_tracker.clone(),
+        shutdown_notification.token().clone(),
     )?;
-
-    task_tracker.spawn(
-        "the shutdown listener",
-        shutdown_listener(shutdown_notification.clone(), state.interface()),
-    );
-
-    /*
-    task_tracker.spawn(
-        "proc",
-        Processor::ignite(
-            rpc,
-            recipient.into(),
-            state.clone(),
-            shutdown_notification.clone(),
-        ),
-    );*/
 
     cm_tx
         .send(ChainManager::ignite(
@@ -167,131 +157,55 @@ async fn try_main() -> Result<(), Error> {
             state.interface(),
             signer.interface(),
             task_tracker.clone(),
-            shutdown_notification.clone(),
+            shutdown_notification.token().clone(),
         )?)
         .map_err(|_| Error::Fatal)?;
 
-    let server = server::new(shutdown_notification.clone(), host, state.interface()).await?;
+    let server = server::new(
+        shutdown_notification.token().clone(),
+        config.host,
+        state.interface(),
+    )
+    .await?;
 
-    // task_tracker.spawn(shutdown(
-    //     processor.ignite(last_saved_block, task_tracker.clone(), error_tx.clone()),
-    //     error_tx,
-    // ));
     task_tracker.spawn("the server module", server);
+
+    let shutdown_completed = CancellationToken::new();
+    let mut shutdown_listener = tokio::spawn(shutdown::listener(
+        shutdown_notification.token().clone(),
+        shutdown_completed.clone(),
+    ));
 
     // Main loop
 
-    task_tracker
-        .wait_with_notification(error_rx, shutdown_notification)
-        .await;
+    let notification = tokio::select! {
+        biased;
+        notification = task_tracker.wait_with_notification(error_rx, shutdown_notification) => {
+            shutdown_completed.cancel();
 
-    // Shutdown
-
-    tracing::info!("Goodbye!");
-
-    Ok(())
-}
-
-fn set_panic_hook(shutdown_notification: CancellationToken) {
-    panic::set_hook(Box::new(move |panic_info| {
-        let at = panic_info
-            .location()
-            .map(|location| format!(" at `{location}`"))
-            .unwrap_or_default();
-        let payload = panic_info.payload();
-
-        let message = match payload.downcast_ref::<&str>() {
-            Some(string) => Some(*string),
-            None => payload.downcast_ref::<String>().map(|string| &string[..]),
-        };
-        let formatted_message = match message {
-            Some(string) => format!(":\n{string}\n"),
-            None => ".".into(),
-        };
-
-        tracing::error!(
-            "A panic detected{at}{formatted_message}\nThis is a bug. Please report it at {}/issues.",
-            env!("CARGO_PKG_REPOSITORY")
-        );
-
-        shutdown_notification.cancel();
-    }));
-}
-
-fn initialize_logger() -> Result<(), Error> {
-    let filter = match EnvFilter::try_from_env(LOG) {
-        Err(error) => {
-            let Some(VarError::NotPresent) = error
-                .source()
-                .expect("should always be `Some`")
-                .downcast_ref()
-            else {
-                return Err(Error::Env(LOG.to_string()));
-            };
-
-            if cfg!(debug_assertions) {
-                EnvFilter::try_new("debug")
-            } else {
-                EnvFilter::try_new(default_filter())
-            }
-            .unwrap()
+            notification
         }
-        Ok(filter) => filter,
+        error = &mut shutdown_listener => {
+            return Err(error.expect("shutdown listener shouldn't panic").expect_err("shutdown listener should only complete on errors here"));
+        }
     };
 
-    tracing_subscriber::fmt()
-        .with_timer(UtcTime::rfc_3339())
-        .with_env_filter(filter)
-        .init();
+    shutdown_listener
+        .await
+        .expect("shutdown listener shouldn't panic")
+        .unwrap();
 
-    Ok(())
-}
-
-fn default_filter() -> String {
-    const TARGETS: &[&str] = &[
-        callback::MODULE,
-        database::MODULE,
-        chain::MODULE,
-        server::MODULE,
-        env!("CARGO_PKG_NAME"),
-    ];
-    const COMMA: &str = ",";
-    const INFO: &str = "=info";
-    const OFF: &str = "off";
-
-    let mut filter = String::with_capacity(
-        OFF.len().saturating_add(
-            TARGETS
-                .iter()
-                .map(|module| {
-                    COMMA
-                        .len()
-                        .saturating_add(module.len())
-                        .saturating_add(INFO.len())
-                })
-                .sum(),
-        ),
-    );
-
-    filter.push_str(OFF);
-
-    for target in TARGETS {
-        filter.push_str(COMMA);
-        filter.push_str(target);
-        filter.push_str(INFO);
-    }
-
-    filter
+    Ok(notification)
 }
 
 #[derive(Clone)]
 struct TaskTracker {
     inner: task::TaskTracker,
-    error_tx: mpsc::UnboundedSender<(Cow<'static, str>, Error)>,
+    error_tx: UnboundedSender<(Cow<'static, str>, Error)>,
 }
 
 impl TaskTracker {
-    fn new() -> (Self, mpsc::UnboundedReceiver<(Cow<'static, str>, Error)>) {
+    fn new() -> (Self, UnboundedReceiver<(Cow<'static, str>, Error)>) {
         let (error_tx, error_rx) = mpsc::unbounded_channel();
         let inner = task::TaskTracker::new();
 
@@ -320,94 +234,472 @@ impl TaskTracker {
 
     async fn wait_with_notification(
         self,
-        mut error_rx: mpsc::UnboundedReceiver<(Cow<'static, str>, Error)>,
-        shutdown_notification: CancellationToken,
-    ) {
+        mut error_rx: UnboundedReceiver<(Cow<'static, str>, Error)>,
+        shutdown_notification: ShutdownNotification,
+    ) -> ShutdownNotification {
+        // `self` holds the last `error_tx`, so we need to drop it; otherwise it'll create a
+        // deadlock on `error_rx.recv()`.
         drop(self.error_tx);
 
         while let Some((from, error)) = error_rx.recv().await {
             tracing::error!(
-                "Received a fatal error from {from}:\n{error:?}.{}",
+                "Received a fatal error from {from}:\n    {error:?}.{}",
                 error.pretty_cause()
             );
 
-            if !shutdown_notification.is_cancelled() {
+            if !shutdown_notification.is_ignited() {
                 tracing::info!("Initialising the shutdown...");
 
-                shutdown_notification.cancel();
+                shutdown_notification.ignite();
             }
         }
 
         self.inner.wait().await;
+
+        shutdown_notification
     }
 
-    async fn try_wait(
-        self,
-        mut error_rx: mpsc::UnboundedReceiver<(Cow<'static, str>, Error)>,
-    ) -> Result<(), Error> {
-        drop(self.error_tx);
+    // async fn try_wait(
+    //     self,
+    //     mut error_rx: UnboundedReceiver<(Cow<'static, str>, Error)>,
+    // ) -> Result<(), Error> {
+    //     // `self` holds the last `error_tx`, so we need to drop it; otherwise it'll create a
+    //     // deadlock on `error_rx.recv()`.
+    //     drop(self.error_tx);
 
-        if let Some((from, error)) = error_rx.recv().await {
-            return Err(error)?;
+    //     if let Some((from, error)) = error_rx.recv().await {
+    //         return Err(error)?;
+    //     }
+
+    //     self.inner.wait().await;
+
+    //     Ok(())
+    // }
+}
+
+mod arguments {
+    use crate::{
+        definitions::{api_v2::Timestamp, Chain},
+        error::SeedEnvError,
+        logger, Error,
+    };
+    use ahash::AHashMap;
+    use clap::{Arg, ArgAction, Parser};
+    use serde::Deserialize;
+    use std::{
+        env, fs,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        str,
+    };
+    use toml_edit::de;
+
+    shadow_rs::shadow!(shadow);
+
+    use shadow::{BUILD_TIME_3339, RUST_VERSION, SHORT_COMMIT};
+
+    pub const SEED: &str = "SEED";
+    pub const OLD_SEED: &str = "OLD_SEED_";
+
+    const SOCKET_DEFAULT: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 16726);
+    pub const DATABASE_DEFAULT: &str = "kalatori.db";
+
+    #[derive(Parser)]
+    #[command(
+        about,
+        disable_help_flag(true),
+        arg(
+            Arg::new("help")
+                .short('h')
+                .long("help")
+                .action(ArgAction::Help)
+                .help("Print this text.")
+        ),
+        after_help(concat!(
+            "`SEED` is a required environment variable.\n\nMore documentation can be found at ",
+            env!("CARGO_PKG_REPOSITORY"),
+            ".\n\nCopyright (C) 2024 ",
+            clap::crate_authors!()
+        )),
+        disable_version_flag(true),
+        version,
+        arg(
+            Arg::new("version")
+                .short('V')
+                .long("version")
+                .action(ArgAction::Version)
+                .help("Print the daemon version (and its build metadata).")
+        ),
+        long_version(shadow_rs::formatcp!(
+            "{} ({SHORT_COMMIT})\n\nBuilt on {}\nwith {RUST_VERSION}.",
+            clap::crate_version!(),
+            // Replaces the local offset part with the "00:00" or "Z" UTC offset.
+            shadow_rs::str_splice!(
+                BUILD_TIME_3339,
+                // TODO: Use `checked_sub()` with `expect()` instead.
+                // https://github.com/rust-lang/rust/issues/67441
+                BUILD_TIME_3339.len().saturating_sub(6)..,
+                "Z"
+            ).output,
+        )),
+    )]
+    pub struct CliArgs {
+        #[arg(
+            short,
+            long,
+            env,
+            value_name("PATH"),
+            default_value("configs/polkadot.toml")
+        )]
+        pub config: String,
+
+        #[arg(
+            short,
+            long,
+            env,
+            value_name("DIRECTIVES"),
+            default_value(logger::default_filter()),
+            default_missing_value(""),
+            num_args(0..=1),
+            require_equals(true),
+        )]
+        pub log: String,
+
+        #[arg(long, env, visible_alias("rmrk"), value_name("STRING"))]
+        pub remark: Option<String>,
+
+        #[arg(short, long, env, value_name("HEX/SS58 ADDRESS"))]
+        pub recipient: String,
+    }
+
+    pub struct SeedEnvVars {
+        pub seed: String,
+        pub old_seeds: AHashMap<String, String>,
+    }
+
+    impl SeedEnvVars {
+        pub fn parse() -> Result<Self, SeedEnvError> {
+            const SEED_BYTES: &[u8] = SEED.as_bytes();
+
+            let mut seed_option = None;
+            let mut old_seeds = AHashMap::new();
+
+            for (raw_key, raw_value) in env::vars_os() {
+                match raw_key.as_encoded_bytes() {
+                    SEED_BYTES => {
+                        env::remove_var(raw_key);
+
+                        seed_option = {
+                            Some(
+                                raw_value
+                                    .into_string()
+                                    .map_err(|_| SeedEnvError::InvalidUnicodeValue(SEED.into()))?,
+                            )
+                        };
+                    }
+                    raw_key_bytes => {
+                        // TODO: Use `OsStr::slice_encoded_bytes()` instead.
+                        // https://github.com/rust-lang/rust/issues/118485
+                        if let Some(stripped_raw_key) =
+                            raw_key_bytes.strip_prefix(OLD_SEED.as_bytes())
+                        {
+                            env::remove_var(&raw_key);
+
+                            let key = str::from_utf8(stripped_raw_key)
+                                .map_err(|_| SeedEnvError::InvalidUnicodeOldSeedKey)?;
+                            let value =
+                                raw_value.to_str().ok_or(SeedEnvError::InvalidUnicodeValue(
+                                    format!("{OLD_SEED}{key}").into(),
+                                ))?;
+
+                            old_seeds.insert(key.into(), value.into());
+                        }
+                    }
+                }
+            }
+
+            Ok(Self {
+                seed: seed_option.ok_or(SeedEnvError::SeedNotPresent)?,
+                old_seeds,
+            })
         }
+    }
 
-        self.inner.wait().await;
+    /// User-supplied settings through the config file.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Config {
+        pub account_lifetime: Timestamp,
+        #[serde(default = "default_host")]
+        pub host: SocketAddr,
+        pub database: Option<String>,
+        pub debug: Option<bool>,
+        #[serde(default)]
+        pub in_memory_db: bool,
+        pub chain: Vec<Chain>,
+    }
+
+    impl Config {
+        pub fn parse(path: String) -> Result<Self, Error> {
+            let unparsed_config =
+                fs::read_to_string(&path).map_err(|e| Error::ConfigFileRead(path, e))?;
+
+            de::from_str(&unparsed_config).map_err(Into::into)
+        }
+    }
+
+    fn default_host() -> SocketAddr {
+        SOCKET_DEFAULT
+    }
+}
+
+mod logger {
+    use crate::{callback, chain, database, server, Error};
+    use tracing_subscriber::{fmt::time::UtcTime, EnvFilter};
+
+    const TARGETS: &[&str] = &[
+        callback::MODULE,
+        database::MODULE,
+        chain::MODULE,
+        server::MODULE,
+        env!("CARGO_PKG_NAME"),
+    ];
+    const COMMA: &str = ",";
+    const INFO: &str = "=info";
+    const OFF: &str = "off";
+
+    pub fn initialize(directives: String) -> Result<(), Error> {
+        let filter =
+            EnvFilter::try_new(&directives).map_err(|e| Error::LoggerDirectives(directives, e))?;
+
+        tracing_subscriber::fmt()
+            .with_timer(UtcTime::rfc_3339())
+            .with_env_filter(filter)
+            .init();
 
         Ok(())
     }
-}
 
-async fn shutdown_listener(
-    shutdown_notification: CancellationToken,
-    state: State,
-) -> Result<Cow<'static, str>, Error> {
-    tokio::select! {
-        biased;
-        signal = signal::ctrl_c() => {
-            signal.map_err(|_| Error::ShutdownSignal)?;
-
-            // Print shutdown log messages on the next line after the Control-C command.
-            println!();
-
-            tracing::info!("Received the shutdown signal. Initialising the shutdown...");
-
-            shutdown_notification.cancel();
-            state.shutdown().await;
-        }
-        () = shutdown_notification.cancelled() => {}
+    fn default_filter_capacity() -> usize {
+        OFF.len().saturating_add(
+            TARGETS
+                .iter()
+                .map(|module| {
+                    COMMA
+                        .len()
+                        .saturating_add(module.len())
+                        .saturating_add(INFO.len())
+                })
+                .sum(),
+        )
     }
 
-    Ok("The shutdown signal listener is shut down.".into())
+    pub fn default_filter() -> String {
+        let mut filter = String::with_capacity(default_filter_capacity());
+
+        filter.push_str(OFF);
+
+        for target in TARGETS {
+            filter.push_str(COMMA);
+            filter.push_str(target);
+            filter.push_str(INFO);
+        }
+
+        filter
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use tracing_subscriber::EnvFilter;
+
+        #[test]
+        fn default_filter_capacity() {
+            assert_eq!(
+                super::default_filter().len(),
+                super::default_filter_capacity()
+            );
+        }
+
+        #[test]
+        fn default_filter_is_valid() {
+            assert!(EnvFilter::try_new(super::default_filter()).is_ok());
+        }
+    }
 }
 
-/// User-supplied settings through config file
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-struct Config {
-    account_lifetime: u64,
-    depth: Option<u64>,
-    host: Option<String>,
-    database: Option<String>,
-    debug: bool,
-    in_memory_db: Option<bool>,
-    chain: Vec<Chain>,
-}
+mod shutdown {
+    use crate::Error;
+    use parking_lot::RwLock;
+    use std::{
+        fmt::{Display, Formatter, Result as FmtResult},
+        io::Result as IoResult,
+        panic::{self, PanicInfo},
+        process,
+        sync::Arc,
+        time::Duration,
+    };
+    use tokio::{signal, time};
+    use tokio_util::sync::CancellationToken;
 
-impl Config {
-    fn load() -> Result<Self, Error> {
-        let config_path = env::var(CONFIG).or_else(|error| match error {
-            VarError::NotUnicode(_) => Err(Error::Env(CONFIG.to_string())),
-            VarError::NotPresent => {
-                tracing::debug!(
-                    "`{CONFIG}` isn't present, using the default value instead: {DEFAULT_CONFIG:?}."
-                );
+    #[derive(Clone)]
+    #[allow(clippy::module_name_repetitions)]
+    pub struct ShutdownNotification(CancellationToken, Arc<RwLock<ShutdownReason>>);
 
-                Ok(DEFAULT_CONFIG.into())
+    impl ShutdownNotification {
+        pub fn new() -> Self {
+            Self(
+                CancellationToken::new(),
+                Arc::new(RwLock::new(ShutdownReason::UserRequested)),
+            )
+        }
+
+        pub fn is_ignited(&self) -> bool {
+            self.0.is_cancelled()
+        }
+
+        pub fn ignite(&self) {
+            self.0.cancel();
+        }
+
+        pub fn reason(self) -> ShutdownReason {
+            *self.1.read()
+        }
+
+        pub fn token(&self) -> &CancellationToken {
+            &self.0
+        }
+    }
+
+    pub async fn listener(
+        shutdown_notification: CancellationToken,
+        shutdown_completed: CancellationToken,
+    ) -> Result<(), Error> {
+        const TIP_TIMEOUT_SECS: u64 = 30;
+
+        tokio::select! {
+            biased;
+            result = signal::ctrl_c() => {
+                process_signal(result)?;
+
+                tracing::info!("Received the shutdown signal. Initialising the shutdown...");
+
+                shutdown_notification.cancel();
             }
-        })?;
-        let unparsed_config = fs::read_to_string(&config_path)
-            .map_err(|_| Error::ConfigFileRead(config_path.clone()))?;
+            () = shutdown_notification.cancelled() => {}
+        }
 
-        toml::from_str(&unparsed_config).map_err(Error::ConfigFileParse)
+        let shutdown_completed_clone = shutdown_completed.clone();
+        let tip = tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                () = shutdown_completed_clone.cancelled() => {}
+                () = time::sleep(Duration::from_secs(TIP_TIMEOUT_SECS)) => {
+                    tracing::warn!(
+                        "Send the shutdown signal one more time to kill the daemon instead of waiting for the graceful shutdown."
+                    );
+                }
+            }
+        });
+
+        tokio::select! {
+            biased;
+            () = shutdown_completed.cancelled() => {}
+            result = signal::ctrl_c() => {
+                process_signal(result)?;
+
+                tracing::info!("Received the second shutdown signal. Killing the daemon...");
+
+                // TODO: Use `ExitCode::exit_process()` instead.
+                // https://github.com/rust-lang/rust/issues/97100
+                process::abort()
+            }
+        }
+
+        tip.await.expect("tip task shouldn't panic");
+
+        tracing::info!("The shutdown signal listener is shut down.");
+
+        Ok(())
+    }
+
+    fn process_signal(result: IoResult<()>) -> Result<(), Error> {
+        result.map_err(Error::ShutdownSignal)?;
+
+        // Print shutdown log messages on the next line after the Control-C command.
+        println!();
+
+        Ok(())
+    }
+
+    #[derive(Clone, Copy)]
+    #[allow(clippy::module_name_repetitions)]
+    pub enum ShutdownReason {
+        UserRequested,
+        UnrecoverableError,
+    }
+
+    pub fn set_panic_hook(
+        print: impl Fn(PrettyPanic<'_>) + Send + Sync + 'static,
+        shutdown_notification: ShutdownNotification,
+    ) {
+        panic::set_hook(Box::new(move |panic_info| {
+            let mut current_reason = shutdown_notification.1.upgradable_read();
+
+            let first = match &*current_reason {
+                ShutdownReason::UserRequested => current_reason.with_upgraded(|reason| {
+                    *reason = ShutdownReason::UnrecoverableError;
+
+                    true
+                }),
+                ShutdownReason::UnrecoverableError => false,
+            };
+
+            print(PrettyPanic { panic_info, first });
+
+            shutdown_notification.0.cancel();
+        }));
+    }
+
+    pub struct PrettyPanic<'a> {
+        panic_info: &'a PanicInfo<'a>,
+        first: bool,
+    }
+
+    // It looks like it's impossible to acquire `PanicInfo` outside of `panic::set_hook`, which
+    // could alter execution of other unit tests, so, without mocking the `panic_info` field,
+    // there's no way to test the `Display`ing.
+    impl Display for PrettyPanic<'_> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+            f.write_str("A panic detected")?;
+
+            if let Some(location) = self.panic_info.location() {
+                f.write_str(" at ")?;
+                location.fmt(f)?;
+            }
+
+            let payload = self.panic_info.payload();
+            let message_option = match payload.downcast_ref() {
+                Some(string) => Some(*string),
+                None => payload.downcast_ref::<String>().map(|string| &string[..]),
+            };
+
+            if let Some(panic_message) = message_option {
+                f.write_str(":\n    ")?;
+                f.write_str(panic_message)?;
+            }
+
+            f.write_str(".")?;
+
+            // Print the report request only on the first panic.
+
+            if self.first {
+                f.write_str(concat!(
+                    "\n\nThis is a bug. Please report it at ",
+                    env!("CARGO_PKG_REPOSITORY"),
+                    "/issues."
+                ))?;
+            }
+
+            Ok(())
+        }
     }
 }

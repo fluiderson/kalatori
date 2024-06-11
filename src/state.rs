@@ -17,6 +17,7 @@ use std::collections::HashMap;
 
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 /// Struct to store state of daemon. If something requires cooperation of more than one component,
 /// it should go through here.
@@ -37,6 +38,7 @@ impl State {
         chain_manager: oneshot::Receiver<ChainManager>,
         instance_id: String,
         task_tracker: TaskTracker,
+        shutdown_notification: CancellationToken,
     ) -> Result<Self, Error> {
         /*
             currencies: HashMap<String, CurrencyProperties>,
@@ -85,48 +87,57 @@ impl State {
                 Ok("All saved orders restored".into())
             });
 
-            while let Some(request) = rx.recv().await {
-                match request {
-                    StateAccessRequest::ConnectChain(assets) => {
-                        // it MUST be asserted in chain tracker that assets are those and only
-                        // those that user requested
-                        state.update_currencies(assets);
-                    }
-                    StateAccessRequest::GetInvoiceStatus(request) => {
-                        request
-                            .res
-                            .send(state.get_invoice_status(request.order).await)
-                            .map_err(|_| Error::Fatal)?;
-                    }
-                    StateAccessRequest::CreateInvoice(request) => {
-                        request
-                            .res
-                            .send(state.create_invoice(request.order_query).await)
-                            .map_err(|_| Error::Fatal)?;
-                    }
-                    StateAccessRequest::ServerStatus(res) => {
-                        let server_status = ServerStatus {
-                            server_info: state.server_info.clone(),
-                            supported_currencies: state.currencies.clone(),
+            loop {
+                tokio::select! {
+                    biased;
+                    request_option = rx.recv() => {
+                        let Some(request) = request_option else {
+                            break;
                         };
-                        res.send(server_status).map_err(|_| Error::Fatal)?;
-                    }
-                    StateAccessRequest::OrderPaid(id) => {
-                        // Only perform actions if the record is saved in ledger
-                        match state.db.mark_paid(id.clone()).await {
-                            Ok(order) => {
-                                // TODO: callback here
-                                drop(state.chain_manager.reap(id, order, state.recipient).await);
+
+                        match request {
+                            StateAccessRequest::ConnectChain(assets) => {
+                                // it MUST be asserted in chain tracker that assets are those and only
+                                // those that user requested
+                                state.update_currencies(assets);
                             }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Order was paid but this could not be recorded! {e:?}"
-                                )
+                            StateAccessRequest::GetInvoiceStatus(request) => {
+                                request
+                                    .res
+                                    .send(state.get_invoice_status(request.order).await)
+                                    .map_err(|_| Error::Fatal)?;
                             }
-                        }
+                            StateAccessRequest::CreateInvoice(request) => {
+                                request
+                                    .res
+                                    .send(state.create_invoice(request.order_query).await)
+                                    .map_err(|_| Error::Fatal)?;
+                            }
+                            StateAccessRequest::ServerStatus(res) => {
+                                let server_status = ServerStatus {
+                                    server_info: state.server_info.clone(),
+                                    supported_currencies: state.currencies.clone(),
+                                };
+                                res.send(server_status).map_err(|_| Error::Fatal)?;
+                            }
+                            StateAccessRequest::OrderPaid(id) => {
+                                // Only perform actions if the record is saved in ledger
+                                match state.db.mark_paid(id.clone()).await {
+                                    Ok(order) => {
+                                        // TODO: callback here
+                                        drop(state.chain_manager.reap(id, order, state.recipient).await);
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Order was paid but this could not be recorded! {e:?}"
+                                        )
+                                    }
+                                }
+                            }
+                        };
                     }
                     // Orchestrate shutdown from here
-                    StateAccessRequest::Shutdown => {
+                    () = shutdown_notification.cancelled() => {
                         // Web server shuts down on its own; it does not matter what it sends now.
 
                         // First shut down active actions for external world. If something yet
@@ -142,7 +153,7 @@ impl State {
                         // And shut down finally
                         break;
                     }
-                };
+                }
             }
 
             Ok("State handler is shutting down".into())
@@ -216,10 +227,6 @@ impl State {
             tx: self.tx.clone(),
         }
     }
-
-    pub async fn shutdown(&self) {
-        self.tx.send(StateAccessRequest::Shutdown).await.unwrap();
-    }
 }
 
 enum StateAccessRequest {
@@ -228,7 +235,6 @@ enum StateAccessRequest {
     CreateInvoice(CreateInvoice),
     ServerStatus(oneshot::Sender<ServerStatus>),
     OrderPaid(String),
-    Shutdown,
 }
 
 struct GetInvoiceStatus {

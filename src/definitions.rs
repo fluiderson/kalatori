@@ -90,7 +90,7 @@ pub mod api_v2 {
     pub type BlockNumber = u64;
     pub type ExtrinsicIndex = u32;
 
-    #[derive(Encode, Decode, Debug, Clone, Copy, Serialize)]
+    #[derive(Encode, Decode, Debug, Clone, Copy, Serialize, Deserialize)]
     pub struct Timestamp(pub u64);
 
     #[derive(Debug)]
@@ -266,8 +266,10 @@ pub mod api_v2 {
     pub struct ServerInfo {
         pub version: String,
         pub instance_id: String,
-        pub debug: bool,
-        pub kalatori_remark: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub debug: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub kalatori_remark: Option<String>,
     }
 
     #[derive(Clone, Debug, Serialize, Decode, Encode)]
