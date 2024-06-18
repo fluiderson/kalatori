@@ -32,7 +32,11 @@ pub struct Signer {
 
 impl Signer {
     /// Run once to initialize; this should do **all** secret management
-    pub fn init(recipient: AccountId32, task_tracker: TaskTracker, seed: String) -> Result<Self, Error> {
+    pub fn init(
+        recipient: AccountId32,
+        task_tracker: TaskTracker,
+        seed: String,
+    ) -> Result<Self, Error> {
         let (tx, mut rx) = mpsc::channel(16);
         task_tracker.spawn("Signer", async move {
             let mut seed_entropy = entropy_from_phrase(&seed)?; // TODO: shutdown on failure

@@ -6,6 +6,7 @@ use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::core::ClientError;
 use mnemonic_external::error::ErrorWordList;
 use parity_scale_codec::Error as ScaleError;
+use serde_json::Error as JsonError;
 use serde_json::Value;
 use sled::Error as DatabaseError;
 use std::{borrow::Cow, io::Error as IoError, net::SocketAddr};
@@ -280,6 +281,9 @@ pub enum ChainError {
         actual: String,
         rpc: String,
     },
+
+    #[error("failed to parse JSON data from a block stream")]
+    Serde(#[from] JsonError),
 }
 
 #[derive(Debug, Error)]
