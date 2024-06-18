@@ -144,7 +144,7 @@ pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, SignerError> {
     Ok(word_set.to_entropy()?)
 }
 
-/// Standartized derivation protocol
+/// Standardized derivation protocol
 pub fn derivations<'a>(recipient: &'a str, order: &'a str) -> FullDerivation<'a> {
     FullDerivation {
         junctions: vec![DeriveJunction::hard(recipient), DeriveJunction::hard(order)],

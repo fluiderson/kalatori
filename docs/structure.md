@@ -54,7 +54,7 @@ The most complex module of the daemon where all the crucial blockchain-related l
 
 ### Assumptions
 
-The current Substrate RPC API & pallets used by the daemon, unfortunately, don't have any strict standart, which all nodes & chains follow, and the common implementations of RPC API & pallets lack of some essential features. This creates restrictions & assumptions for which nodes & chains the daemon can be used with. Of course, our first priority is and will be the support of the Polkadot relaychain & the Polkadot Asset Hub parachain with the support of USDT & USDC assets on that parachain, but in the future, we'll try to lift the following limitations and support a broader range of nodes & chains along with the evolution of the Substrate ecosystem & its standarts.
+The current Substrate RPC API & pallets used by the daemon, unfortunately, don't have any strict standard, which all nodes & chains follow, and the common implementations of RPC API & pallets lack of some essential features. This creates restrictions & assumptions for which nodes & chains the daemon can be used with. Of course, our first priority is and will be the support of the Polkadot relaychain & the Polkadot Asset Hub parachain with the support of USDT & USDC assets on that parachain, but in the future, we'll try to lift the following limitations and support a broader range of nodes & chains along with the evolution of the Substrate ecosystem & its standards.
 
 #### [`ChargeAssetTxPayment`]
 
@@ -64,7 +64,7 @@ One of difficult parts in the chain preparation is to determine & dynamically pr
 
 All extrinsics sent by the daemon are transfer transactions. Despite they themselves are quite unsophisticated, the whole process of *the approximate fee calculation to subtract it from the transfer amount and then, in case of a fail because a real fee was higher than the daemon estimated, the resending of the same transaction after another never accurate calculation* does sound like a really hard path.
 
-We tried to use the [`transfer_allow_death`] call in the Balances pallet for all transfers because we thought that a transfer fee would never be greater than the existential deposit but that isn't true for all chains (e.g., it's true for Polkadot but not for Kusama), and unlikely will be a standart, so we've stuck with the [`transfer_all`] call for transfers to both the beneficiary & overpayers accounts.
+We tried to use the [`transfer_allow_death`] call in the Balances pallet for all transfers because we thought that a transfer fee would never be greater than the existential deposit but that isn't true for all chains (e.g., it's true for Polkadot but not for Kusama), and unlikely will be a standard, so we've stuck with the [`transfer_all`] call for transfers to both the beneficiary & overpayers accounts.
 
 The Assets pallet doesn't have a call similar to Balances's [`transfer_all`], so the daemon uses [`transfer`] assuming that a fee for that call wouldn't be higher than asset's [`min_balance`]. For now, that's true for USDT & USDC on Polkadot Asset Hub, but **if one these or another assets won't meet this criteria, the daemon won't be able to work with them**. We plan to propose and hopefully include some kind of the `transfer_all` call in Assets pallet to subsequently eliminate this restriction.
 

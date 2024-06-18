@@ -1,11 +1,11 @@
 use clap::Parser;
-use std::{borrow::Cow, future::Future, process::ExitCode, str};
+use std::{borrow::Cow, future::Future, process::ExitCode, str, sync::Arc};
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::{
     runtime::Runtime,
     sync::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
-        oneshot,
+        oneshot, RwLock,
     },
     task::JoinHandle,
 };
@@ -33,12 +33,12 @@ use state::State;
 fn main() -> ExitCode {
     let shutdown_notification = ShutdownNotification::new();
 
-    // Sets the panic hook to print directly to the standart output because the logger isn't
+    // Sets the panic hook to print directly to the standard error because the logger isn't
     // initialized yet.
     shutdown::set_panic_hook(|panic| eprintln!("{panic}"), shutdown_notification.clone());
 
     match try_main(shutdown_notification) {
-        Ok(reason) => match reason {
+        Ok(failed) => match *failed.blocking_read() {
             ShutdownReason::UserRequested => {
                 tracing::info!("Goodbye!");
 
@@ -60,7 +60,7 @@ fn main() -> ExitCode {
             };
 
             print(format_args!(
-                "Badbye! The daemon's got a fatal error during an initialization:\n    {error}.{}",
+                "Badbye! The daemon's got a fatal error:\n    {error}.{}",
                 error.pretty_cause()
             ));
 
@@ -69,7 +69,9 @@ fn main() -> ExitCode {
     }
 }
 
-fn try_main(shutdown_notification: ShutdownNotification) -> Result<ShutdownReason, Error> {
+fn try_main(
+    shutdown_notification: ShutdownNotification,
+) -> Result<Arc<RwLock<ShutdownReason>>, Error> {
     let cli_args = CliArgs::parse();
 
     logger::initialize(cli_args.log)?;
@@ -90,7 +92,6 @@ fn try_main(shutdown_notification: ShutdownNotification) -> Result<ShutdownReaso
             config,
             seed_env_vars,
         ))
-        .map(ShutdownNotification::reason)
 }
 
 async fn async_try_main(
@@ -99,7 +100,7 @@ async fn async_try_main(
     remark: Option<String>,
     config: Config,
     seed_env_vars: SeedEnvVars,
-) -> Result<ShutdownNotification, Error> {
+) -> Result<Arc<RwLock<ShutdownReason>>, Error> {
     let database_path = if config.in_memory_db {
         if config.database.is_some() {
             tracing::warn!(
@@ -148,7 +149,7 @@ async fn async_try_main(
         cm_rx,
         instance_id,
         task_tracker.clone(),
-        shutdown_notification.token().clone(),
+        shutdown_notification.token.clone(),
     )?;
 
     cm_tx
@@ -157,12 +158,12 @@ async fn async_try_main(
             state.interface(),
             signer.interface(),
             task_tracker.clone(),
-            shutdown_notification.token().clone(),
+            shutdown_notification.token.clone(),
         )?)
         .map_err(|_| Error::Fatal)?;
 
     let server = server::new(
-        shutdown_notification.token().clone(),
+        shutdown_notification.token.clone(),
         config.host,
         state.interface(),
     )
@@ -172,30 +173,28 @@ async fn async_try_main(
 
     let shutdown_completed = CancellationToken::new();
     let mut shutdown_listener = tokio::spawn(shutdown::listener(
-        shutdown_notification.token().clone(),
+        shutdown_notification.token.clone(),
         shutdown_completed.clone(),
     ));
 
     // Main loop
 
-    let notification = tokio::select! {
+    Ok(tokio::select! {
         biased;
-        notification = task_tracker.wait_with_notification(error_rx, shutdown_notification) => {
+        reason = task_tracker.wait_with_notification(error_rx, shutdown_notification) => {
             shutdown_completed.cancel();
+            shutdown_listener.await.expect("shutdown listener shouldn't panic")?;
 
-            notification
+            reason
         }
         error = &mut shutdown_listener => {
-            return Err(error.expect("shutdown listener shouldn't panic").expect_err("shutdown listener should only complete on errors here"));
+            return Err(
+                error
+                    .expect("shutdown listener shouldn't panic")
+                    .expect_err("shutdown listener should only complete on errors here")
+            );
         }
-    };
-
-    shutdown_listener
-        .await
-        .expect("shutdown listener shouldn't panic")
-        .unwrap();
-
-    Ok(notification)
+    })
 }
 
 #[derive(Clone)]
@@ -223,11 +222,12 @@ impl TaskTracker {
 
         self.inner.spawn(async move {
             match task.await {
-                Ok(shutdown_message) if !shutdown_message.is_empty() => {
-                    tracing::info!("{shutdown_message}");
+                Ok(shutdown_message) => {
+                    if !shutdown_message.is_empty() {
+                        tracing::info!("{shutdown_message}");
+                    }
                 }
                 Err(error) => error_tx.send((name.into(), error)).unwrap(),
-                _ => {}
             }
         })
     }
@@ -236,10 +236,12 @@ impl TaskTracker {
         self,
         mut error_rx: UnboundedReceiver<(Cow<'static, str>, Error)>,
         shutdown_notification: ShutdownNotification,
-    ) -> ShutdownNotification {
+    ) -> Arc<RwLock<ShutdownReason>> {
         // `self` holds the last `error_tx`, so we need to drop it; otherwise it'll create a
         // deadlock on `error_rx.recv()`.
         drop(self.error_tx);
+
+        let mut failed = false;
 
         while let Some((from, error)) = error_rx.recv().await {
             tracing::error!(
@@ -247,34 +249,36 @@ impl TaskTracker {
                 error.pretty_cause()
             );
 
-            if !shutdown_notification.is_ignited() {
+            if failed || !shutdown_notification.is_ignited() {
                 tracing::info!("Initialising the shutdown...");
 
-                shutdown_notification.ignite();
+                failed = true;
+
+                shutdown_notification.ignite().await;
             }
         }
 
         self.inner.wait().await;
 
-        shutdown_notification
+        shutdown_notification.reason
     }
 
-    // async fn try_wait(
-    //     self,
-    //     mut error_rx: UnboundedReceiver<(Cow<'static, str>, Error)>,
-    // ) -> Result<(), Error> {
-    //     // `self` holds the last `error_tx`, so we need to drop it; otherwise it'll create a
-    //     // deadlock on `error_rx.recv()`.
-    //     drop(self.error_tx);
+    /* async fn try_wait(
+        self,
+        mut error_rx: UnboundedReceiver<(Cow<'static, str>, Error)>,
+    ) -> Result<(), Error> {
+        // `self` holds the last `error_tx`, so we need to drop it; otherwise it'll create a
+        // deadlock on `error_rx.recv()`.
+        drop(self.error_tx);
 
-    //     if let Some((from, error)) = error_rx.recv().await {
-    //         return Err(error)?;
-    //     }
+        if let Some((from, error)) = error_rx.recv().await {
+            return Err(error)?;
+        }
 
-    //     self.inner.wait().await;
+        self.inner.wait().await;
 
-    //     Ok(())
-    // }
+        Ok(())
+    } */
 }
 
 mod arguments {
@@ -332,7 +336,7 @@ mod arguments {
         long_version(shadow_rs::formatcp!(
             "{} ({SHORT_COMMIT})\n\nBuilt on {}\nwith {RUST_VERSION}.",
             clap::crate_version!(),
-            // Replaces the local offset part with the "00:00" or "Z" UTC offset.
+            // Replaces the local offset part with the "00:00" (aka "Z") UTC offset.
             shadow_rs::str_splice!(
                 BUILD_TIME_3339,
                 // TODO: Use `checked_sub()` with `expect()` instead.
@@ -528,7 +532,6 @@ mod logger {
 
 mod shutdown {
     use crate::Error;
-    use parking_lot::RwLock;
     use std::{
         fmt::{Display, Formatter, Result as FmtResult},
         io::Result as IoResult,
@@ -537,35 +540,31 @@ mod shutdown {
         sync::Arc,
         time::Duration,
     };
-    use tokio::{signal, time};
+    use tokio::{signal, sync::RwLock, time};
     use tokio_util::sync::CancellationToken;
 
     #[derive(Clone)]
     #[allow(clippy::module_name_repetitions)]
-    pub struct ShutdownNotification(CancellationToken, Arc<RwLock<ShutdownReason>>);
+    pub struct ShutdownNotification {
+        pub token: CancellationToken,
+        pub reason: Arc<RwLock<ShutdownReason>>,
+    }
 
     impl ShutdownNotification {
         pub fn new() -> Self {
-            Self(
-                CancellationToken::new(),
-                Arc::new(RwLock::new(ShutdownReason::UserRequested)),
-            )
+            Self {
+                token: CancellationToken::new(),
+                reason: Arc::new(RwLock::new(ShutdownReason::UserRequested)),
+            }
         }
 
         pub fn is_ignited(&self) -> bool {
-            self.0.is_cancelled()
+            self.token.is_cancelled()
         }
 
-        pub fn ignite(&self) {
-            self.0.cancel();
-        }
-
-        pub fn reason(self) -> ShutdownReason {
-            *self.1.read()
-        }
-
-        pub fn token(&self) -> &CancellationToken {
-            &self.0
+        pub async fn ignite(&self) {
+            *self.reason.write().await = ShutdownReason::UnrecoverableError;
+            self.token.cancel();
         }
     }
 
@@ -642,20 +641,21 @@ mod shutdown {
         shutdown_notification: ShutdownNotification,
     ) {
         panic::set_hook(Box::new(move |panic_info| {
-            let mut current_reason = shutdown_notification.1.upgradable_read();
+            let reason = *shutdown_notification.reason.blocking_read();
 
-            let first = match &*current_reason {
-                ShutdownReason::UserRequested => current_reason.with_upgraded(|reason| {
-                    *reason = ShutdownReason::UnrecoverableError;
+            let first = match reason {
+                ShutdownReason::UserRequested => false,
+                ShutdownReason::UnrecoverableError => {
+                    *shutdown_notification.reason.blocking_write() =
+                        ShutdownReason::UnrecoverableError;
 
                     true
-                }),
-                ShutdownReason::UnrecoverableError => false,
+                }
             };
 
             print(PrettyPanic { panic_info, first });
 
-            shutdown_notification.0.cancel();
+            shutdown_notification.token.cancel();
         }));
     }
 

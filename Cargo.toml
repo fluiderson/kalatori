@@ -47,7 +47,6 @@ clap = { version = "4", features = ["derive", "cargo", "string", "env"] }
 shadow-rs = { version = "0.28", default-features = false }
 futures = "0.3"
 ahash = "0.8"
-parking_lot = "0.12"
 
 substrate_parser = { git = "https://github.com/Alzymologist/substrate-parser" }
 substrate-constructor = { git = "https://github.com/Alzymologist/substrate-constructor" }
