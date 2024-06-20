@@ -131,7 +131,7 @@ async fn test_daemon_status_call() {
         KALATORI_CARGO_PACKAGE_VERSION
     );
     assert!(!server_status.server_info.instance_id.is_empty());
-    assert_eq!(server_status.server_info.debug, Some(true));
+    assert_eq!(server_status.server_info.debug, true);
     assert_eq!(
         server_status.server_info.kalatori_remark,
         Some(KALATORI_REMARK.into())

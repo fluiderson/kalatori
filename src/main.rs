@@ -301,8 +301,14 @@ mod arguments {
 
     use shadow::{BUILD_TIME_3339, RUST_VERSION, SHORT_COMMIT};
 
-    pub const SEED: &str = "SEED";
-    pub const OLD_SEED: &str = "OLD_SEED_";
+    macro_rules! env_var_prefix {
+        ($var:literal) => {
+            concat!("KALATORI_", $var)
+        };
+    }
+
+    pub const SEED: &str = env_var_prefix!("SEED");
+    pub const OLD_SEED: &str = env_var_prefix!("OLD_SEED_");
 
     const SOCKET_DEFAULT: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 16726);
     pub const DATABASE_DEFAULT: &str = "kalatori.db";
@@ -350,7 +356,7 @@ mod arguments {
         #[arg(
             short,
             long,
-            env,
+            env(env_var_prefix!("CONFIG")),
             value_name("PATH"),
             default_value("configs/polkadot.toml")
         )]
@@ -359,7 +365,7 @@ mod arguments {
         #[arg(
             short,
             long,
-            env,
+            env(env_var_prefix!("LOG")),
             value_name("DIRECTIVES"),
             default_value(logger::default_filter()),
             default_missing_value(""),
@@ -368,10 +374,10 @@ mod arguments {
         )]
         pub log: String,
 
-        #[arg(long, env, visible_alias("rmrk"), value_name("STRING"))]
+        #[arg(long, env(env_var_prefix!("REMARK")), visible_alias("rmrk"), value_name("STRING"))]
         pub remark: Option<String>,
 
-        #[arg(short, long, env, value_name("HEX/SS58 ADDRESS"))]
+        #[arg(short, long, env(env_var_prefix!("RECIPIENT")), value_name("HEX/SS58 ADDRESS"))]
         pub recipient: String,
     }
 

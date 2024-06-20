@@ -266,8 +266,7 @@ pub mod api_v2 {
     pub struct ServerInfo {
         pub version: String,
         pub instance_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub debug: Option<bool>,
+        pub debug: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub kalatori_remark: Option<String>,
     }

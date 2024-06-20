@@ -57,7 +57,7 @@ impl State {
             // TODO
             version: env!("CARGO_PKG_VERSION").to_string(),
             instance_id: instance_id.clone(),
-            debug,
+            debug: debug.unwrap_or_default(),
             kalatori_remark: remark.clone(),
         };
 
