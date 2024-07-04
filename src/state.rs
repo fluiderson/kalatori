@@ -1,6 +1,6 @@
 use crate::{
-    chain::ChainManager,
-    database::Database,
+    chain2::ChainManager,
+    database2::Database,
     definitions::{
         api_v2::{
             CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse,
@@ -9,7 +9,7 @@ use crate::{
         Entropy,
     },
     error::{Error, OrderError},
-    signer::Signer,
+    signer2::Signer,
     ConfigWoChains, TaskTracker,
 };
 
@@ -84,7 +84,7 @@ impl State {
                         .add_invoice(order, order_details, state.recipient)
                         .await;
                 }
-                Ok("All saved orders restored".into())
+                Ok("All saved orders restored")
             });
 
             loop {
@@ -156,7 +156,7 @@ impl State {
                 }
             }
 
-            Ok("State handler is shutting down".into())
+            Ok("State handler is shutting down")
         });
 
         Ok(Self { tx })

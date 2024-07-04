@@ -1,12 +1,32 @@
-//! Deaf and dumb object definitions
+//! Deaf and dumb object definitions.
 
-use std::ops::{Deref, Sub};
+use ruint::aliases::U256;
+use serde::{
+    de::{Error, Unexpected, Visitor},
+    Deserialize, Deserializer,
+};
+use std::{
+    fmt::{Debug, Formatter, Result as FmtResult},
+    ops::{Deref, Sub},
+};
 
-use serde::Deserialize;
+#[derive(Deserialize)]
+pub struct AssetId(u64);
 
-pub type Version = u64;
+#[derive(Deserialize)]
+pub struct Decimals(u64);
+
+#[derive(Clone)]
+pub struct H255(pub U256);
+
+impl From<H255> for primitive_types::H256 {
+    fn from(hash: H255) -> Self {
+        hash.0.to_le_bytes().into()
+    }
+}
+
+pub type BlockNumberRs = u64;
 pub type Nonce = u32;
-
 pub type PalletIndex = u8;
 
 pub type Entropy = Vec<u8>; // TODO: maybe enforce something here
@@ -78,8 +98,10 @@ pub fn decimal_exponent_product(decimals: api_v2::Decimals) -> f64 {
 pub mod api_v2 {
     use std::collections::HashMap;
 
-    use parity_scale_codec::{Decode, Encode};
+    use codec::{Decode, Encode};
     use serde::{Deserialize, Serialize, Serializer};
+
+    use super::BlockNumberRs;
 
     pub const AMOUNT: &str = "amount";
     pub const CURRENCY: &str = "currency";
@@ -87,7 +109,6 @@ pub mod api_v2 {
 
     pub type AssetId = u32;
     pub type Decimals = u8;
-    pub type BlockNumber = u64;
     pub type ExtrinsicIndex = u32;
 
     #[derive(Encode, Decode, Debug, Clone, Copy, Serialize, Deserialize)]
@@ -286,7 +307,7 @@ pub mod api_v2 {
 
     #[derive(Clone, Debug, Serialize, Decode, Encode)]
     struct FinalizedTx {
-        block_number: BlockNumber,
+        block_number: BlockNumberRs,
         position_in_block: ExtrinsicIndex,
         timestamp: String,
     }

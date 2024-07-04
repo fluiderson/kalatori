@@ -1,15 +1,26 @@
 use crate::{
     arguments::{OLD_SEED, SEED},
+    chain::definitions::H256,
+    database::{
+        definitions::{BlockHash, Public, Timestamp, Version},
+        DB_VERSION,
+    },
     definitions::api_v2::OrderStatus,
+    utils::task_tracker::TaskName,
 };
+use codec::Error as CodecError;
+use const_hex::FromHexError;
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::core::ClientError;
 use mnemonic_external::error::ErrorWordList;
-use parity_scale_codec::Error as ScaleError;
+use redb::{
+    CommitError, CompactionError, DatabaseError, StorageError as DbStorageError, TableError,
+    TransactionError,
+};
 use serde_json::Error as JsonError;
 use serde_json::Value;
-use sled::Error as DatabaseError;
-use std::{borrow::Cow, io::Error as IoError, net::SocketAddr};
+use sled::Error as DatabaseErrorr;
+use std::{io::Error as IoError, net::SocketAddr, str::Utf8Error};
 use substrate_constructor::error::{ErrorFixMe, StorageRegistryError};
 use substrate_crypto_light::error::Error as CryptoError;
 use substrate_parser::error::{MetaVersionErrorPallets, ParserError, RegistryError, StorageError};
@@ -31,6 +42,26 @@ pub enum Error {
     #[error("failed to parse the config")]
     ConfigFileParse(#[from] TomlError),
 
+    #[error("failed to parse given filter directives for the logger ({0:?})")]
+    LoggerDirectives(String, #[source] ParseError),
+
+    #[error("failed to initialize the asynchronous runtime")]
+    Runtime(#[source] IoError),
+
+    #[error("failed to listen for the shutdown signal")]
+    ShutdownSignal(#[source] IoError),
+
+    #[error("failed to complete {0}")]
+    Task(TaskName, #[source] TaskError),
+
+    #[error("got a database initialization error")]
+    Database(#[from] DbError),
+
+    #[error("failed to parse the recipient parameter")]
+    RecipientParse(#[from] AccountFromStrError),
+
+    // #[error("failed to parse the chain interval {0} in the config root")]
+    // ConfigRootIntervals(ChainIntervalField, #[source] ChainIntervalError),
     #[error("failed to parse the config parameter `{0}`")]
     ConfigParse(&'static str),
 
@@ -41,7 +72,7 @@ pub enum Error {
     Chain(#[from] ChainError),
 
     #[error("database error is occurred")]
-    Db(#[from] DbError),
+    Db(#[from] DbErrorr),
 
     #[error("order error is occurred")]
     Order(#[from] OrderError),
@@ -51,15 +82,6 @@ pub enum Error {
 
     #[error("signer error is occurred")]
     Signer(#[from] SignerError),
-
-    #[error("failed to listen for the shutdown signal")]
-    ShutdownSignal(#[source] IoError),
-
-    #[error("failed to initialize the asynchronous runtime")]
-    Runtime(#[source] IoError),
-
-    #[error("failed to parse given filter directives for the logger ({0:?})")]
-    LoggerDirectives(String, #[source] ParseError),
 
     #[error("receiver account couldn't be parsed")]
     RecipientAccount(#[from] CryptoError),
@@ -71,14 +93,50 @@ pub enum Error {
     DuplicateCurrency(String),
 }
 
+const SEED_ENV_INVALID_UNICODE: &str = "` variable contains an invalid Unicode text";
+
 #[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
 pub enum SeedEnvError {
-    #[error("one of the `{OLD_SEED}*` variables has an invalid Unicode key")]
-    InvalidUnicodeOldSeedKey,
-    #[error("`{0}` variable contains an invalid Unicode text")]
-    InvalidUnicodeValue(Cow<'static, str>),
-    #[error("`{SEED}` isn't present")]
-    SeedNotPresent,
+    #[error("one of the `{OLD_SEED}*` variables has an invalid Unicode text in the name")]
+    InvalidUnicodeOldKey(#[from] Utf8Error),
+    #[error("`{SEED}{SEED_ENV_INVALID_UNICODE}")]
+    InvalidUnicodeValue,
+    #[error("`{OLD_SEED}{0}{SEED_ENV_INVALID_UNICODE}")]
+    InvalidUnicodeOldValue(String),
+    #[error("`{SEED}` is required & not set")]
+    NotSet,
+    #[error("failed to parse a mnemonic phrase")]
+    Mnemonic(#[from] ErrorWordList),
+}
+
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum TaskError {
+    #[error("chain has no endpoint in the config")]
+    NoChainEndpoints,
+    #[error("got an RPC error")]
+    Rpc(#[from] RpcError),
+    #[error("found 2 chains with the same name in the config (see the connector name above)")]
+    ChainDuplicate,
+}
+
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum ChainIntervalError {
+    #[error("chain interval isn't set")]
+    NotSet,
+    #[error("received 2 values for an interval parameter that expects only 1, choose between blocks (`*_in_blocks`) & time")]
+    DoubleSet,
+}
+
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum RpcError {
+    #[error("failed to construct a connection to an RPC endpoint")]
+    Connection(#[source] ClientError),
+    #[error("failed to fetch the genesis hash")]
+    GenesisHash(#[source] ClientError),
 }
 
 #[derive(Debug, Error)]
@@ -286,9 +344,93 @@ pub enum ChainError {
     Serde(#[from] JsonError),
 }
 
+const ACCOUNT_FROM_STR_FAILED: &str = "failed to parse an address string in the ";
+
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum AccountFromStrError {
+    #[error("{ACCOUNT_FROM_STR_FAILED}hexadecimal format")]
+    Hex(#[from] FromHexError),
+
+    #[error("{ACCOUNT_FROM_STR_FAILED}SS58 format")]
+    Ss58(#[from] CryptoError),
+}
+
+const DB_ERROR_NO_VALUE: &str = "existing database doesn't contain ";
+
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
 pub enum DbError {
+    #[error("failed to create/open the database")]
+    Initialization(#[from] DatabaseError),
+
+    #[error("failed to create a write transaction")]
+    WriteTx(#[from] TransactionError),
+
+    #[error("failed to commit a transaction")]
+    Commit(#[from] CommitError),
+
+    #[error("failed to compact the database")]
+    Compact(#[from] CompactionError),
+
+    #[error("failed to open a table")]
+    OpenTable(#[source] TableError),
+
+    #[error("failed to delete a table")]
+    DeleteTable(#[source] TableError),
+
+    #[error("failed to insert a value into the database")]
+    Insert(#[source] DbStorageError),
+
+    #[error("failed to get a value from the database")]
+    Get(#[source] DbStorageError),
+
+    #[error("{DB_ERROR_NO_VALUE}its format version")]
+    NoVersion,
+
+    #[error("{DB_ERROR_NO_VALUE}the daemon info")]
+    NoDaemonInfo,
+
+    #[error("database contains an invalid format version ({}), expected {}", .0 .0, DB_VERSION.0)]
+    UnexpectedVersion(Version),
+
+    #[error("failed to decode a SCALE-encoded value")]
+    Codec(#[from] CodecError),
+
+    #[error("failed to get list of tables")]
+    TableList(#[source] DbStorageError),
+
+    #[error(
+        "chain {chain:?} has different genesis hashes in the database ({:#}) & from an RPC \
+        server ({:#}), try to check RPC server URLs in the config for correctness",
+        H256::from(*expected),
+        H256::from(*given)
+    )]
+    GenesisMismatch {
+        chain: String,
+        expected: BlockHash,
+        given: BlockHash,
+    },
+
+    #[error(
+        "public key {:#} that was removed on {removed} has no matching seed among `{OLD_SEED}*`",
+        H256::from(*key)
+    )]
+    OldKeyNotFound { key: Public, removed: Timestamp },
+
+    #[error("current key {:#} has no matching seed among `{OLD_SEED}*`", H256::from(*.0))]
+    CurrentKeyNotFound(Public),
+
+    #[error(
+        "current system time is too far in the past or the future, \
+        check the system time for correctness"
+    )]
+    AbnormalSystemTime,
+}
+
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum DbErrorr {
     #[error("currency key isn't found")]
     CurrencyKeyNotFound,
 
@@ -296,16 +438,16 @@ pub enum DbError {
     DbEngineDown,
 
     #[error("database internal error is occurred")]
-    DbInternalError(#[from] DatabaseError),
+    DbInternalError(#[from] DatabaseErrorr),
 
     #[error("failed to start the database service")]
-    DbStartError(DatabaseError),
+    DbStartError(DatabaseErrorr),
 
     #[error("operating system related I/O error is occurred")]
     IoError(#[from] IoError),
 
     #[error("database storage decoding error is occurred")]
-    CodecError(#[from] ScaleError),
+    CodecError(#[from] CodecError),
 
     #[error("order {0:?} isn't found")]
     OrderNotFound(String),
@@ -523,7 +665,9 @@ mod pretty_cause {
 
         #[test]
         fn overload() {
-            let message = TestError::nested(OVERLOAD + 5).pretty_cause().to_string();
+            let message = TestError::nested(OVERLOAD.saturating_add(5))
+                .pretty_cause()
+                .to_string();
             let mut expected_message = String::with_capacity(message.len());
 
             expected_message.push_str("\n\nCaused by:");

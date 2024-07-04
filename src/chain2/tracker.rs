@@ -13,7 +13,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    chain::{
+    chain2::{
         definitions::{BlockHash, ChainTrackerRequest, EventFilter, Invoice},
         payout::payout,
         rpc::{
@@ -24,9 +24,9 @@ use crate::{
     },
     definitions::{api_v2::CurrencyProperties, Chain},
     error::ChainError,
-    signer::Signer,
+    signer2::Signer,
     state::State,
-    TaskTracker,
+    utils::task_tracker::TaskTracker,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -155,7 +155,7 @@ pub fn start_chain_watch(
                                 let signer_for_reaper = signer.interface();
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
                                     payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
-                                    Ok(format!("Payout attempt for order {id} terminated").into())
+                                    Ok(format!("Payout attempt for order {id} terminated"))
                                 });
                             }
                             ChainTrackerRequest::Shutdown(res) => {
@@ -167,11 +167,11 @@ pub fn start_chain_watch(
                     }
                 }
             }
-            Ok(format!("Chain {} monitor shut down", chain.name).into())
+            Ok(format!("Chain {} monitor shut down", chain.name))
         });
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChainWatcher {
     pub genesis_hash: BlockHash,
     pub metadata: RuntimeMetadataV15,
@@ -295,7 +295,7 @@ impl ChainWatcher {
             }
             // this should reset chain monitor on timeout;
             // but if this breaks, it means that the latter is already down either way
-            Ok(format!("Block watch at {rpc} stopped").into())
+            Ok(format!("Block watch at {rpc} stopped"))
         });
 
         Ok(chain)

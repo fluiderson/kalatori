@@ -5,7 +5,7 @@
 //! altogether (TODO)
 
 use crate::{
-    chain::{
+    chain2::{
         definitions::Invoice,
         rpc::{block_hash, current_block_number, send_stuff},
         tracker::ChainWatcher,
@@ -17,7 +17,7 @@ use crate::{
     },
     definitions::api_v2::TokenKind,
     error::ChainError,
-    signer::Signer,
+    signer2::Signer,
     state::State,
 };
 

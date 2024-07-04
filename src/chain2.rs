@@ -1,4 +1,4 @@
-//! Everything related to actual interaction with blockchain
+//! Everything related to the actual interaction with a blockchain.
 
 use std::collections::HashMap;
 
@@ -15,7 +15,7 @@ use crate::{
         Chain,
     },
     error::{ChainError, Error},
-    Signer, State, TaskTracker,
+    Signer, State, utils::task_tracker::TaskTracker,
 };
 
 pub mod definitions;
@@ -141,7 +141,7 @@ impl ChainManager {
                     }
                 }
 
-                Ok("Chain manager is shutting down".into())
+                Ok("Chain manager is shutting down")
             });
 
         Ok(Self { tx })

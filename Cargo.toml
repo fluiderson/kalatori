@@ -18,35 +18,49 @@ axum = { version = "0.7", default-features = false, features = [
     "json",
     "matched-path",
 ] }
-tracing-subscriber = { version = "0.3", default-features = false, features = [
-    "smallvec",
-    "ansi",
-    "env-filter",
-    "time",
-] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
 ureq = { version = "2", default-features = false, features = ["json"] }
 names = { version = "0.14", default-features = false }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-tracing = "0.1"
+serde = { version = "1", features = ["derive", "rc"] }
 scale-info = "2"
 axum-macros = "0.4"
-primitive-types = { version = "0.12", features = ["codec"] }
-jsonrpsee = { version = "0.23", features = ["ws-client"] }
+primitive-types = "0.12"
+jsonrpsee = { version = "0.24", features = ["ws-client"] }
 thiserror = "1"
 frame-metadata = "16"
 hex = "0.4"
-parity-scale-codec = "3"
+codec = { package = "parity-scale-codec", version = "3", features = [
+    "chain-error",
+] }
 serde_json = "1"
 sp-crypto-hashing = "0.1"
-toml_edit = { version = "0.22", features = ["serde"]}
+toml_edit = { version = "0.22", default-features = false, features = [
+    "serde",
+    "parse",
+    "perf",
+] }
 sled = "0.34"
 zeroize = "1.7"
-clap = { version = "4", features = ["derive", "cargo", "string", "env"] }
-shadow-rs = { version = "0.28", default-features = false }
-futures = "0.3"
+clap = { version = "4", features = [
+    "derive",
+    "cargo",
+    "env",
+    "string",
+    "wrap_help",
+    "deprecated",
+] }
+shadow-rs = { version = "0.30", default-features = false }
 ahash = "0.8"
+redb = "2"
+ruint = { version = "1", features = ["serde"] }
+const_format = "0.2"
+const-hex = "1"
+indexmap = "2"
+arrayvec = "0.7"
+time = "0.3"
 
 substrate_parser = { git = "https://github.com/Alzymologist/substrate-parser" }
 substrate-constructor = { git = "https://github.com/Alzymologist/substrate-constructor" }
@@ -54,7 +68,7 @@ mnemonic-external = { git = "https://github.com/Alzymologist/mnemonic-external" 
 substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-crypto-light" }
 
 [build-dependencies]
-shadow-rs = { version = "0.28", default-features = false, features = ["git2"] }
+shadow-rs = { version = "0.30", default-features = false, features = ["git2"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
@@ -66,6 +80,7 @@ strip = true
 lto = true
 codegen-units = 1
 panic = "abort"
+overflow-checks = true
 
 [lints.rust]
 future_incompatible = "warn"

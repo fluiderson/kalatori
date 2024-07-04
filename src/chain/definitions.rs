@@ -1,192 +1,246 @@
-//! Common objects for chain interaction system
-
+use crate::{arguments::ChainConfig, error::AccountFromStrError};
+use arrayvec::ArrayString;
+use const_hex::FromHexError;
 use jsonrpsee::ws_client::WsClient;
-use primitive_types::H256;
-use substrate_crypto_light::common::{AccountId32, AsBase58};
-use tokio::sync::oneshot;
-
-use crate::{
-    chain::{
-        rpc::{asset_balance_at_account, system_balance_at_account},
-        tracker::ChainWatcher,
-    },
-    definitions::{
-        api_v2::{OrderInfo, Timestamp},
-        Balance,
-    },
-    error::{ChainError, NotHex},
-    utils::unhex,
+use ruint::aliases::U256;
+use serde::{
+    de::{Error, Unexpected, Visitor},
+    Deserialize, Deserializer,
 };
+use std::{
+    fmt::{Debug, Display, Formatter, Result as FmtResult},
+    str::FromStr,
+    sync::Arc,
+};
+use substrate_crypto_light::common::{AccountId32, AsBase58};
 
-/// Abstraction to distinguish block hash from many other H256 things
-#[derive(Debug, Clone)]
-pub struct BlockHash(pub primitive_types::H256);
+#[derive(Debug)]
+pub struct ChainConnector(pub Arc<str>);
 
-impl BlockHash {
-    /// Convert block hash to RPC-friendly format
-    pub fn to_string(&self) -> String {
-        format!("0x{}", hex::encode(&self.0))
-    }
-
-    /// Convert string returned by RPC to typesafe block
-    ///
-    /// TODO: integrate nicely with serde
-    pub fn from_str(s: &str) -> Result<Self, crate::error::ChainError> {
-        let block_hash_raw = unhex(&s, NotHex::BlockHash)?;
-        Ok(BlockHash(H256(
-            block_hash_raw
-                .try_into()
-                .map_err(|_| ChainError::BlockHashLength)?,
-        )))
+impl Display for ChainConnector {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.write_str("the \"")?;
+        f.write_str(&self.0)?;
+        f.write_str("\" chain connector")
     }
 }
 
-#[derive(Debug)]
-pub struct EventFilter<'a> {
-    pub pallet: &'a str,
-    pub optional_event_variant: Option<&'a str>,
-}
-/*
-#[derive(Debug)]
-struct ChainProperties {
-    specs: ShortSpecs,
-    metadata: RuntimeMetadataV15,
-    existential_deposit: Option<Balance>,
-    assets_pallet: Option<AssetsPallet>,
-    block_hash_count: BlockNumber,
-    account_lifetime: BlockNumber,
-    depth: Option<NonZeroU64>,
-}
-
-#[derive(Debug)]
-struct AssetsPallet {
-    multi_location: Option<PalletIndex>,
-    assets: HashMap<AssetId, AssetProperties>,
-}
-
-#[derive(Debug)]
-struct AssetProperties {
-    min_balance: Balance,
-    decimals: Decimals,
-}
-
-#[derive(Debug)]
-pub struct Currency {
-    chain: String,
-    asset: Option<AssetId>,
-}
-
-#[derive(Debug)]
 pub struct ConnectedChain {
-    rpc: String,
-    client: WsClient,
-    genesis: BlockHash,
-    properties: ChainProperties,
+    pub config: ChainConfig,
+    pub genesis: BlockHash,
+    pub client: WsClient,
 }
 
-*/
-pub enum ChainRequest {
-    WatchAccount(WatchAccount),
-    Reap(WatchAccount),
-    Shutdown(oneshot::Sender<()>),
-}
+#[derive(Deserialize, Clone, Copy)]
+pub struct BlockHash(pub H256);
 
-#[derive(Debug)]
-pub struct WatchAccount {
-    pub id: String,
-    pub address: AccountId32,
-    pub currency: String,
-    pub amount: Balance,
-    pub recipient: AccountId32,
-    pub res: oneshot::Sender<Result<(), ChainError>>,
-    pub death: Timestamp,
-}
+#[derive(Clone, Copy)]
+pub struct H256(pub U256);
 
-impl WatchAccount {
-    pub fn new(
-        id: String,
-        order: OrderInfo,
-        recipient: AccountId32,
-        res: oneshot::Sender<Result<(), ChainError>>,
-    ) -> Result<WatchAccount, ChainError> {
-        Ok(WatchAccount {
-            id,
-            address: AccountId32::from_base58_string(&order.payment_account)
-                .map_err(ChainError::InvoiceAccount)?
-                .0,
-            currency: order.currency.currency,
-            amount: Balance::parse(order.amount, order.currency.decimals),
-            recipient,
-            res,
-            death: order.death,
-        })
-    }
-}
+impl<'de> Deserialize<'de> for H256 {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct H256Visitor;
 
-pub enum ChainTrackerRequest {
-    WatchAccount(WatchAccount),
-    NewBlock(String),
-    Reap(WatchAccount),
-    Shutdown(oneshot::Sender<()>),
-}
+        impl Visitor<'_> for H256Visitor {
+            type Value = H256;
 
-#[derive(Clone, Debug)]
-pub struct Invoice {
-    pub id: String,
-    pub address: AccountId32,
-    pub currency: String,
-    pub amount: Balance,
-    pub recipient: AccountId32,
-    pub death: Timestamp,
-}
+            fn expecting(&self, f: &mut Formatter<'_>) -> FmtResult {
+                f.write_str("a hexidecimal 64-character long string prefixed with \"0x\"")
+            }
 
-impl Invoice {
-    pub fn from_request(watch_account: WatchAccount) -> Self {
-        drop(watch_account.res.send(Ok(())));
-        Invoice {
-            id: watch_account.id,
-            address: watch_account.address,
-            currency: watch_account.currency,
-            amount: watch_account.amount,
-            recipient: watch_account.recipient,
-            death: watch_account.death,
+            fn visit_str<E: Error>(self, string: &str) -> Result<Self::Value, E> {
+                if let Some(stripped) = string.strip_prefix("0x") {
+                    H256::from_hex(stripped).map_err(Error::custom)
+                } else {
+                    Err(Error::invalid_value(
+                        Unexpected::Str(string),
+                        &"a string prefixed with \"0x\"",
+                    ))
+                }
+            }
         }
-    }
 
-    pub async fn balance(
-        &self,
-        client: &WsClient,
-        chain_watcher: &ChainWatcher,
-        block: &BlockHash,
-    ) -> Result<Balance, ChainError> {
-        let currency = chain_watcher
-            .assets
-            .get(&self.currency)
-            .ok_or(ChainError::InvalidCurrency(self.currency.clone()))?;
-        if let Some(asset_id) = currency.asset_id {
-            let balance = asset_balance_at_account(
-                client,
-                &block,
-                &chain_watcher.metadata,
-                &self.address,
-                asset_id,
-            )
-            .await?;
-            Ok(balance)
+        deserializer.deserialize_str(H256Visitor)
+    }
+}
+
+// Below are `H256` printing implementations.
+// For now, there's 3 option:
+// - `{}` prints `0x0000000000000000000000000000000000000000000000000000000000000000`.
+// - `{:#}` prints `"0x0000000000000000000000000000000000000000000000000000000000000000"`.
+// - `{:?}` prints `H256(0x0000000000000000000000000000000000000000000000000000000000000000)`.
+
+impl Debug for H256 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.debug_tuple(stringify!(H256))
+            .field(&H256Display(self.to_hex()))
+            .finish()
+    }
+}
+
+impl Display for H256 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        let hex = H256Display(self.to_hex());
+
+        if f.alternate() {
+            f.write_str("\"")?;
+            hex.fmt(f)?;
+
+            f.write_str("\"")
         } else {
-            let balance =
-                system_balance_at_account(client, &block, &chain_watcher.metadata, &self.address)
-                    .await?;
-            Ok(balance)
+            hex.fmt(f)
         }
     }
+}
 
-    pub async fn check(
-        &self,
-        client: &WsClient,
-        chain_watcher: &ChainWatcher,
-        block: &BlockHash,
-    ) -> Result<bool, ChainError> {
-        Ok(self.balance(client, chain_watcher, block).await? >= self.amount)
+struct H256Display(ArrayString<{ H256::HEX_LENGTH }>);
+
+impl Debug for H256Display {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.write_str("0x")?;
+
+        f.write_str(&self.0)
     }
 }
+
+impl H256 {
+    pub const HEX_LENGTH: usize = U256::BYTES * 2;
+
+    pub fn from_hex(string: impl AsRef<[u8]>) -> Result<Self, FromHexError> {
+        const_hex::decode_to_array(string.as_ref())
+            .map(|array| Self(U256::from_be_bytes::<{ U256::BYTES }>(array)))
+    }
+
+    #[allow(clippy::wrong_self_convention)]
+    pub fn to_hex(&self) -> ArrayString<{ Self::HEX_LENGTH }> {
+        let mut array = [0; Self::HEX_LENGTH];
+
+        const_hex::encode_to_slice(self.to_be_bytes(), &mut array).unwrap();
+        ArrayString::from_byte_string(&array).unwrap()
+    }
+
+    pub fn from_be_bytes(bytes: impl Into<[u8; U256::BYTES]>) -> Self {
+        Self(U256::from_be_bytes(bytes.into()))
+    }
+
+    #[allow(clippy::wrong_self_convention)]
+    pub fn to_be_bytes(&self) -> [u8; U256::BYTES] {
+        self.0.to_le_bytes()
+    }
+}
+
+pub struct Account(u16, [u8; 32]);
+
+impl FromStr for Account {
+    type Err = AccountFromStrError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const SUBSTRATE_PREFIX: u16 = 42;
+
+        let (account, prefix) = if let Some(stripped) = s.strip_prefix("0x") {
+            H256::from_hex(stripped).map(|hash| (hash.to_be_bytes(), SUBSTRATE_PREFIX))?
+        } else {
+            AccountId32::from_base58_string(s).map(|(account, p)| (account.0, p))?
+        };
+
+        Ok(Self(prefix, account))
+    }
+}
+
+// #[derive(Clone, Copy)]
+// pub struct RootChainIntervals {
+//     restart_gap: Option<ChainInterval>,
+//     account_lifetime: Option<ChainInterval>,
+// }
+
+// impl RootChainIntervals {
+//     pub fn new(config: &ArgChainIntervals) -> Result<Self, Error> {
+//         Ok(Self {
+//             restart_gap: ChainInterval::root(config.restart_gap, config.restart_gap_in_blocks)
+//                 .map_err(|e| Error::ConfigRootIntervals(ChainIntervalField::RestartGap, e))?,
+//             account_lifetime: ChainInterval::root(
+//                 config.account_lifetime,
+//                 config.account_lifetime_in_blocks,
+//             )
+//             .map_err(|e| Error::ConfigRootIntervals(ChainIntervalField::AccountLifetime, e))?,
+//         })
+//     }
+// }
+
+// pub struct ChainIntervals {
+//     pub restart_gap: ChainInterval,
+//     pub account_lifetime: ChainInterval,
+// }
+
+// impl ChainIntervals {
+//     pub fn new(root: RootChainIntervals, chain: &ArgChainIntervals) -> Result<Self, TaskError> {
+//         Ok(Self {
+//             restart_gap: ChainInterval::chain(root, chain.restart_gap, chain.restart_gap_in_blocks)
+//                 .map_err(|e| TaskError::ChainInterval(ChainIntervalField::RestartGap, e))?,
+//             account_lifetime: ChainInterval::chain(
+//                 root,
+//                 chain.account_lifetime,
+//                 chain.account_lifetime_in_blocks,
+//             )
+//             .map_err(|e| TaskError::ChainInterval(ChainIntervalField::AccountLifetime, e))?,
+//         })
+//     }
+// }
+
+// #[derive(Clone, Copy)]
+// pub enum ChainInterval {
+//     Time(Timestamp),
+//     Blocks(BlockNumber),
+// }
+
+// impl ChainInterval {
+//     fn new(
+//         time: Option<Timestamp>,
+//         blocks: Option<BlockNumber>,
+//     ) -> Result<Self, ChainIntervalError> {
+//         match (time, blocks) {
+//             (None, None) => Err(ChainIntervalError::NotSet),
+//             (Some(_), Some(_)) => Err(ChainIntervalError::DoubleSet),
+//             (None, Some(b)) => Ok(Self::Blocks(b)),
+//             (Some(t), None) => Ok(Self::Time(t)),
+//         }
+//     }
+
+//     fn chain(
+//         root: RootChainIntervals,
+//         time: Option<Timestamp>,
+//         blocks: Option<BlockNumber>,
+//     ) -> Result<Self, ChainIntervalError> {
+//         match ChainInterval::new(time, blocks) {
+//             Ok(ci) => Ok(ci),
+//             Err(error @ ChainIntervalError::NotSet) => root.restart_gap.ok_or(error),
+//             Err(error @ ChainIntervalError::DoubleSet) => Err(error),
+//         }
+//     }
+
+//     fn root(
+//         time: Option<Timestamp>,
+//         blocks: Option<BlockNumber>,
+//     ) -> Result<Option<Self>, ChainIntervalError> {
+//         match Self::new(time, blocks) {
+//             Ok(ci) => Ok(Some(ci)),
+//             Err(ChainIntervalError::NotSet) => Ok(None),
+//             Err(error @ ChainIntervalError::DoubleSet) => Err(error),
+//         }
+//     }
+// }
+
+// #[derive(Debug)]
+// pub enum ChainIntervalField {
+//     RestartGap,
+//     AccountLifetime,
+// }
+
+// impl Display for ChainIntervalField {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+//         f.write_str(match self {
+//             ChainIntervalField::RestartGap => "\"restart-gap\"",
+//             ChainIntervalField::AccountLifetime => "\"account-lifetime\"",
+//         })
+//     }
+// }
