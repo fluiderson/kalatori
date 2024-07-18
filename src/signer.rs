@@ -25,8 +25,6 @@ use substrate_crypto_light::{
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroize;
 
-const SEED: &str = "KALATORI_SEED";
-
 /// Signer handle
 pub struct Signer {
     tx: mpsc::Sender<SignerRequest>,
@@ -34,10 +32,14 @@ pub struct Signer {
 
 impl Signer {
     /// Run once to initialize; this should do **all** secret management
-    pub fn init(recipient: AccountId32, task_tracker: TaskTracker) -> Result<Self, Error> {
+    pub fn init(
+        recipient: AccountId32,
+        task_tracker: TaskTracker,
+        seed: String,
+    ) -> Result<Self, Error> {
         let (tx, mut rx) = mpsc::channel(16);
         task_tracker.spawn("Signer", async move {
-            let mut seed_entropy = parse_seeds()?; // TODO: shutdown on failure
+            let mut seed_entropy = entropy_from_phrase(&seed)?; // TODO: shutdown on failure
             while let Some(request) = rx.recv().await {
                 match request {
                     SignerRequest::PublicKey(request) => {
@@ -98,7 +100,7 @@ impl Signer {
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
         let _unused = self.tx.send(SignerRequest::Shutdown(tx)).await;
-        let _ = rx.await;
+        // let _ = rx.await;
     }
 
     /// Clone wrapper in case we need to make it more complex later
@@ -135,14 +137,9 @@ struct Sign {
     res: oneshot::Sender<Result<Signature, SignerError>>,
 }
 
-/// Read seeds from env
-///
-/// TODO: read also old seeds and do something about them
-fn parse_seeds() -> Result<Entropy, SignerError> {
-    entropy_from_phrase(&env::var(SEED).map_err(|_| SignerError::Env(SEED.to_string()))?)
-}
-
 /// Convert seed phrase to entropy
+///
+/// TODO: handle also old seeds and do something about them
 pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, SignerError> {
     let mut word_set = WordSet::new();
     for word in seed.split(' ') {
@@ -151,7 +148,7 @@ pub fn entropy_from_phrase(seed: &str) -> Result<Entropy, SignerError> {
     Ok(word_set.to_entropy()?)
 }
 
-/// Standartized derivation protocol
+/// Standardized derivation protocol
 pub fn derivations<'a>(recipient: &'a str, order: &'a str) -> FullDerivation<'a> {
     FullDerivation {
         junctions: vec![DeriveJunction::hard(recipient), DeriveJunction::hard(order)],

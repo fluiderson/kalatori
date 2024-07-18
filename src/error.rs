@@ -1,36 +1,38 @@
-use crate::definitions::api_v2::OrderStatus;
+use crate::{
+    arguments::{OLD_SEED, SEED},
+    definitions::api_v2::OrderStatus,
+};
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::core::ClientError;
 use mnemonic_external::error::ErrorWordList;
 use parity_scale_codec::Error as ScaleError;
+use serde_json::Error as JsonError;
 use serde_json::Value;
 use sled::Error as DatabaseError;
-use std::net::SocketAddr;
-use std::{
-    error::Error as StdError,
-    fmt::{Display, Formatter, Result},
-    io::Error as IoError,
-};
+use std::{borrow::Cow, io::Error as IoError, net::SocketAddr};
 use substrate_constructor::error::{ErrorFixMe, StorageRegistryError};
 use substrate_crypto_light::error::Error as CryptoError;
 use substrate_parser::error::{MetaVersionErrorPallets, ParserError, RegistryError, StorageError};
 use thiserror::Error;
 use tokio::task::JoinError;
-use toml::de::Error as TomlError;
+use toml_edit::de::Error as TomlError;
+use tracing_subscriber::filter::ParseError;
+
+pub use pretty_cause::PrettyCause;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("failed to read the {0:?} environment variable")]
-    Env(String),
+    #[error("failed to read a seed environment variable")]
+    SeedEnv(#[from] SeedEnvError),
 
     #[error("failed to read the config file at {0:?}")]
-    ConfigFileRead(String),
+    ConfigFileRead(String, #[source] IoError),
 
     #[error("failed to parse the config")]
     ConfigFileParse(#[from] TomlError),
 
-    #[error("failed to parse the config parameter {0:?}")]
-    ConfigParse(String),
+    #[error("failed to parse the config parameter `{0}`")]
+    ConfigParse(&'static str),
 
     #[error("chain {0:?} doesn't have any `endpoints` in the config")]
     EmptyEndpoints(String),
@@ -51,7 +53,13 @@ pub enum Error {
     Signer(#[from] SignerError),
 
     #[error("failed to listen for the shutdown signal")]
-    ShutdownSignal,
+    ShutdownSignal(#[source] IoError),
+
+    #[error("failed to initialize the asynchronous runtime")]
+    Runtime(#[source] IoError),
+
+    #[error("failed to parse given filter directives for the logger ({0:?})")]
+    LoggerDirectives(String, #[source] ParseError),
 
     #[error("receiver account couldn't be parsed")]
     RecipientAccount(#[from] CryptoError),
@@ -59,11 +67,18 @@ pub enum Error {
     #[error("fatal error is occurred")]
     Fatal,
 
-    #[error("operating system related I/O error is occurred")]
-    Io(#[from] IoError),
-
     #[error("found duplicate config record for the token {0:?}")]
     DuplicateCurrency(String),
+}
+
+#[derive(Debug, Error)]
+pub enum SeedEnvError {
+    #[error("one of the `{OLD_SEED}*` variables has an invalid Unicode key")]
+    InvalidUnicodeOldSeedKey,
+    #[error("`{0}` variable contains an invalid Unicode text")]
+    InvalidUnicodeValue(Cow<'static, str>),
+    #[error("`{SEED}` isn't present")]
+    SeedNotPresent,
 }
 
 #[derive(Debug, Error)]
@@ -266,6 +281,9 @@ pub enum ChainError {
         actual: String,
         rpc: String,
     },
+
+    #[error("failed to parse JSON data from a block stream")]
+    Serde(#[from] JsonError),
 }
 
 #[derive(Debug, Error)]
@@ -382,61 +400,195 @@ pub enum NotHex {
     StorageValue,
 }
 
-pub struct PrettyCauseWrapper<'a, T>(&'a T);
+mod pretty_cause {
+    use std::{
+        error::Error,
+        fmt::{Display, Formatter, Result},
+    };
 
-pub trait PrettyCause<T> {
-    fn pretty_cause(&self) -> PrettyCauseWrapper<'_, T>;
-}
+    const OVERLOAD: u16 = 9999;
 
-impl<T: StdError> PrettyCause<T> for T {
-    fn pretty_cause(&self) -> PrettyCauseWrapper<'_, T> {
-        PrettyCauseWrapper(self)
+    pub struct Wrapper<'a, T>(&'a T);
+
+    pub trait PrettyCause<T> {
+        fn pretty_cause(&self) -> Wrapper<'_, T>;
     }
-}
 
-impl<T: StdError> Display for PrettyCauseWrapper<'_, T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        let Some(cause) = self.0.source() else {
-            // If an error has no source, print nothing.
-            return Ok(());
+    impl<T: Error> PrettyCause<T> for T {
+        fn pretty_cause(&self) -> Wrapper<'_, T> {
+            Wrapper(self)
+        }
+    }
+
+    impl<T: Error> Display for Wrapper<'_, T> {
+        fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+            let Some(cause) = self.0.source() else {
+                // If an error has no source, print nothing.
+                return Ok(());
+            };
+
+            f.write_str("\n\nCaused by:")?;
+
+            let Some(mut another_cause) = cause.source() else {
+                // If an error's source error has no source, print a cause in one line.
+
+                f.write_str(" ")?;
+
+                Display::fmt(&cause, f)?;
+
+                return f.write_str(".");
+            };
+
+            // Otherwise, print a numbered list of error sources.
+
+            let mut number = 0u16;
+
+            print_cause(f, cause, number)?;
+
+            loop {
+                if number == OVERLOAD {
+                    break;
+                }
+
+                number = number.saturating_add(1);
+
+                print_cause(f, another_cause, number)?;
+
+                if let Some(one_more_cause) = another_cause.source() {
+                    another_cause = one_more_cause;
+                } else {
+                    return Ok(());
+                }
+            }
+
+            loop {
+                print_cause(f, another_cause, shadow_rs::formatcp!(">{OVERLOAD}"))?;
+
+                if let Some(one_more_cause) = another_cause.source() {
+                    another_cause = one_more_cause;
+                } else {
+                    break Ok(());
+                }
+            }
+        }
+    }
+
+    fn print_cause(
+        f: &mut Formatter<'_>,
+        cause: &(impl Error + ?Sized),
+        number: impl Display,
+    ) -> Result {
+        f.write_str("\n")?;
+
+        write!(f, "{number:>5}")?;
+
+        f.write_str(": ")?;
+
+        Display::fmt(cause, f)?;
+
+        f.write_str(".")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{PrettyCause, OVERLOAD};
+        use std::{
+            error::Error,
+            fmt::{Debug, Display, Formatter, Result, Write},
         };
 
-        f.write_str("\n\nCaused by:")?;
+        #[test]
+        fn empty() {
+            assert!(TestError::empty().pretty_cause().to_string().is_empty());
+        }
 
-        let Some(mut another_cause) = cause.source() else {
-            // If an error's source error has no source, print a cause in one line.
+        #[test]
+        fn single() {
+            const MESSAGE: &str = "\n\nCaused by: TestError(0).";
 
-            f.write_str(" ")?;
+            assert_eq!(TestError::nested(1).pretty_cause().to_string(), MESSAGE);
+        }
 
-            Display::fmt(&cause, f)?;
+        #[test]
+        fn multiple() {
+            const MESSAGE: &str = indoc::indoc! {"
+                \n\nCaused by:
+                    0: TestError(2).
+                    1: TestError(1).
+                    2: TestError(0)."
+            };
 
-            return f.write_str(".");
-        };
-        let mut number = 0u64;
+            assert_eq!(TestError::nested(3).pretty_cause().to_string(), MESSAGE);
+        }
 
-        let mut print_cause = |cause_to_print, number_to_print| {
-            f.write_str("\n")?;
+        #[test]
+        fn overload() {
+            let message = TestError::nested(OVERLOAD + 5).pretty_cause().to_string();
+            let mut expected_message = String::with_capacity(message.len());
 
-            write!(f, "{number_to_print:>5}: ")?;
+            expected_message.push_str("\n\nCaused by:");
 
-            Display::fmt(cause_to_print, f)?;
+            for number in 0..=OVERLOAD {
+                write!(
+                    expected_message,
+                    "\n{number:>5}: {}.",
+                    TestError {
+                        source: None,
+                        number: OVERLOAD + 4 - number
+                    }
+                )
+                .unwrap();
+            }
 
-            f.write_str(".")
-        };
+            expected_message.push_str(indoc::indoc! {"
+                \n>9999: TestError(3).
+                >9999: TestError(2).
+                >9999: TestError(1).
+                >9999: TestError(0)."
+            });
 
-        // Otherwise, print a numbered list of error sources.
+            assert_eq!(message, expected_message);
+        }
 
-        print_cause(cause, number)?;
+        #[derive(Debug)]
+        struct TestError {
+            source: Option<Box<TestError>>,
+            number: u16,
+        }
 
-        loop {
-            number = number.saturating_add(1);
+        impl TestError {
+            fn empty() -> Self {
+                Self {
+                    source: None,
+                    number: 0,
+                }
+            }
 
-            print_cause(another_cause, number)?;
+            fn nested(nest: u16) -> Self {
+                let mut e = Self::empty();
 
-            if let Some(one_more_cause) = another_cause.source() {
-                another_cause = one_more_cause;
-            } else {
-                break Ok(());
+                for _ in 0..nest {
+                    e = Self {
+                        number: e.number.saturating_add(1),
+                        source: Some(e.into()),
+                    };
+                }
+
+                e
+            }
+        }
+
+        impl Display for TestError {
+            fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+                f.debug_tuple(stringify!(TestError))
+                    .field(&self.number)
+                    .finish()
+            }
+        }
+
+        impl Error for TestError {
+            fn source(&self) -> Option<&(dyn Error + 'static)> {
+                self.source.as_ref().map(|e| e as _)
             }
         }
     }
