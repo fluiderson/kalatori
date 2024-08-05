@@ -1,20 +1,15 @@
 use crate::{
     chain2::ChainManager,
-    database2::Database,
-    definitions::{
-        api_v2::{
-            CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse,
-            OrderStatus, ServerInfo, ServerStatus,
-        },
-        Entropy,
+    database::{definitions::Timestamp, Database},
+    definitions::api_v2::{
+        CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse, OrderStatus,
+        ServerInfo, ServerStatus,
     },
     error::{Error, OrderError},
-    signer2::Signer,
-    ConfigWoChains, TaskTracker,
+    signer::Signer,
+    TaskTracker,
 };
-
-use std::collections::HashMap;
-
+use std::{collections::HashMap, sync::Arc};
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -28,18 +23,16 @@ pub struct State {
 
 impl State {
     pub fn initialise(
-        signer: Signer,
-        ConfigWoChains {
-            recipient,
-            debug,
-            remark,
-        }: ConfigWoChains,
-        db: Database,
+        signer: Arc<Signer>,
+        debug: Option<bool>,
+        remark: Option<String>,
+        db: Arc<Database>,
         chain_manager: oneshot::Receiver<ChainManager>,
-        instance_id: String,
         task_tracker: TaskTracker,
         shutdown_notification: CancellationToken,
-    ) -> Result<Self, Error> {
+        recipient: AccountId32,
+        account_lifetime: Timestamp,
+    ) -> Self {
         /*
             currencies: HashMap<String, CurrencyProperties>,
             recipient: AccountId,
@@ -56,9 +49,9 @@ impl State {
         let server_info = ServerInfo {
             // TODO
             version: env!("CARGO_PKG_VERSION").to_string(),
-            instance_id: instance_id.clone(),
             debug: debug.unwrap_or_default(),
             kalatori_remark: remark.clone(),
+            instance_id: db.instance().to_string(),
         };
 
         // Remember to always spawn async here or things might deadlock
@@ -69,23 +62,29 @@ impl State {
             let currencies = HashMap::new();
             let mut state = StateData {
                 currencies,
-                recipient,
                 server_info,
                 db,
                 chain_manager,
                 signer,
+                recipient,
+                account_lifetime,
             };
 
             // TODO: consider doing this even more lazy
-            let order_list = db_wakeup.order_list().await?;
-            task_tracker.spawn("Restore saved orders", async move {
-                for (order, order_details) in order_list {
-                    chain_manager_wakeup
-                        .add_invoice(order, order_details, state.recipient)
-                        .await;
-                }
-                Ok("All saved orders restored")
-            });
+            if let Some(orders) = db_wakeup.read()?.orders()? {
+                    let order_list = orders.active_order_list()?;
+
+                    task_tracker.spawn("Restore saved orders", async move {
+                        for result in order_list {
+                            let (order, order_details) = result?;
+
+                            chain_manager_wakeup
+                                .add_invoice(order, order_details, recipient)
+                                .await;
+                        }
+                        Ok("All saved orders restored")
+                    });
+            }
 
             loop {
                 tokio::select! {
@@ -122,7 +121,7 @@ impl State {
                             }
                             StateAccessRequest::OrderPaid(id) => {
                                 // Only perform actions if the record is saved in ledger
-                                match state.db.mark_paid(id.clone()).await {
+                                match state.db.write(|tx| tx.orders()?.mark_paid(&id)) {
                                     Ok(order) => {
                                         // TODO: callback here
                                         drop(state.chain_manager.reap(id, order, state.recipient).await);
@@ -130,7 +129,7 @@ impl State {
                                     Err(e) => {
                                         tracing::error!(
                                             "Order was paid but this could not be recorded! {e:?}"
-                                        )
+                                        );
                                     }
                                 }
                             }
@@ -144,12 +143,6 @@ impl State {
                         // happens, we should record it in db.
                         state.chain_manager.shutdown().await;
 
-                        // Now that nothing happens we can wind down the ledger
-                        state.db.shutdown().await;
-
-                        // Try to zeroize secrets
-                        state.signer.shutdown().await;
-
                         // And shut down finally
                         break;
                     }
@@ -159,7 +152,7 @@ impl State {
             Ok("State handler is shutting down")
         });
 
-        Ok(Self { tx })
+        Self { tx }
     }
 
     pub async fn connect_chain(&self, assets: HashMap<String, CurrencyProperties>) {
@@ -249,11 +242,12 @@ struct CreateInvoice {
 
 struct StateData {
     currencies: HashMap<String, CurrencyProperties>,
-    recipient: AccountId32,
     server_info: ServerInfo,
-    db: Database,
+    db: Arc<Database>,
     chain_manager: ChainManager,
-    signer: Signer,
+    signer: Arc<Signer>,
+    recipient: AccountId32,
+    account_lifetime: Timestamp,
 }
 
 impl StateData {
@@ -262,7 +256,11 @@ impl StateData {
     }
 
     async fn get_invoice_status(&self, order: String) -> Result<OrderResponse, Error> {
-        if let Some(order_info) = self.db.read_order(order.clone()).await? {
+        let Some(orders) = self.db.read()?.orders()? else {
+            return Ok(OrderResponse::NotFound);
+        };
+
+        if let Some(order_info) = orders.read_order(&order)? {
             let message = String::new(); //TODO
             Ok(OrderResponse::FoundOrder(OrderStatus {
                 order,
@@ -285,12 +283,16 @@ impl StateData {
             .get(&order_query.currency)
             .ok_or(OrderError::UnknownCurrency)?;
         let currency = currency.info(order_query.currency.clone());
-        let payment_account = self.signer.public(order.clone(), currency.ss58).await?;
-        match self
-            .db
-            .create_order(order.clone(), order_query, currency, payment_account)
-            .await?
-        {
+        let payment_account = self.signer.public(order.clone(), currency.ss58.into())?;
+        match self.db.write(|tx| {
+            tx.orders()?.create_order(
+                &order,
+                order_query,
+                currency,
+                payment_account,
+                self.account_lifetime,
+            )
+        })? {
             OrderCreateResponse::New(new_order_info) => {
                 self.chain_manager
                     .add_invoice(order.clone(), new_order_info.clone(), self.recipient)

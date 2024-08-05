@@ -1,6 +1,6 @@
 use crate::{
     arguments::{OLD_SEED, SEED},
-    chain::definitions::H256,
+    chain::definitions::{ChainIntervalField, H256},
     database::{
         definitions::{BlockHash, Public, Timestamp, Version},
         DB_VERSION,
@@ -11,7 +11,7 @@ use crate::{
 use codec::Error as CodecError;
 use const_hex::FromHexError;
 use frame_metadata::v15::RuntimeMetadataV15;
-use jsonrpsee::core::ClientError;
+use jsonrpsee::core::ClientError as RpcError;
 use mnemonic_external::error::ErrorWordList;
 use redb::{
     CommitError, CompactionError, DatabaseError, StorageError as DbStorageError, TableError,
@@ -20,7 +20,7 @@ use redb::{
 use serde_json::Error as JsonError;
 use serde_json::Value;
 use sled::Error as DatabaseErrorr;
-use std::{io::Error as IoError, net::SocketAddr, str::Utf8Error};
+use std::{io::Error as IoError, net::SocketAddr, str::Utf8Error, time::SystemTimeError};
 use substrate_constructor::error::{ErrorFixMe, StorageRegistryError};
 use substrate_crypto_light::error::Error as CryptoError;
 use substrate_parser::error::{MetaVersionErrorPallets, ParserError, RegistryError, StorageError};
@@ -60,8 +60,9 @@ pub enum Error {
     #[error("failed to parse the recipient parameter")]
     RecipientParse(#[from] AccountFromStrError),
 
-    // #[error("failed to parse the chain interval {0} in the config root")]
-    // ConfigRootIntervals(ChainIntervalField, #[source] ChainIntervalError),
+    #[error("failed to parse the chain interval {0} in the config root")]
+    ConfigRootIntervals(ChainIntervalField, #[source] ChainIntervalError),
+
     #[error("failed to parse the config parameter `{0}`")]
     ConfigParse(&'static str),
 
@@ -93,16 +94,14 @@ pub enum Error {
     DuplicateCurrency(String),
 }
 
-const SEED_ENV_INVALID_UNICODE: &str = "` variable contains an invalid Unicode text";
-
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
 pub enum SeedEnvError {
     #[error("one of the `{OLD_SEED}*` variables has an invalid Unicode text in the name")]
     InvalidUnicodeOldKey(#[from] Utf8Error),
-    #[error("`{SEED}{SEED_ENV_INVALID_UNICODE}")]
+    #[error("`{SEED}` variable contains an invalid Unicode text")]
     InvalidUnicodeValue,
-    #[error("`{OLD_SEED}{0}{SEED_ENV_INVALID_UNICODE}")]
+    #[error("`{OLD_SEED}{0}` variable contains an invalid Unicode text")]
     InvalidUnicodeOldValue(String),
     #[error("`{SEED}` is required & not set")]
     NotSet,
@@ -115,28 +114,66 @@ pub enum SeedEnvError {
 pub enum TaskError {
     #[error("chain has no endpoint in the config")]
     NoChainEndpoints,
+
+    #[error("got an API error")]
+    Api(#[from] ApiError),
+
     #[error("got an RPC error")]
     Rpc(#[from] RpcError),
-    #[error("found 2 chains with the same name in the config (see the connector name above)")]
+
+    #[error(
+        "found 2 or more chains with the same name in the config (see the connector name above)"
+    )]
     ChainDuplicate,
+
+    #[error("config of this chain contains 2 or more identical endpoints")]
+    DuplicateEndpoints,
+
+    #[error("failed to parse the chain interval {0} for this chain")]
+    ChainInterval(ChainIntervalField, #[source] ChainIntervalError),
 }
 
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
 pub enum ChainIntervalError {
-    #[error("chain interval isn't set")]
+    #[error("chain interval isn't set neither in the config nor for this chain")]
     NotSet,
-    #[error("received 2 values for an interval parameter that expects only 1, choose between blocks (`*_in_blocks`) & time")]
+
+    #[error(
+        "received 2 values for an interval parameter that expects only 1, \
+        choose between blocks (`*_in_blocks`) & time"
+    )]
     DoubleSet,
 }
 
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
-pub enum RpcError {
-    #[error("failed to construct a connection to an RPC endpoint")]
-    Connection(#[source] ClientError),
+pub enum ApiError {
     #[error("failed to fetch the genesis hash")]
-    GenesisHash(#[source] ClientError),
+    GenesisHash(#[source] RpcError),
+    // #[error("failed to fetch the finalized head")]
+    // FinalizedHead(#[source] RpcError),
+
+    // #[error("failed to fetch the runtime version")]
+    // RuntimeVersion(#[source] RpcError),
+
+    // #[error("failed to decode the runtime metadata")]
+    // MetadataDecode(#[from] CodecError),
+
+    // #[error("fetched metadata has an unexpected prefix")]
+    // UnexpectedMetadataPrefix,
+
+    // #[error("fetched metadata of an unsupprted version")]
+    // UnsupportedMetadataVersion,
+
+    // #[error("runtime metadata has no {0} pallet")]
+    // PalletNotFound(Pallet),
+
+    // #[error("failed to find {0}")]
+    // ConstantNotFound(Constant),
+
+    // #[error("got an error from the SCALE parser")]
+    // Parser(#[from] ParserError<()>),
 }
 
 #[derive(Debug, Error)]
@@ -192,7 +229,7 @@ pub enum ChainError {
     BlockHashLength,
 
     #[error("WS client error is occurred")]
-    Client(#[from] ClientError),
+    Client(#[from] RpcError),
 
     #[error("threading error is occurred")]
     Tokio(#[from] JoinError),
@@ -344,19 +381,15 @@ pub enum ChainError {
     Serde(#[from] JsonError),
 }
 
-const ACCOUNT_FROM_STR_FAILED: &str = "failed to parse an address string in the ";
-
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
 pub enum AccountFromStrError {
-    #[error("{ACCOUNT_FROM_STR_FAILED}hexadecimal format")]
+    #[error("failed to parse an address string in the hexadecimal format")]
     Hex(#[from] FromHexError),
 
-    #[error("{ACCOUNT_FROM_STR_FAILED}SS58 format")]
+    #[error("failed to parse an address string in the SS58 format")]
     Ss58(#[from] CryptoError),
 }
-
-const DB_ERROR_NO_VALUE: &str = "existing database doesn't contain ";
 
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
@@ -365,7 +398,10 @@ pub enum DbError {
     Initialization(#[from] DatabaseError),
 
     #[error("failed to create a write transaction")]
-    WriteTx(#[from] TransactionError),
+    TxWrite(#[source] TransactionError),
+
+    #[error("failed to create a read transaction")]
+    TxRead(#[source] TransactionError),
 
     #[error("failed to commit a transaction")]
     Commit(#[from] CommitError),
@@ -379,16 +415,22 @@ pub enum DbError {
     #[error("failed to delete a table")]
     DeleteTable(#[source] TableError),
 
-    #[error("failed to insert a value into the database")]
+    #[error("failed to insert a value")]
     Insert(#[source] DbStorageError),
 
-    #[error("failed to get a value from the database")]
+    #[error("failed to get a value")]
     Get(#[source] DbStorageError),
 
-    #[error("{DB_ERROR_NO_VALUE}its format version")]
+    #[error("failed to get a range")]
+    Range(#[source] DbStorageError),
+
+    #[error("failed to get the next element from a range")]
+    RangeIter(#[source] DbStorageError),
+
+    #[error("existing database doesn't contain its format version")]
     NoVersion,
 
-    #[error("{DB_ERROR_NO_VALUE}the daemon info")]
+    #[error("existing database doesn't contain the daemon info")]
     NoDaemonInfo,
 
     #[error("database contains an invalid format version ({}), expected {}", .0 .0, DB_VERSION.0)]
@@ -421,11 +463,29 @@ pub enum DbError {
     #[error("current key {:#} has no matching seed among `{OLD_SEED}*`", H256::from(*.0))]
     CurrentKeyNotFound(Public),
 
+    #[error("failed to create a timestamp")]
+    Timestamp(#[from] TimestampError),
+
+    #[error("order {0:?} isn't found")]
+    OrderNotFound(String),
+
+    #[error("order {0:?} is already paid")]
+    OrderAlreadyPaid(String),
+}
+
+#[derive(Debug, Error)]
+#[allow(clippy::module_name_repetitions)]
+pub enum TimestampError {
+    #[error("system clock's drifted backwards")]
+    ClockDrift(#[from] SystemTimeError),
+
     #[error(
-        "current system time is too far in the past or the future, \
-        check the system time for correctness"
+        "given parameters for a timestamp were too big & resulted in an overflow, \
+        a timestamp can't store more than {} milliseconds (be later than {})",
+        Timestamp::MAX,
+        Timestamp::MAX_STRING
     )]
-    AbnormalSystemTime,
+    Overflow,
 }
 
 #[derive(Debug, Error)]
@@ -564,6 +624,12 @@ mod pretty_cause {
 
     impl<T: Error> Display for Wrapper<'_, T> {
         fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+            f.write_str("\n    ")?;
+
+            Display::fmt(&self.0, f)?;
+
+            f.write_str(".")?;
+
             let Some(cause) = self.0.source() else {
                 // If an error has no source, print nothing.
                 return Ok(());
@@ -640,13 +706,21 @@ mod pretty_cause {
         };
 
         #[test]
-        fn empty() {
-            assert!(TestError::empty().pretty_cause().to_string().is_empty());
+        fn no_cause() {
+            assert_eq!(
+                TestError::no_source().pretty_cause().to_string(),
+                "\n    TestError(0)."
+            );
         }
 
         #[test]
         fn single() {
-            const MESSAGE: &str = "\n\nCaused by: TestError(0).";
+            const MESSAGE: &str = indoc::indoc! {"
+
+                    TestError(1).
+
+                Caused by: TestError(0)."
+            };
 
             assert_eq!(TestError::nested(1).pretty_cause().to_string(), MESSAGE);
         }
@@ -654,7 +728,10 @@ mod pretty_cause {
         #[test]
         fn multiple() {
             const MESSAGE: &str = indoc::indoc! {"
-                \n\nCaused by:
+
+                    TestError(3).
+
+                Caused by:
                     0: TestError(2).
                     1: TestError(1).
                     2: TestError(0)."
@@ -670,7 +747,13 @@ mod pretty_cause {
                 .to_string();
             let mut expected_message = String::with_capacity(message.len());
 
-            expected_message.push_str("\n\nCaused by:");
+            // expected_message.push_str("\n\nCaused by:");
+            expected_message.push_str(indoc::indoc! {"
+
+                TestError(10004).
+
+            Caused by:"
+            });
 
             for number in 0..=OVERLOAD {
                 write!(
@@ -701,7 +784,7 @@ mod pretty_cause {
         }
 
         impl TestError {
-            fn empty() -> Self {
+            fn no_source() -> Self {
                 Self {
                     source: None,
                     number: 0,
@@ -709,7 +792,7 @@ mod pretty_cause {
             }
 
             fn nested(nest: u16) -> Self {
-                let mut e = Self::empty();
+                let mut e = Self::no_source();
 
                 for _ in 0..nest {
                     e = Self {

@@ -1,11 +1,11 @@
 use crate::{
     arguments::Chain,
-    database::Database,
     error::{Error, TaskError},
     utils::task_tracker::ShortTaskTracker,
 };
 use ahash::RandomState;
-use indexmap::{map::Entry, IndexMap};
+use indexmap::{map::Entry, IndexMap, IndexSet};
+use jsonrpsee::ws_client::{PingConfig, WsClientBuilder};
 use std::sync::Arc;
 use tokio::sync::{
     mpsc::{self, Sender as MpscSender},
@@ -14,9 +14,10 @@ use tokio::sync::{
 
 pub mod definitions;
 
-mod rpc;
+mod api;
+// mod reconnecting_client;
 
-use definitions::{ChainConnector, ConnectedChain};
+use definitions::{ChainPreparator, ConnectedChain};
 
 pub const MODULE: &str = module_path!();
 
@@ -49,7 +50,7 @@ pub async fn connect(
 
     for chain in chains {
         task_tracker.spawn(
-            ChainConnector(chain.name.clone()),
+            ChainPreparator(chain.name.clone()),
             connect_to_chain(chain, connected_chains_tx.clone()),
         );
     }
@@ -69,25 +70,35 @@ async fn connect_to_chain(
     chain: Chain,
     connected_chains: MpscSender<(Arc<str>, ConnectedChain, OsSender<bool>)>,
 ) -> Result<(), TaskError> {
-    let first_endpoint = chain
-        .config
-        .endpoints
-        .first()
-        .ok_or(TaskError::NoChainEndpoints)?;
-    let client = rpc::connect(first_endpoint).await?;
-    let genesis = rpc::fetch_genesis_hash(&client).await?;
+    let mut endpoints = chain.config.endpoints.into_iter();
+    let first_endpoint = endpoints.next().ok_or(TaskError::NoChainEndpoints)?;
+    let mut remaining_endpoints =
+        IndexSet::with_capacity_and_hasher(endpoints.len(), RandomState::new());
 
-    tracing::debug!(genesis = %genesis.0.to_hex());
+    for endpoint in endpoints {
+        if !remaining_endpoints.insert(endpoint) {
+            return Err(TaskError::DuplicateEndpoints);
+        }
+    }
 
+    if remaining_endpoints.contains(&first_endpoint) {
+        return Err(TaskError::DuplicateEndpoints);
+    }
+
+    let rpc_config = WsClientBuilder::new().enable_ws_ping(PingConfig::new());
+    let rpc_client = rpc_config.clone().build(&first_endpoint).await?;
+    let genesis = api::fetch_genesis_hash(&rpc_client).await?;
     let (is_occupied_tx, is_occupied_rx) = oneshot::channel();
 
     connected_chains
         .send((
             chain.name,
             ConnectedChain {
-                config: chain.config,
+                endpoints: (first_endpoint, remaining_endpoints),
+                config: chain.config.inner,
                 genesis,
-                client,
+                rpc_client,
+                rpc_config,
             },
             is_occupied_tx,
         ))
@@ -104,14 +115,45 @@ async fn connect_to_chain(
     }
 }
 
-#[allow(clippy::module_name_repetitions)]
-pub struct ChainManager;
+// #[allow(clippy::module_name_repetitions)]
+// pub struct ChainManager;
 
-impl ChainManager {
-    pub async fn new(
-        database: Arc<Database>,
-        chains: IndexMap<Arc<str>, ConnectedChain, RandomState>,
-    ) -> Result<(), Error> {
-        Ok(())
-    }
-}
+// impl ChainManager {
+//     pub async fn new(
+//         database: Arc<Database>,
+//         chains: IndexMap<Arc<str>, ConnectedChain, RandomState>,
+//         root_intervals: ArgChainIntervals,
+//     ) -> Result<Self, Error> {
+//         let root_ci = RootChainIntervals::new(&root_intervals)?;
+//         let task_tracker = ShortTaskTracker::new();
+
+//         for chain in chains {
+//             task_tracker.spawn(
+//                 ChainPreparator(chain.0.clone()),
+//                 prepare_chain(chain.0, chain.1, database.clone(), root_ci),
+//             );
+//         }
+
+//         task_tracker.try_wait().await?;
+
+//         todo!()
+//     }
+// }
+
+// #[tracing::instrument(skip_all, fields(name))]
+// async fn prepare_chain(
+//     name: Arc<str>,
+//     chain: ConnectedChain,
+//     database: Arc<Database>,
+//     root_ci: RootChainIntervals,
+// ) -> Result<(), TaskError> {
+//     let intervals = ChainIntervals::new(root_ci, &chain.config.intervals)?;
+//     let finalized_head = api::fetch_finalized_head(&chain.rpc_client).await?;
+//     let metadata = api::fetch_metadata(&chain.rpc_client, &finalized_head).await?;
+//     let runtime_version: RuntimeVersion =
+//         api::extract_constant(&metadata, SystemConstant::Version)?;
+
+//     println!("{:#?}", runtime_version);
+
+//     Ok(())
+// }

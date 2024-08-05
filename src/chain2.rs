@@ -1,7 +1,6 @@
 //! Everything related to the actual interaction with a blockchain.
 
-use std::collections::HashMap;
-
+use std::{collections::HashMap, sync::Arc};
 use substrate_crypto_light::common::AccountId32;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -10,12 +9,12 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    definitions::{
-        api_v2::{OrderInfo, Timestamp},
-        Chain,
-    },
+    arguments::Chain,
+    definitions::api_v2::OrderInfo,
     error::{ChainError, Error},
-    Signer, State, utils::task_tracker::TaskTracker,
+    signer::Signer,
+    utils::task_tracker::TaskTracker,
+    State,
 };
 
 pub mod definitions;
@@ -45,7 +44,7 @@ impl ChainManager {
     pub fn ignite(
         chain: Vec<Chain>,
         state: State,
-        signer: Signer,
+        signer: Arc<Signer>,
         task_tracker: TaskTracker,
         cancellation_token: CancellationToken,
     ) -> Result<Self, Error> {
@@ -57,19 +56,19 @@ impl ChainManager {
 
         // start network monitors
         for c in chain {
-            if c.endpoints.is_empty() {
-                return Err(Error::EmptyEndpoints(c.name));
+            if c.config.endpoints.is_empty() {
+                return Err(Error::EmptyEndpoints(c.name.to_string()));
             }
             let (chain_tx, chain_rx) = mpsc::channel(1024);
             watch_chain.insert(c.name.clone(), chain_tx.clone());
 
             // this MUST assert that there are no duplicates in requested assets
-            if let Some(ref a) = c.native_token {
+            if let Some(ref a) = c.config.inner.native_token {
                 if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
                     return Err(Error::DuplicateCurrency(a.name.clone()));
                 }
             }
-            for a in &c.asset {
+            for a in &c.config.inner.asset {
                 if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
                     return Err(Error::DuplicateCurrency(a.name.clone()));
                 }
@@ -80,7 +79,7 @@ impl ChainManager {
                 chain_tx.clone(),
                 chain_rx,
                 state.interface(),
-                signer.interface(),
+                signer.clone(),
                 task_tracker.clone(),
                 cancellation_token.clone(),
             );

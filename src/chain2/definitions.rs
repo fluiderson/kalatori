@@ -1,6 +1,7 @@
 //! Common objects for chain interaction system
 
 use jsonrpsee::ws_client::WsClient;
+use primitive_types::H256;
 use ruint::aliases::U256;
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::sync::oneshot;
@@ -9,23 +10,17 @@ use crate::{
     chain2::{
         rpc::{asset_balance_at_account, system_balance_at_account},
         tracker::ChainWatcher,
-    },
-    definitions::{
-        api_v2::{OrderInfo, Timestamp},
-        Balance, H255,
-    },
-    error::{ChainError, NotHex},
-    utils::unhex,
+    }, database::definitions::Timestamp, definitions::{api_v2::OrderInfo, Balance}, error::{ChainError, NotHex}, utils::unhex
 };
 
 /// Abstraction to distinguish block hash from many other H256 things
 #[derive(Clone)]
-pub struct BlockHash(pub H255);
+pub struct BlockHash(pub H256);
 
 impl BlockHash {
     /// Convert block hash to RPC-friendly format
     pub fn to_string(&self) -> String {
-        format!("0x{}", hex::encode(&self.0 .0.as_le_slice()))
+        format!("0x{}", hex::encode(&self.0 .0.as_slice()))
     }
 
     /// Convert string returned by RPC to typesafe block
@@ -33,8 +28,8 @@ impl BlockHash {
     /// TODO: integrate nicely with serde
     pub fn from_str(s: &str) -> Result<Self, crate::error::ChainError> {
         let block_hash_raw = unhex(&s, NotHex::BlockHash)?;
-        Ok(BlockHash(H255(
-            U256::try_from_le_slice(&block_hash_raw).ok_or(ChainError::BlockHashLength)?,
+        Ok(BlockHash(H256(
+            U256::try_from_le_slice(&block_hash_raw).map(|bytes| bytes.to_le_bytes()).ok_or(ChainError::BlockHashLength)?,
         )))
     }
 }

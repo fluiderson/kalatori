@@ -5,15 +5,13 @@
 //! are spawned here other than main database server thread that does everything in series.
 
 use crate::{
-    definitions::{
+    database::definitions::Timestamp, definitions::{
         api_v2::{
             AssetId, CurrencyInfo, CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery,
-            PaymentStatus, ServerInfo, ServerStatus, Timestamp, WithdrawalStatus,
+            PaymentStatus, ServerInfo, ServerStatus, WithdrawalStatus,
         },
         Balance, Nonce,
-    },
-    error::{DbErrorr, Error},
-    utils::task_tracker::TaskTracker,
+    }, error::{DbErrorr, Error}, utils::task_tracker::TaskTracker
 };
 use codec::{Compact, Decode, Encode};
 use serde::Deserialize;
@@ -360,7 +358,9 @@ fn calculate_death_ts(account_lifetime: Timestamp) -> Timestamp {
         .unwrap()
         .as_millis() as u64;
 
-    Timestamp(start + account_lifetime.0)
+    // Timestamp(start + account_lifetime.0)
+
+    todo!()
 }
 
 fn create_order(

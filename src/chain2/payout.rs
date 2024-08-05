@@ -4,6 +4,8 @@
 //! priority, optimized for lazy and very delayed process, and in some cases might be disabeled
 //! altogether (TODO)
 
+use std::sync::Arc;
+
 use crate::{
     chain2::{
         definitions::Invoice,
@@ -17,7 +19,7 @@ use crate::{
     },
     definitions::api_v2::TokenKind,
     error::ChainError,
-    signer2::Signer,
+    signer::Signer,
     state::State,
 };
 
@@ -33,7 +35,7 @@ pub async fn payout(
     order: Invoice,
     state: State,
     chain: ChainWatcher,
-    signer: Signer,
+    signer: Arc<Signer>,
 ) -> Result<(), ChainError> {
     // TODO: make this retry and rotate RPCs maybe
     //

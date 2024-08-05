@@ -106,7 +106,7 @@ pub async fn get_keys_from_storage(
         hex::encode(twox_128(storage_name.as_bytes()))
     );
 
-    let count = 100; // TODO make full scan just in case
+    let count = 1000; // TODO make full scan just in case
     let start_key: Option<&str> = None; // Start from the beginning
 
     let mut params = vec![

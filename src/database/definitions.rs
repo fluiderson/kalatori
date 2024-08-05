@@ -1,25 +1,36 @@
+pub use v0::OrdersTable;
 pub use v1::{
-    AccountsTable, BlockHash, BlockNumber, ChainHash, ChainProperties, ChainTableTrait, DaemonInfo,
-    HitListTable, InvoicesTable, KeysTable, Public, RootKey, RootTable, RootValue, TableTrait,
-    TableTypes, Timestamp, Version,
+    Asset, BlockHash, BlockNumber, ChainHash, ChainProperties, ChainTableTrait, DaemonInfo,
+    KeysTable, Public, RootKey, RootTable, RootValue, TableTrait, TableTypes, Timestamp, Version,
 };
+
+mod v0 {
+    use super::{TableTrait, TableTypes};
+    use crate::definitions::api_v2::OrderInfo;
+    use codec::{Decode, Encode};
+    use redb::{TypeName, Value};
+
+    crate::table!(OrdersTable<&'static str, OrderInfo> = "orders");
+    crate::scale_slot!(OrderInfo);
+}
 
 mod v1 {
     use crate::{
         chain::definitions::{BlockHash as ChainBlockHash, H256},
-        error::DbError,
+        error::{DbError, TimestampError},
     };
     use ahash::{HashMap, HashSet};
-    use arrayvec::ArrayString;
+    use arrayvec::{ArrayString, ArrayVec};
     use codec::{Decode, Encode};
     use redb::{Key, Table, TableDefinition, TypeName, Value, WriteTransaction};
-    use serde::Deserialize;
+    use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
     use std::{
         cmp::Ordering,
         fmt::{Debug, Display, Formatter, Result as FmtResult},
         num::NonZeroU64 as StdNonZeroU64,
         ops::Deref,
         str,
+        time::SystemTime,
     };
     use substrate_crypto_light::sr25519::Public as CryptoPublic;
     use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
@@ -29,6 +40,7 @@ mod v1 {
         type Value: Value + 'static;
     }
 
+    #[macro_export]
     macro_rules! table_types {
         ($table:ident<$key:ty, $value:ty>) => {
             impl TableTypes for $table {
@@ -44,11 +56,12 @@ mod v1 {
             TableDefinition::new(Self::NAME);
     }
 
+    #[macro_export]
     macro_rules! table {
         ($table:ident<$key:ty, $value:ty> = $name:literal) => {
             pub struct $table;
 
-            table_types!($table<$key, $value>);
+            $crate::table_types!($table<$key, $value>);
 
             impl TableTrait for $table {
                 const NAME: &'static str = $name;
@@ -109,12 +122,37 @@ mod v1 {
         };
     }
 
-    macro_rules! slot {
-        ($(#[$attributes:meta])? $name:ident($visibility:vis [u8; $length:expr])) => {
-            #[derive(Debug)]
-            $(#[$attributes])?
-            pub struct $name($visibility [u8; $length]);
+    #[macro_export]
+    macro_rules! scale_slot {
+        ($name:ident) => {
+            impl Value for $name {
+                type SelfType<'a> = Self;
+                type AsBytes<'a> = Vec<u8>;
 
+                fn fixed_width() -> Option<usize> {
+                    None
+                }
+
+                fn from_bytes<'a>(mut data: &[u8]) -> Self
+                where
+                    Self: 'a,
+                {
+                    Self::decode(&mut data).unwrap()
+                }
+
+                fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'_>) -> Self::AsBytes<'a> {
+                    Self::encode(value)
+                }
+
+                fn type_name() -> TypeName {
+                    TypeName::new(stringify!($name))
+                }
+            }
+        };
+    }
+
+    macro_rules! slot {
+        ($name:ident([u8; $length:expr])) => {
             impl Value for $name {
                 type SelfType<'a> = Self;
                 type AsBytes<'a> = &'a [u8; $length];
@@ -140,10 +178,7 @@ mod v1 {
             }
         };
 
-        ($name:ident<'a>($visibility:vis &'a [u8])) => {
-            #[derive(Debug)]
-            pub struct $name<'a>($visibility &'a [u8]);
-
+        ($name:ident<'a>(&'a [u8])) => {
             impl Value for $name<'_> {
                 type SelfType<'a> = $name<'a> where Self: 'a;
                 type AsBytes<'a> = &'a [u8] where Self: 'a;
@@ -172,11 +207,7 @@ mod v1 {
             }
         };
 
-        ($(#[$attributes:meta])? $name:ident($visibility:vis $inner_type:ty)) => {
-            #[derive(Debug)]
-            $(#[$attributes])?
-            pub struct $name($visibility $inner_type);
-
+        ($name:ident($inner_type:ty)) => {
             impl Value for $name {
                 type SelfType<'a> = Self;
                 type AsBytes<'a> = <$inner_type as Value>::AsBytes<'a>;
@@ -204,8 +235,8 @@ mod v1 {
     }
 
     macro_rules! key_slot {
-        ($(#[$attributes:meta])? $name:ident($visibility:vis [u8; $length:expr])) => {
-            slot!($(#[$attributes])? $name($visibility [u8; $length]));
+        ($name:ident([u8; $length:expr])) => {
+            slot!($name([u8; $length]));
 
             impl Key for $name {
                 fn compare(former: &[u8], latter: &[u8]) -> Ordering {
@@ -224,8 +255,8 @@ mod v1 {
             }
         };
 
-        ($(#[$attributes:meta])? $name:ident($visibility:vis $inner_type:ty)) => {
-            slot!($(#[$attributes])? $name($visibility $inner_type));
+        ($name:ident($inner_type:ty)) => {
+            slot!($name($inner_type));
 
             impl Key for $name {
                 fn compare(former: &[u8], latter: &[u8]) -> Ordering {
@@ -239,13 +270,13 @@ mod v1 {
 
     table!(RootTable<RootKey, RootValue<'static>> = "root");
     table!(KeysTable<Public, NonZeroU64> = "keys");
-    table!(InvoicesTable<InvoiceKey<'static>, Invoice> = "invoices");
+    // table!(InvoicesTable<InvoiceKey<'static>, Invoice> = "invoices");
     // pub const INVOICES_NAME: &str = "invoices";
     // pub const INVOICES: TableDefinition<'_, InvoiceKey, Invoice> =
     //     TableDefinition::new(INVOICES_NAME);
 
-    chain_table!(AccountsTable<Account, InvoiceKey<'static>> = "accounts");
-    chain_table!(HitListTable<BlockNumber, InvoiceKey<'static>> = "hit_list");
+    // chain_table!(AccountsTable<Account, InvoiceKey<'static>> = "accounts");
+    // chain_table!(HitListTable<BlockNumber, InvoiceKey<'static>> = "hit_list");
 
     // // const TRANSACTIONS: &str = "transactions";
 
@@ -349,29 +380,34 @@ mod v1 {
         }
     }
 
-    key_slot! {
-        #[derive(Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
-        Public(pub [u8; 32])
-    }
-    key_slot! {
-        #[derive(Deserialize)]
-        BlockNumber(pub u32)
-    }
+    #[derive(Debug, Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
+    pub struct Public(pub [u8; 32]);
+    #[derive(Debug, Deserialize, Clone, Copy)]
+    pub struct BlockNumber(u32);
+    #[derive(Debug, Deserialize, Clone, Copy)]
+    pub struct Asset(pub u32);
+    #[derive(Debug)]
+    pub struct InvoiceKey<'a>(&'a [u8]);
+    #[derive(Debug)]
+    pub struct Account([u8; 32]);
+    #[derive(Debug, PartialEq)]
+    pub struct Version(pub u64);
+    #[derive(Debug)]
+    pub struct RootValue<'a>(pub &'a [u8]);
+    #[derive(Debug, Encode, Decode, PartialEq, Clone, Copy)]
+    pub struct BlockHash(pub [u8; 32]);
+    #[derive(Debug, Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
+    pub struct ChainHash(pub [u8; 32]);
+
+    key_slot!(Public([u8; 32]));
+    key_slot!(BlockNumber(u32));
     key_slot!(InvoiceKey<'a>(&'a [u8]));
     key_slot!(Account([u8; 32]));
-    slot! {
-        #[derive(PartialEq)]
-        Version(pub u64)
-    }
-    slot!(RootValue<'a>(pub &'a [u8]));
-    slot! {
-        #[derive(Encode, Decode, PartialEq, Clone, Copy)]
-        BlockHash(pub [u8; 32])
-    }
-    slot! {
-        #[derive(Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
-        ChainHash(pub [u8; 32])
-    }
+    slot!(Version(u64));
+    slot!(RootValue<'a>(&'a [u8]));
+    slot!(BlockHash([u8; 32]));
+    slot!(ChainHash([u8; 32]));
+    slot!(Asset(u32));
 
     // pub type BalanceSlot = u128;
     // pub type Derivation = [u8; 32];
@@ -416,19 +452,72 @@ mod v1 {
         pub instance: Vec<u8>,
     }
 
-    #[derive(Encode, Decode, Debug, Deserialize)]
-    pub struct Timestamp(#[codec(compact)] pub u64);
+    impl<'de> Deserialize<'de> for Timestamp {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            Self::from_millis(Deserialize::deserialize(deserializer)?)
+                .map_err(DeError::custom)
+        }
+    }
+
+    #[derive(Encode, Decode, Debug, Clone, Copy, Serialize)]
+    pub struct Timestamp(#[codec(compact)] u64);
+
+    impl Timestamp {
+        pub const MAX: u64 = 253_402_300_799_123;
+        pub const MAX_STRING: &'static str = "9999-12-31T23:59:59.123456789Z";
+
+        pub fn as_millis(self) -> u64 {
+            self.0
+        }
+
+        pub fn from_millis(millis: u64) -> Result<Self, TimestampError> {
+            if millis > Self::MAX {
+                Err(TimestampError::Overflow)
+            } else {
+                Ok(Self(millis))
+            }
+        }
+
+        pub fn now() -> Result<Self, TimestampError> {
+            let millis = get_system_millis()?;
+
+            if millis > Self::MAX.into() {
+                Err(TimestampError::Overflow)
+            } else {
+                // Shouldn't truncate as `mills <= Self::MAX`.
+                #[allow(clippy::cast_possible_truncation)]
+                Ok(Self(millis as u64))
+            }
+        }
+
+        /// Saturating. Should be used to create a timestamp for only the display purpose.
+        pub fn from_duration_in_millis(millis: u64) -> Self {
+            let Ok(system_ms) = get_system_millis().unwrap_or_default().try_into() else {
+                return Self(Self::MAX);
+            };
+
+            let unchecked = millis.saturating_add(system_ms);
+
+            Self(if unchecked > Self::MAX {
+                Self::MAX
+            } else {
+                unchecked
+            })
+        }
+    }
+
+    fn get_system_millis() -> Result<u128, TimestampError> {
+        Ok(SystemTime::UNIX_EPOCH.elapsed()?.as_millis())
+    }
 
     impl Display for Timestamp {
         fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-            const EXPECT: &str = "daemon've encountered too big timestamp to display";
-
-            let mut string = Vec::with_capacity("9999-12-31T23:59:59.123456789Z".len());
+            let mut string = ArrayVec::<_, { Self::MAX_STRING.len() }>::new();
 
             OffsetDateTime::UNIX_EPOCH
-                .saturating_add(Duration::microseconds(self.0.try_into().expect(EXPECT)))
+                .saturating_add(Duration::milliseconds(self.0.try_into().unwrap()))
                 .format_into(&mut string, &Rfc3339)
-                .expect(EXPECT);
+                .unwrap();
 
             f.write_str(str::from_utf8(&string).unwrap())
         }
@@ -459,29 +548,7 @@ mod v1 {
         pub dasd: [u8; 32],
     }
 
-    impl Value for Invoice {
-        type SelfType<'a> = Self;
-        type AsBytes<'a> = Vec<u8>;
-
-        fn fixed_width() -> Option<usize> {
-            None
-        }
-
-        fn from_bytes<'a>(mut data: &[u8]) -> Self
-        where
-            Self: 'a,
-        {
-            Self::decode(&mut data).unwrap()
-        }
-
-        fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'_>) -> Self::AsBytes<'a> {
-            Self::encode(value)
-        }
-
-        fn type_name() -> TypeName {
-            TypeName::new(stringify!(Invoice))
-        }
-    }
+    scale_slot!(Invoice);
 
     // impl Value for Invoice {
     //     type SelfType<'a> = Self;
@@ -569,4 +636,28 @@ mod v1 {
     //     pub paid: bool,
     //     pub paym_acc: AccountId,
     // }
+
+    #[cfg(test)]
+    mod tests {
+        use std::time::SystemTime;
+
+        use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+        use super::Timestamp;
+
+        #[test]
+        fn timestamp_max() {
+            let expected_max: SystemTime = OffsetDateTime::parse(Timestamp::MAX_STRING, &Rfc3339)
+                .unwrap()
+                .into();
+            let expected_max_in_ms: u64 = expected_max
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+                .try_into()
+                .unwrap();
+
+            assert_eq!(Timestamp::MAX, expected_max_in_ms);
+        }
+    }
 }

@@ -1,6 +1,8 @@
+use chain2::ChainManager;
 use clap::Parser;
+use substrate_crypto_light::common::AccountId32;
 use std::process::ExitCode;
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, sync::oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
@@ -9,22 +11,22 @@ mod callback;
 mod chain;
 mod chain2;
 mod database;
-mod database2;
+// mod database2;
 mod definitions;
 mod error;
 mod server;
 mod signer;
-mod signer2;
+// mod signer2;
 mod state;
 mod utils;
 
 use arguments::{CliArgs, Config};
 use chain::definitions::Account;
 use database::Database;
-use database2::ConfigWoChains;
+// use database2::ConfigWoChains;
 use error::{Error, PrettyCause};
 use signer::KeyStore;
-use signer2::Signer;
+// use signer2::Signer;
 use state::State;
 use utils::{
     logger,
@@ -52,7 +54,7 @@ fn main() -> ExitCode {
         };
 
         print(format_args!(
-            "Badbye! The daemon's got an error during the initialization:\n    {error}.{}",
+            "Badbye! The daemon's got an error during the initialization:{}",
             error.pretty_cause()
         ));
 
@@ -87,14 +89,15 @@ fn try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
 
     tracing::info!("Kalatori {} is starting...", env!("CARGO_PKG_VERSION"));
 
-    let key_store = KeyStore::parse()?;
+    let recipient = cli_args.recipient.parse()?;
+    let key_store = KeyStore::parse(recipient)?;
     let config = Config::parse(cli_args.config)?;
 
     Runtime::new()
         .map_err(Error::Runtime)?
         .block_on(async_try_main(
             shutdown_notification,
-            cli_args.recipient.parse()?,
+            recipient,
             cli_args.remark,
             cli_args.database,
             config,
@@ -112,49 +115,46 @@ async fn async_try_main(
     key_store: KeyStore,
 ) -> Result<(), Error> {
     let (task_tracker, error_rx) = TaskTracker::new();
-    let connected_chains = chain::connect(config.chain).await?;
+    let connected_chains = chain::connect(config.chain.clone()).await?;
     let (database, signer) = Database::new(
         db_option_option.map_or(Some(config.database), |path| path.map(Into::into)),
         &connected_chains,
         key_store,
         recipient,
     )?;
+    // let bababa = ChainManager::new(database.clone(), connected_chains, config.intervals).await?;
 
-    // let (cm_tx, cm_rx) = oneshot::channel();
+    let (cm_tx, cm_rx) = oneshot::channel();
+    let state = State::initialise(
+        signer.clone(),
+        Some(config.debug),
+        remark,
+        database.clone(),
+        cm_rx,
+        task_tracker.clone(),
+        shutdown_notification.token.clone(),
+        AccountId32(recipient.1),
+        config.intervals.account_lifetime.unwrap(),
+    );
 
-    // let state = State::initialise(
-    //     signer.interface(),
-    //     ConfigWoChains {
-    //         recipient,
-    //         debug: config.debug,
-    //         remark,
-    //         //depth: config.depth,
-    //     },
-    //     db,
-    //     cm_rx,
-    //     instance_id,
-    //     task_tracker.clone(),
-    //     shutdown_notification.token.clone(),
-    // )?;
+    cm_tx
+        .send(ChainManager::ignite(
+            config.chain,
+            state.interface(),
+            signer.clone(),
+            task_tracker.clone(),
+            shutdown_notification.token.clone(),
+        )?)
+        .map_err(|_| Error::Fatal)?;
 
-    // cm_tx
-    //     .send(ChainManager::ignite(
-    //         config.chain,
-    //         state.interface(),
-    //         signer.interface(),
-    //         task_tracker.clone(),
-    //         shutdown_notification.token.clone(),
-    //     )?)
-    //     .map_err(|_| Error::Fatal)?;
+    let server = server::new(
+        shutdown_notification.token.clone(),
+        config.host,
+        state.interface(),
+    )
+    .await?;
 
-    // let server = server::new(
-    //     shutdown_notification.token.clone(),
-    //     config.host,
-    //     state.interface(),
-    // )
-    // .await?;
-
-    // task_tracker.spawn("the server module", server);
+    task_tracker.spawn("the server module", server);
 
     let shutdown_completed = CancellationToken::new();
     let mut shutdown_listener = tokio::spawn(shutdown::listener(

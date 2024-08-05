@@ -8,28 +8,46 @@
 
 use crate::{
     arguments::{OLD_SEED, SEED},
-    chain::definitions::H256,
+    chain::definitions::{Account, SS58Prefix, H256},
     database::definitions::Public,
-    error::SeedEnvError,
+    error::{SeedEnvError, SignerError},
 };
 use ahash::{HashMap, RandomState};
 use indexmap::IndexMap;
 use mnemonic_external::{
     error::ErrorWordList, wordlist::WORDLIST_ENGLISH, AsWordList, Bits11, WordListElement, WordSet,
 };
-use std::{env, str};
-use substrate_crypto_light::sr25519::Pair;
+use rand::rngs::ThreadRng;
+use std::{env, ffi::OsStr, str};
+use substrate_crypto_light::{
+    common::{AccountId32, AsBase58, DeriveJunction, FullDerivation},
+    sr25519::{Pair, Signature},
+};
 use tokio::sync::RwLock;
 use tracing::Level;
 use zeroize::Zeroize;
 
+/// # Safety
+///
+/// During the execution of this function, environment variables mustn't be read or written
+/// concurrently in other threads of the daemon.
+fn env_remove_var(key: impl AsRef<OsStr>) {
+    unsafe {
+        env::remove_var(key);
+    }
+}
+
 pub struct KeyStore {
     pair: (Public, Entropy),
     old_pairs: IndexMap<Public, (Entropy, String), RandomState>,
+    recipient: Account,
 }
 
 impl KeyStore {
-    pub fn parse() -> Result<Self, SeedEnvError> {
+    /// # Safety
+    ///
+    /// Same as [`env_remove_var`].
+    pub fn parse(recipient: Account) -> Result<Self, SeedEnvError> {
         const SEED_BYTES: &[u8] = SEED.as_bytes();
 
         let mut pair_option = None;
@@ -38,7 +56,7 @@ impl KeyStore {
         for (raw_name, raw_value) in env::vars_os() {
             match raw_name.as_encoded_bytes() {
                 SEED_BYTES => {
-                    env::remove_var(raw_name);
+                    env_remove_var(raw_name);
 
                     pair_option = {
                         Some(Entropy::new_pair(
@@ -54,7 +72,7 @@ impl KeyStore {
                     if let Some(stripped_raw_name) =
                         raw_name_bytes.strip_prefix(OLD_SEED.as_bytes())
                     {
-                        env::remove_var(&raw_name);
+                        env_remove_var(&raw_name);
 
                         let name = str::from_utf8(stripped_raw_name)?;
                         let seed = raw_value
@@ -73,6 +91,7 @@ impl KeyStore {
         Ok(Self {
             pair: pair_option.ok_or(SeedEnvError::NotSet)?,
             old_pairs,
+            recipient,
         })
     }
 
@@ -103,6 +122,7 @@ impl KeyStore {
         Signer {
             old_pairs: RwLock::new(filtered_old_pairs),
             pair: self.pair,
+            recipient: self.recipient,
         }
     }
 
@@ -200,4 +220,41 @@ fn bits11_from_index(i: usize) -> Bits11 {
 pub struct Signer {
     pair: (Public, Entropy),
     old_pairs: RwLock<HashMap<Public, (Entropy, String)>>,
+    recipient: Account,
+}
+
+impl Signer {
+    pub fn public(&self, id: impl AsRef<[u8]>, prefix: SS58Prefix) -> Result<String, SignerError> {
+        Pair::from_entropy_and_full_derivation(
+            &self.pair.1 .0,
+            FullDerivation {
+                junctions: vec![
+                    DeriveJunction::hard(AccountId32(self.recipient.1).to_base58_string(2)),
+                    DeriveJunction::hard(id.as_ref()),
+                ],
+                password: None,
+            },
+        )
+        .map(|pair| pair.public().to_base58_string(prefix.0))
+        .map_err(Into::into)
+    }
+
+    pub async fn sign(
+        &self,
+        id: impl AsRef<[u8]>,
+        signable: Vec<u8>,
+    ) -> Result<Signature, SignerError> {
+        Pair::from_entropy_and_full_derivation(
+            &self.pair.1 .0,
+            FullDerivation {
+                junctions: vec![
+                    DeriveJunction::hard(AccountId32(self.recipient.1).to_base58_string(2)),
+                    DeriveJunction::hard(id.as_ref()),
+                ],
+                password: None,
+            },
+        )
+        .map(|pair| pair.sign(&signable))
+        .map_err(Into::into)
+    }
 }

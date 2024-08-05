@@ -1,32 +1,12 @@
 //! Deaf and dumb object definitions.
 
-use ruint::aliases::U256;
-use serde::{
-    de::{Error, Unexpected, Visitor},
-    Deserialize, Deserializer,
-};
-use std::{
-    fmt::{Debug, Formatter, Result as FmtResult},
-    ops::{Deref, Sub},
-};
+use std::ops::{Deref, Sub};
 
-#[derive(Deserialize)]
-pub struct AssetId(u64);
+use serde::Deserialize;
 
-#[derive(Deserialize)]
-pub struct Decimals(u64);
-
-#[derive(Clone)]
-pub struct H255(pub U256);
-
-impl From<H255> for primitive_types::H256 {
-    fn from(hash: H255) -> Self {
-        hash.0.to_le_bytes().into()
-    }
-}
-
-pub type BlockNumberRs = u64;
+pub type Version = u64;
 pub type Nonce = u32;
+
 pub type PalletIndex = u8;
 
 pub type Entropy = Vec<u8>; // TODO: maybe enforce something here
@@ -101,7 +81,7 @@ pub mod api_v2 {
     use codec::{Decode, Encode};
     use serde::{Deserialize, Serialize, Serializer};
 
-    use super::BlockNumberRs;
+    use crate::database::definitions::Timestamp;
 
     pub const AMOUNT: &str = "amount";
     pub const CURRENCY: &str = "currency";
@@ -109,10 +89,8 @@ pub mod api_v2 {
 
     pub type AssetId = u32;
     pub type Decimals = u8;
+    pub type BlockNumber = u64;
     pub type ExtrinsicIndex = u32;
-
-    #[derive(Encode, Decode, Debug, Clone, Copy, Serialize, Deserialize)]
-    pub struct Timestamp(pub u64);
 
     #[derive(Debug)]
     pub struct OrderQuery {
@@ -307,7 +285,7 @@ pub mod api_v2 {
 
     #[derive(Clone, Debug, Serialize, Decode, Encode)]
     struct FinalizedTx {
-        block_number: BlockNumberRs,
+        block_number: BlockNumber,
         position_in_block: ExtrinsicIndex,
         timestamp: String,
     }

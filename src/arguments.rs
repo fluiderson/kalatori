@@ -1,6 +1,6 @@
 use crate::{
-    database::definitions::{BlockNumber, Timestamp},
-    definitions::{AssetId, Decimals},
+    chain::definitions::Decimals,
+    database::definitions::{Asset, BlockNumber, Timestamp},
     logger, Error,
 };
 use clap::{Arg, ArgAction, Parser};
@@ -140,18 +140,22 @@ impl Config {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Deserialize, Clone)]
 pub struct Chain {
     pub name: Arc<str>,
     #[serde(flatten)]
     pub config: ChainConfig,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Deserialize, Clone)]
 pub struct ChainConfig {
     pub endpoints: Vec<String>,
+    #[serde(flatten)]
+    pub inner: ChainConfigInner,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct ChainConfigInner {
     #[serde(flatten)]
     pub native_token: Option<NativeToken>,
     #[serde(default)]
@@ -160,7 +164,7 @@ pub struct ChainConfig {
     pub intervals: ChainIntervals,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct ChainIntervals {
     pub account_lifetime: Option<Timestamp>,
@@ -169,14 +173,14 @@ pub struct ChainIntervals {
     pub restart_gap_in_blocks: Option<BlockNumber>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct NativeToken {
     pub name: String,
     pub decimals: Decimals,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct AssetInfo {
     pub name: String,
-    pub id: AssetId,
+    pub id: Asset,
 }

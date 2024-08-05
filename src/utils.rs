@@ -72,7 +72,7 @@ pub mod task_tracker {
 
     fn print_fatal_error<E: StdError>(from: &TaskName, error: &(impl PrettyCause<E> + Display)) {
         tracing::error!(
-            "Received a fatal error from {from}:\n    {error}.{}",
+            "Received a fatal error from {from}:{}",
             error.pretty_cause()
         );
     }
