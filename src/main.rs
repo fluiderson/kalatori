@@ -1,7 +1,7 @@
 use chain2::ChainManager;
 use clap::Parser;
-use substrate_crypto_light::common::AccountId32;
 use std::process::ExitCode;
+use substrate_crypto_light::common::AccountId32;
 use tokio::{runtime::Runtime, sync::oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::Level;
@@ -89,8 +89,12 @@ fn try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
 
     tracing::info!("Kalatori {} is starting...", env!("CARGO_PKG_VERSION"));
 
-    let recipient = cli_args.recipient.parse()?;
-    let key_store = KeyStore::parse(recipient)?;
+    let recipient_account: Account = cli_args.recipient.parse()?;
+
+    tracing::info!("The given recipient: {recipient_account:#}.");
+
+    let recipient = recipient_account.into();
+    let key_store = KeyStore::parse()?;
     let config = Config::parse(cli_args.config)?;
 
     Runtime::new()
@@ -108,7 +112,7 @@ fn try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
 #[allow(clippy::option_option)]
 async fn async_try_main(
     shutdown_notification: ShutdownNotification,
-    recipient: Account,
+    recipient: AccountId32,
     remark: Option<String>,
     db_option_option: Option<Option<String>>,
     config: Config,
@@ -120,7 +124,6 @@ async fn async_try_main(
         db_option_option.map_or(Some(config.database), |path| path.map(Into::into)),
         &connected_chains,
         key_store,
-        recipient,
     )?;
     // let bababa = ChainManager::new(database.clone(), connected_chains, config.intervals).await?;
 
@@ -133,7 +136,7 @@ async fn async_try_main(
         cm_rx,
         task_tracker.clone(),
         shutdown_notification.token.clone(),
-        AccountId32(recipient.1),
+        recipient,
         config.intervals.account_lifetime.unwrap(),
     );
 

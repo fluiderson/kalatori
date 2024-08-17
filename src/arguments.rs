@@ -175,6 +175,7 @@ pub struct ChainIntervals {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct NativeToken {
+    #[serde(rename = "native-token")]
     pub name: String,
     pub decimals: Decimals,
 }

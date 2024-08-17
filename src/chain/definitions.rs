@@ -158,28 +158,51 @@ hash_impl!(H256, U256, U256::BYTES);
 hash_impl!(H64, u64, (u64::BITS / 8) as usize);
 
 #[derive(Clone, Copy)]
-pub struct Account(SS58Prefix, pub [u8; 32]);
+pub enum Account {
+    Hex(AccountId32),
+    Substrate(SS58Prefix, AccountId32),
+}
 
 impl FromStr for Account {
     type Err = AccountFromStrError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (account, prefix) = if let Some(stripped) = s.strip_prefix(HEX_PREFIX) {
-            H256::from_hex(stripped).map(|hash| (hash.to_be_bytes(), SS58Prefix::SUBSTRATE))?
+        Ok(if let Some(stripped) = s.strip_prefix(HEX_PREFIX) {
+            H256::from_hex(stripped).map(|hash| Self::Hex(AccountId32(hash.to_be_bytes())))?
         } else {
-            AccountId32::from_base58_string(s).map(|(account, p)| (account.0, SS58Prefix(p)))?
-        };
+            AccountId32::from_base58_string(s)
+                .map(|(account, p)| Self::Substrate(SS58Prefix(p), account))?
+        })
+    }
+}
 
-        Ok(Self(prefix, account))
+impl Display for Account {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Self::Hex(a) => Display::fmt(&H256::from_be_bytes(a.0), f),
+            Self::Substrate(p, a) => {
+                let s = &a.to_base58_string(p.0);
+
+                if f.alternate() {
+                    Debug::fmt(s, f)
+                } else {
+                    Display::fmt(s, f)
+                }
+            }
+        }
+    }
+}
+
+impl From<Account> for AccountId32 {
+    fn from(value: Account) -> Self {
+        match value {
+            Account::Hex(a) | Account::Substrate(_, a) => a,
+        }
     }
 }
 
 #[derive(Clone, Copy)]
 pub struct SS58Prefix(pub u16);
-
-impl SS58Prefix {
-    const SUBSTRATE: Self = Self(42);
-}
 
 impl From<u16> for SS58Prefix {
     fn from(value: u16) -> Self {

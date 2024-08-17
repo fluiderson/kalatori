@@ -11,7 +11,7 @@ keywords = ["substrate", "blockchain", "finance", "service", "middleware"]
 categories = ["finance"]
 
 [dependencies]
-shadow-rs = { version = "0.31", default-features = false }
+shadow-rs = { version = "0.32", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
 names = { version = "0.14", default-features = false }
@@ -72,7 +72,7 @@ mnemonic-external = { git = "https://github.com/Alzymologist/mnemonic-external" 
 substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-crypto-light" }
 
 [build-dependencies]
-shadow-rs = { version = "0.31", default-features = false }
+shadow-rs = { version = "0.32", default-features = false }
 
 [dev-dependencies]
 indoc = "2"

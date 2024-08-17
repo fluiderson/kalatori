@@ -8,7 +8,7 @@
 
 use crate::{
     arguments::{OLD_SEED, SEED},
-    chain::definitions::{Account, SS58Prefix, H256},
+    chain::definitions::H256,
     database::definitions::Public,
     error::{SeedEnvError, SignerError},
 };
@@ -17,10 +17,9 @@ use indexmap::IndexMap;
 use mnemonic_external::{
     error::ErrorWordList, wordlist::WORDLIST_ENGLISH, AsWordList, Bits11, WordListElement, WordSet,
 };
-use rand::rngs::ThreadRng;
 use std::{env, ffi::OsStr, str};
 use substrate_crypto_light::{
-    common::{AccountId32, AsBase58, DeriveJunction, FullDerivation},
+    common::{AccountId32, DeriveJunction, FullDerivation},
     sr25519::{Pair, Signature},
 };
 use tokio::sync::RwLock;
@@ -40,14 +39,13 @@ fn env_remove_var(key: impl AsRef<OsStr>) {
 pub struct KeyStore {
     pair: (Public, Entropy),
     old_pairs: IndexMap<Public, (Entropy, String), RandomState>,
-    recipient: Account,
 }
 
 impl KeyStore {
     /// # Safety
     ///
     /// Same as [`env_remove_var`].
-    pub fn parse(recipient: Account) -> Result<Self, SeedEnvError> {
+    pub fn parse() -> Result<Self, SeedEnvError> {
         const SEED_BYTES: &[u8] = SEED.as_bytes();
 
         let mut pair_option = None;
@@ -91,7 +89,6 @@ impl KeyStore {
         Ok(Self {
             pair: pair_option.ok_or(SeedEnvError::NotSet)?,
             old_pairs,
-            recipient,
         })
     }
 
@@ -122,7 +119,6 @@ impl KeyStore {
         Signer {
             old_pairs: RwLock::new(filtered_old_pairs),
             pair: self.pair,
-            recipient: self.recipient,
         }
     }
 
@@ -220,41 +216,34 @@ fn bits11_from_index(i: usize) -> Bits11 {
 pub struct Signer {
     pair: (Public, Entropy),
     old_pairs: RwLock<HashMap<Public, (Entropy, String)>>,
-    recipient: Account,
 }
 
 impl Signer {
-    pub fn public(&self, id: impl AsRef<[u8]>, prefix: SS58Prefix) -> Result<String, SignerError> {
-        Pair::from_entropy_and_full_derivation(
-            &self.pair.1 .0,
-            FullDerivation {
-                junctions: vec![
-                    DeriveJunction::hard(AccountId32(self.recipient.1).to_base58_string(2)),
-                    DeriveJunction::hard(id.as_ref()),
-                ],
-                password: None,
-            },
-        )
-        .map(|pair| pair.public().to_base58_string(prefix.0))
-        .map_err(Into::into)
-    }
-
-    pub async fn sign(
+    pub fn construct_invoice_account(
         &self,
         id: impl AsRef<[u8]>,
-        signable: Vec<u8>,
-    ) -> Result<Signature, SignerError> {
-        Pair::from_entropy_and_full_derivation(
+    ) -> Result<AccountId32, SignerError> {
+        Pair::from_entropy_and_full_derivation(&self.pair.1 .0, derive_invoice_junction(id))
+            .map(|pair| AccountId32(pair.public().0))
+            .map_err(Into::into)
+    }
+
+    pub fn sign(&self, id: impl AsRef<[u8]>, msg: &[u8]) -> Result<Signature, SignerError> {
+        let mut random = rand::thread_rng();
+
+        Pair::from_entropy_and_full_derivation_external_rng(
             &self.pair.1 .0,
-            FullDerivation {
-                junctions: vec![
-                    DeriveJunction::hard(AccountId32(self.recipient.1).to_base58_string(2)),
-                    DeriveJunction::hard(id.as_ref()),
-                ],
-                password: None,
-            },
+            derive_invoice_junction(id),
+            &mut random,
         )
-        .map(|pair| pair.sign(&signable))
+        .map(|pair| pair.sign_external_rng(msg, &mut random))
         .map_err(Into::into)
+    }
+}
+
+fn derive_invoice_junction(id: impl AsRef<[u8]>) -> FullDerivation<'static> {
+    FullDerivation {
+        junctions: vec![DeriveJunction::hard(id.as_ref())],
+        password: None,
     }
 }

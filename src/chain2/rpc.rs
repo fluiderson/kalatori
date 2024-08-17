@@ -261,11 +261,10 @@ pub async fn assets_set_at_block(
         specs.unit,
         CurrencyProperties {
             chain_name: chain_name.clone(),
-            kind: TokenKind::Balances,
+            kind: TokenKind::Native,
             decimals: specs.decimals,
             rpc_url: rpc_url.to_owned(),
             asset_id: None,
-            ss58: specs.base58prefix,
         },
     );
 
@@ -493,7 +492,6 @@ pub async fn assets_set_at_block(
                                                                     decimals,
                                                                     rpc_url: rpc_url.to_string(),
                                                                     asset_id: Some(asset_id),
-                                                                    ss58: specs.base58prefix,
                                                                 },
                                                             );
                                                         }

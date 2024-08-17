@@ -1,15 +1,11 @@
 //! Deaf and dumb object definitions.
 
-use std::ops::{Deref, Sub};
-
 use serde::Deserialize;
+use std::ops::{Deref, Sub};
 
 pub type Version = u64;
 pub type Nonce = u32;
-
 pub type PalletIndex = u8;
-
-pub type Entropy = Vec<u8>; // TODO: maybe enforce something here
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -164,6 +160,7 @@ pub mod api_v2 {
     pub enum PaymentStatus {
         Pending,
         Paid,
+        TimedOut,
     }
 
     #[derive(Clone, Debug, Serialize, Decode, Encode, PartialEq)]
@@ -172,12 +169,14 @@ pub mod api_v2 {
         Waiting,
         Failed,
         Completed,
+        None,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct ServerStatus {
+        pub description: String,
         pub server_info: ServerInfo,
-        pub supported_currencies: HashMap<std::string::String, CurrencyProperties>,
+        pub supported_currencies: HashMap<String, CurrencyProperties>,
     }
 
     #[derive(Debug, Serialize)]
@@ -211,8 +210,6 @@ pub mod api_v2 {
         pub rpc_url: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub asset_id: Option<AssetId>,
-        // #[serde(skip_serializing)]
-        pub ss58: u16,
     }
 
     impl CurrencyInfo {
@@ -223,7 +220,6 @@ pub mod api_v2 {
                 decimals: self.decimals,
                 rpc_url: self.rpc_url.clone(),
                 asset_id: self.asset_id,
-                ss58: self.ss58,
             }
         }
     }
@@ -236,8 +232,6 @@ pub mod api_v2 {
         pub rpc_url: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub asset_id: Option<AssetId>,
-        // #[serde(skip_serializing)]
-        pub ss58: u16,
     }
 
     impl CurrencyProperties {
@@ -249,7 +243,6 @@ pub mod api_v2 {
                 decimals: self.decimals,
                 rpc_url: self.rpc_url.clone(),
                 asset_id: self.asset_id,
-                ss58: self.ss58,
             }
         }
     }
@@ -258,7 +251,7 @@ pub mod api_v2 {
     #[serde(rename_all = "lowercase")]
     pub enum TokenKind {
         Asset,
-        Balances,
+        Native,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -10,9 +10,9 @@ use axum::{
     routing, Json, Router,
 };
 use axum_macros::debug_handler;
-use serde::{Serialize, Serializer};
+use serde::Serialize;
+use serde_json::value::RawValue;
 use std::{borrow::Cow, collections::HashMap, future::Future, net::SocketAddr};
-
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -65,8 +65,8 @@ async fn process_order(
     state: State,
     matched_path: &MatchedPath,
     path_result: Result<RawPathParams, RawPathParamsRejection>,
-    query: &HashMap<String, String>,
-) -> Result<OrderResponse, OrderError> {
+    query: Option<Json<HashMap<String, serde_json::Value>>>,
+) -> Result<OrderResponse, Error> {
     const ORDER_ID: &str = "order_id";
 
     let path_parameters =
@@ -77,31 +77,30 @@ async fn process_order(
         .ok_or_else(|| OrderError::MissingParameter(ORDER_ID.into()))?
         .to_owned();
 
-    if query.is_empty() {
-        state
-            .order_status(&order)
-            .await
-            .map_err(|_| OrderError::InternalError)
-    } else {
+    if let Some(query) = query {
         let get_parameter = |parameter: &str| {
             query
                 .get(parameter)
                 .ok_or_else(|| OrderError::MissingParameter(parameter.into()))
         };
 
-        let currency = get_parameter(CURRENCY)?.to_owned();
-        let callback = get_parameter(CALLBACK)?.to_owned();
-        let amount = get_parameter(AMOUNT)?
-            .parse()
-            .map_err(|_| OrderError::InvalidParameter(AMOUNT.into()))?;
+        let serde_json::Value::String(currency) = get_parameter(CURRENCY)?.to_owned() else {
+            return Err(OrderError::InvalidParameter(CURRENCY.into()).into());
+        };
+        let serde_json::Value::String(callback) = get_parameter(CALLBACK)?.to_owned() else {
+            return Err(OrderError::InvalidParameter(CALLBACK.into()).into());
+        };
+        let serde_json::Value::Number(number) = get_parameter(AMOUNT)?.to_owned() else {
+            return Err(OrderError::InvalidParameter(AMOUNT.into()).into());
+        };
+        let Some(amount) = number.as_f64() else {
+            return Err(OrderError::InvalidParameter(AMOUNT.into()).into());
+        };
 
-        if currency != "USDC" {
-            return Err(OrderError::UnknownCurrency);
-        }
-
-        if amount < 0.07 {
-            return Err(OrderError::LessThanExistentialDeposit(0.07));
-        }
+        // TODO: Add a proper exdep check.
+        // if amount < 0.07 {
+        //     return Err(OrderError::LessThanExistentialDeposit(0.07));
+        // }
 
         state
             .create_order(OrderQuery {
@@ -111,7 +110,8 @@ async fn process_order(
                 currency,
             })
             .await
-            .map_err(|_| OrderError::InternalError)
+    } else {
+        state.order_status(&order).await
     }
 }
 
@@ -120,9 +120,9 @@ async fn order(
     extract::State(state): extract::State<State>,
     matched_path: MatchedPath,
     path_result: Result<RawPathParams, RawPathParamsRejection>,
-    query: Query<HashMap<String, String>>,
+    json: Option<Json<HashMap<String, serde_json::Value>>>,
 ) -> Response {
-    match process_order(state, &matched_path, path_result, &query).await {
+    match process_order(state, &matched_path, path_result, json).await {
         Ok(order) => match order {
             OrderResponse::NewOrder(order_status) => (StatusCode::CREATED, Json(order_status)).into_response(),
             OrderResponse::FoundOrder(order_status) => (StatusCode::OK, Json(order_status)).into_response(),
@@ -130,7 +130,7 @@ async fn order(
             OrderResponse::CollidedOrder(order_status) => (StatusCode::CONFLICT, Json(order_status)).into_response(),
             OrderResponse::NotFound => (StatusCode::NOT_FOUND, "").into_response(),
         },
-        Err(error) => match error {
+        Err(Error::Order(error)) => match error {
             OrderError::LessThanExistentialDeposit(existential_deposit) => (
                 StatusCode::BAD_REQUEST,
                 Json([InvalidParameter {
@@ -165,6 +165,7 @@ async fn order(
                 .into_response(),
             OrderError::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         },
+        Err(other) => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()).into_response(),
     }
 }
 
@@ -172,7 +173,7 @@ async fn process_force_withdrawal(
     state: State,
     matched_path: &MatchedPath,
     path_result: Result<RawPathParams, RawPathParamsRejection>,
-) -> Result<OrderStatus, ForceWithdrawalError> {
+) -> Result<Option<OrderStatus>, ForceWithdrawalError> {
     const ORDER_ID: &str = "order_id";
 
     let path_parameters = path_result
@@ -185,7 +186,8 @@ async fn process_force_withdrawal(
     state
         .force_withdrawal(order)
         .await
-        .map_err(|e| ForceWithdrawalError::WithdrawalError(e.into()))
+        .map_err(|e| /* ForceWithdrawalError::WithdrawalError(e.into()) */
+             panic!("db connection is down, state is lost")) //TODO tell this to client
 }
 
 #[debug_handler]
@@ -195,7 +197,8 @@ async fn force_withdrawal(
     path_result: Result<RawPathParams, RawPathParamsRejection>,
 ) -> Response {
     match process_force_withdrawal(state, &matched_path, path_result).await {
-        Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
+        Ok(Some(a)) => (StatusCode::CREATED, Json(a)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "").into_response(),
         Err(ForceWithdrawalError::WithdrawalError(a)) => {
             (StatusCode::BAD_REQUEST, Json(a)).into_response()
         }

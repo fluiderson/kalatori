@@ -54,7 +54,7 @@ pub async fn payout(
         // Payout operation logic
         let transactions = match balance.0 - order.amount.0 {
             a if (0..=loss_tolerance).contains(&a) => match currency.kind {
-                TokenKind::Balances => {
+                TokenKind::Native => {
                     let balance_transfer_constructor = BalanceTransferConstructor {
                         amount: order.amount.0,
                         to_account: &order.recipient,
@@ -103,7 +103,7 @@ pub async fn payout(
                 "{batch_transaction:?}"
             )))?;
 
-        let signature = signer.sign(order.id, sign_this).await?;
+        let signature = signer.sign(order.id, &sign_this)?;
 
         batch_transaction.signature.content =
             TypeContentToFill::SpecialType(SpecialTypeToFill::SignatureSr25519(Some(signature)));

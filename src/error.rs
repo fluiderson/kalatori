@@ -63,9 +63,11 @@ pub enum Error {
     #[error("failed to parse the chain interval {0} in the config root")]
     ConfigRootIntervals(ChainIntervalField, #[source] ChainIntervalError),
 
-    #[error("failed to parse the config parameter `{0}`")]
-    ConfigParse(&'static str),
+    #[error("signer error is occurred")]
+    Signer(#[from] SignerError),
 
+    // #[error("failed to parse the config parameter `{0}`")]
+    // ConfigParse(&'static str),
     #[error("chain {0:?} doesn't have any `endpoints` in the config")]
     EmptyEndpoints(String),
 
@@ -80,9 +82,6 @@ pub enum Error {
 
     #[error("daemon server error is occurred")]
     Server(#[from] ServerError),
-
-    #[error("signer error is occurred")]
-    Signer(#[from] SignerError),
 
     #[error("receiver account couldn't be parsed")]
     RecipientAccount(#[from] CryptoError),
@@ -574,17 +573,8 @@ pub enum UtilError {
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
 pub enum SignerError {
-    #[error("failed to read {0:?}")]
-    Env(String),
-
-    #[error("signer is down")]
-    SignerDown,
-
-    #[error("seed phrase is invalid")]
-    InvalidSeed(#[from] ErrorWordList),
-
-    #[error("derivation was failed")]
-    InvalidDerivation(#[from] CryptoError),
+    #[error("failed to derive the pair for an invoice account")]
+    Derive(#[from] CryptoError),
 }
 
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]

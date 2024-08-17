@@ -1,7 +1,8 @@
 pub use v0::OrdersTable;
 pub use v1::{
     Asset, BlockHash, BlockNumber, ChainHash, ChainProperties, ChainTableTrait, DaemonInfo,
-    KeysTable, Public, RootKey, RootTable, RootValue, TableTrait, TableTypes, Timestamp, Version,
+    KeysTable, Public, RootKey, RootTable, RootValue, TableRead, TableTrait, TableTypes,
+    TableWrite, Timestamp, Version,
 };
 
 mod v0 {
@@ -22,18 +23,22 @@ mod v1 {
     use ahash::{HashMap, HashSet};
     use arrayvec::{ArrayString, ArrayVec};
     use codec::{Decode, Encode};
-    use redb::{Key, Table, TableDefinition, TypeName, Value, WriteTransaction};
+    use redb::{
+        AccessGuard, Key, ReadOnlyTable, ReadTransaction, ReadableTable, Table, TableDefinition,
+        TableError, TypeName, Value, WriteTransaction,
+    };
     use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
     use std::{
         cmp::Ordering,
         fmt::{Debug, Display, Formatter, Result as FmtResult},
         num::NonZeroU64 as StdNonZeroU64,
-        ops::Deref,
         str,
         time::SystemTime,
     };
     use substrate_crypto_light::sr25519::Public as CryptoPublic;
     use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
+
+    // Traits & macros
 
     pub trait TableTypes {
         type Key: Key + 'static;
@@ -54,6 +59,26 @@ mod v1 {
         const NAME: &'static str;
         const DEFINITION: TableDefinition<'static, Self::Key, Self::Value> =
             TableDefinition::new(Self::NAME);
+
+        #[allow(clippy::type_complexity)]
+        fn open_ro(
+            tx: &ReadTransaction,
+        ) -> Result<Option<ReadOnlyTable<Self::Key, Self::Value>>, DbError> {
+            tx.open_table(Self::DEFINITION)
+                .map(Some)
+                .or_else(|error| {
+                    if matches!(error, TableError::TableDoesNotExist(_)) {
+                        Ok(None)
+                    } else {
+                        Err(error)
+                    }
+                })
+                .map_err(DbError::OpenTable)
+        }
+
+        fn open(tx: &WriteTransaction) -> Result<Table<'_, Self::Key, Self::Value>, DbError> {
+            tx.open_table(Self::DEFINITION).map_err(DbError::OpenTable)
+        }
     }
 
     #[macro_export]
@@ -67,6 +92,37 @@ mod v1 {
                 const NAME: &'static str = $name;
             }
         };
+    }
+
+    pub trait TableRead {
+        type Table: TableTrait;
+
+        fn get_slot<'a>(
+            table: &'a impl ReadableTable<
+                <Self::Table as TableTypes>::Key,
+                <Self::Table as TableTypes>::Value,
+            >,
+            key: &<<Self::Table as TableTypes>::Key as Value>::SelfType<'_>,
+        ) -> Result<Option<AccessGuard<'a, <Self::Table as TableTypes>::Value>>, DbError> {
+            table.get(key).map_err(DbError::Get)
+        }
+    }
+
+    pub trait TableWrite: TableRead {
+        fn insert_slot(
+            table: &mut Table<
+                '_,
+                <Self::Table as TableTypes>::Key,
+                <Self::Table as TableTypes>::Value,
+            >,
+            key: &<<Self::Table as TableTypes>::Key as Value>::SelfType<'_>,
+            value: &<<Self::Table as TableTypes>::Value as Value>::SelfType<'_>,
+        ) -> Result<(), DbError> {
+            table
+                .insert(key, value)
+                .map(|_| ())
+                .map_err(DbError::Insert)
+        }
     }
 
     // TODO: `<const N: usize>` is redundant.
@@ -317,15 +373,6 @@ mod v1 {
             TypeName::new(stringify!(NonZeroU64))
         }
     }
-
-    impl Deref for NonZeroU64 {
-        type Target = StdNonZeroU64;
-
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
-
     #[derive(Debug)]
     pub enum RootKey {
         // The database version must be stored in a separate slot.
@@ -454,8 +501,7 @@ mod v1 {
 
     impl<'de> Deserialize<'de> for Timestamp {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-            Self::from_millis(Deserialize::deserialize(deserializer)?)
-                .map_err(DeError::custom)
+            Self::from_millis(Deserialize::deserialize(deserializer)?).map_err(DeError::custom)
         }
     }
 
@@ -463,8 +509,8 @@ mod v1 {
     pub struct Timestamp(#[codec(compact)] u64);
 
     impl Timestamp {
-        pub const MAX: u64 = 253_402_300_799_123;
-        pub const MAX_STRING: &'static str = "9999-12-31T23:59:59.123456789Z";
+        pub const MAX: u64 = 253_402_300_799_999;
+        pub const MAX_STRING: &'static str = "9999-12-31T23:59:59.999999999Z";
 
         pub fn as_millis(self) -> u64 {
             self.0
@@ -490,7 +536,7 @@ mod v1 {
             }
         }
 
-        /// Saturating. Should be used to create a timestamp for only the display purpose.
+        /// Saturating. Should be used to create a timestamp for the display purpose only.
         pub fn from_duration_in_millis(millis: u64) -> Self {
             let Ok(system_ms) = get_system_millis().unwrap_or_default().try_into() else {
                 return Self(Self::MAX);

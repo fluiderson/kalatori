@@ -10,7 +10,11 @@ use crate::{
     chain2::{
         rpc::{asset_balance_at_account, system_balance_at_account},
         tracker::ChainWatcher,
-    }, database::definitions::Timestamp, definitions::{api_v2::OrderInfo, Balance}, error::{ChainError, NotHex}, utils::unhex
+    },
+    database::definitions::Timestamp,
+    definitions::{api_v2::OrderInfo, Balance},
+    error::{ChainError, NotHex},
+    utils::unhex,
 };
 
 /// Abstraction to distinguish block hash from many other H256 things
@@ -29,7 +33,9 @@ impl BlockHash {
     pub fn from_str(s: &str) -> Result<Self, crate::error::ChainError> {
         let block_hash_raw = unhex(&s, NotHex::BlockHash)?;
         Ok(BlockHash(H256(
-            U256::try_from_le_slice(&block_hash_raw).map(|bytes| bytes.to_le_bytes()).ok_or(ChainError::BlockHashLength)?,
+            U256::try_from_le_slice(&block_hash_raw)
+                .map(|bytes| bytes.to_le_bytes())
+                .ok_or(ChainError::BlockHashLength)?,
         )))
     }
 }

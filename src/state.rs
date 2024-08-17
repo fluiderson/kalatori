@@ -1,4 +1,5 @@
 use crate::{
+    callback,
     chain2::ChainManager,
     database::{definitions::Timestamp, Database},
     definitions::api_v2::{
@@ -80,7 +81,7 @@ impl State {
 
                             chain_manager_wakeup
                                 .add_invoice(order, order_details, recipient)
-                                .await;
+                                .await?;
                         }
                         Ok("All saved orders restored")
                     });
@@ -103,7 +104,7 @@ impl State {
                             StateAccessRequest::GetInvoiceStatus(request) => {
                                 request
                                     .res
-                                    .send(state.get_invoice_status(request.order).await)
+                                    .send(state.get_invoice_status(request.order))
                                     .map_err(|_| Error::Fatal)?;
                             }
                             StateAccessRequest::CreateInvoice(request) => {
@@ -114,6 +115,7 @@ impl State {
                             }
                             StateAccessRequest::ServerStatus(res) => {
                                 let server_status = ServerStatus {
+                                    description: "tododododododo".into(),
                                     server_info: state.server_info.clone(),
                                     supported_currencies: state.currencies.clone(),
                                 };
@@ -124,6 +126,15 @@ impl State {
                                 match state.db.write(|tx| tx.orders()?.mark_paid(&id)) {
                                     Ok(order) => {
                                         // TODO: callback here
+                                        callback::callback(&order.callback, OrderStatus {
+                                            order: id.clone(),
+                                            message: String::new(),
+                                            recipient: state.recipient.clone().to_base58_string(42),
+                                            server_info: state.server_info.clone(),
+                                            order_info: order.clone(),
+                                            payment_page: String::new(),
+                                            redirect_url: String::new(),
+                                        }).await;
                                         drop(state.chain_manager.reap(id, order, state.recipient).await);
                                     }
                                     Err(e) => {
@@ -132,6 +143,9 @@ impl State {
                                         );
                                     }
                                 }
+                            }
+                            StateAccessRequest::ForceWithdrawal { order, res } => {
+                                res.send(state.force_withdrawal(order).await).map_err(|_| Error::Fatal)?;
                             }
                         };
                     }
@@ -211,8 +225,13 @@ impl State {
         };
     }
 
-    pub async fn force_withdrawal(&self, order: String) -> Result<OrderStatus, OrderStatus> {
-        todo!()
+    pub async fn force_withdrawal(&self, order: String) -> Result<Option<OrderStatus>, Error> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(StateAccessRequest::ForceWithdrawal { order, res })
+            .await
+            .map_err(|_| Error::Fatal)?;
+        rx.await.map_err(|_| Error::Fatal)?
     }
 
     pub fn interface(&self) -> Self {
@@ -228,6 +247,10 @@ enum StateAccessRequest {
     CreateInvoice(CreateInvoice),
     ServerStatus(oneshot::Sender<ServerStatus>),
     OrderPaid(String),
+    ForceWithdrawal {
+        order: String,
+        res: oneshot::Sender<Result<Option<OrderStatus>, Error>>,
+    },
 }
 
 struct GetInvoiceStatus {
@@ -251,11 +274,35 @@ struct StateData {
 }
 
 impl StateData {
+    async fn force_withdrawal(&mut self, order: String) -> Result<Option<OrderStatus>, Error> {
+        let Some(orders) = self.db.read()?.orders()? else {
+            return Ok(None);
+        };
+
+        let Some(order_info) = orders.read_order(&order)? else {
+            return Ok(None);
+        };
+
+        self.chain_manager
+            .reap(order.clone(), order_info.clone(), self.recipient)
+            .await?;
+
+        Ok(Some(OrderStatus {
+            order,
+            message: String::new(),
+            recipient: self.recipient.clone().to_base58_string(42),
+            server_info: self.server_info.clone(),
+            order_info,
+            payment_page: String::new(),
+            redirect_url: String::new(),
+        }))
+    }
+
     fn update_currencies(&mut self, currencies: HashMap<String, CurrencyProperties>) {
         self.currencies.extend(currencies);
     }
 
-    async fn get_invoice_status(&self, order: String) -> Result<OrderResponse, Error> {
+    fn get_invoice_status(&self, order: String) -> Result<OrderResponse, Error> {
         let Some(orders) = self.db.read()?.orders()? else {
             return Ok(OrderResponse::NotFound);
         };
@@ -283,7 +330,7 @@ impl StateData {
             .get(&order_query.currency)
             .ok_or(OrderError::UnknownCurrency)?;
         let currency = currency.info(order_query.currency.clone());
-        let payment_account = self.signer.public(order.clone(), currency.ss58.into())?;
+        let payment_account = self.signer.construct_invoice_account(&order)?;
         match self.db.write(|tx| {
             tx.orders()?.create_order(
                 &order,
@@ -294,6 +341,7 @@ impl StateData {
             )
         })? {
             OrderCreateResponse::New(new_order_info) => {
+                tracing::error!("3");
                 self.chain_manager
                     .add_invoice(order.clone(), new_order_info.clone(), self.recipient)
                     .await?;

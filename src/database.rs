@@ -1,7 +1,7 @@
 //! The database module.
 //!
 //! We do not need concurrency here as this is our actual source of truth for legally binging
-//! commercial offers and contracts, hence causality is a must. Care must be taken that no threads
+//! commercial offers and contracts, hence causality is a must. A care must be taken that no threads
 //! are spawned here and all locking methods are called in sync functions without sharing lock
 //! guards with the async code.
 
@@ -25,8 +25,8 @@ use indexmap::{
 use names::{Generator, Name};
 use redb::{
     backends::{FileBackend, InMemoryBackend},
-    AccessGuard, Database as Redb, ReadOnlyTable, ReadTransaction, ReadableTable, Table,
-    TableError, TableHandle, Value, WriteTransaction,
+    Database as Redb, ReadOnlyTable, ReadTransaction, ReadableTable, Table, TableHandle, Value,
+    WriteTransaction,
 };
 use ruint::aliases::U256;
 use std::{
@@ -37,12 +37,13 @@ use std::{
     path,
     sync::Arc,
 };
+use substrate_crypto_light::common::{AccountId32, AsBase58};
 
 pub mod definitions;
 
 use definitions::{
-    ChainHash, ChainProperties, ChainTableTrait, DaemonInfo, KeysTable, OrdersTable, Public,
-    RootKey, RootTable, RootValue, TableTrait, TableTypes, Timestamp, Version,
+    ChainHash, ChainProperties, DaemonInfo, KeysTable, OrdersTable, Public, RootKey, RootTable,
+    RootValue, TableRead, TableTrait, TableTypes, TableWrite, Timestamp, Version,
 };
 
 pub const MODULE: &str = module_path!();
@@ -62,7 +63,6 @@ impl Display for PathPrinter<'_> {
 pub struct Database {
     db: Redb,
     instance: String,
-    recipient: Account,
 }
 
 impl Database {
@@ -71,7 +71,6 @@ impl Database {
         path_option: Option<Cow<'static, str>>,
         connected_chains: &IndexMap<Arc<str>, ConnectedChain, RandomState>,
         key_store: KeyStore,
-        recipient: Account,
     ) -> Result<(Arc<Self>, Arc<Signer>), DbError> {
         let builder = Redb::builder();
 
@@ -102,7 +101,7 @@ impl Database {
         }?;
 
         let tx = TxWrite::new(&database)?.0;
-        let mut root = RootWrite::open_table(&tx)?;
+        let mut root = RootTable::open(&tx)?;
         let mut chain_hashes = HashSet::with_capacity(connected_chains.len());
         let public = key_store.public();
 
@@ -159,6 +158,7 @@ impl Database {
                 instance: db_instance,
             } = DaemonInfo::decode(&mut encoded_daemon_info.value().0)?;
 
+            #[allow(clippy::arithmetic_side_effects)]
             let mut new_db_chains = IndexMap::with_capacity_and_hasher(
                 db_chains.len() + connected_chains.len(),
                 RandomState::new(),
@@ -224,14 +224,9 @@ impl Database {
             Arc::new(Self {
                 db: database,
                 instance,
-                recipient,
             }),
             Arc::new(signer),
         ))
-    }
-
-    pub fn recipient(&self) -> Account {
-        self.recipient
     }
 
     pub fn instance(&self) -> &str {
@@ -257,17 +252,13 @@ pub struct TxRead(ReadTransaction);
 
 impl TxRead {
     pub fn orders(&self) -> Result<Option<OrdersRead>, DbError> {
-        OrdersRead::open_table(&self.0).map(|some| some.map(OrdersRead))
+        OrdersTable::open_ro(&self.0).map(|some| some.map(OrdersRead))
     }
 }
 
 pub struct OrdersRead(
     ReadOnlyTable<<OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>,
 );
-
-impl TableRead for OrdersRead {
-    type Table = OrdersTable;
-}
 
 impl OrdersRead {
     pub fn read_order(&self, key: &str) -> Result<Option<OrderInfo>, DbError> {
@@ -301,7 +292,7 @@ impl TxWrite {
     }
 
     pub fn orders(&self) -> Result<OrdersWrite<'_>, DbError> {
-        OrdersWrite::open_table(&self.0).map(OrdersWrite)
+        OrdersTable::open(&self.0).map(OrdersWrite)
     }
 }
 
@@ -309,17 +300,13 @@ pub struct OrdersWrite<'a>(
     Table<'a, <OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>,
 );
 
-impl TableWrite for OrdersWrite<'_> {
-    type Table = OrdersTable;
-}
-
 impl OrdersWrite<'_> {
     pub fn create_order(
         &mut self,
         key: &str,
         query: OrderQuery,
         currency: CurrencyInfo,
-        payment_account: String,
+        payment_account: AccountId32,
         account_lifetime: Timestamp,
     ) -> Result<OrderCreateResponse, DbError> {
         let get_death_ts = || {
@@ -345,7 +332,8 @@ impl OrdersWrite<'_> {
             }
         } else {
             let death = get_death_ts()?;
-            let order = OrderInfo::new(query, currency, payment_account, death);
+            let order =
+                OrderInfo::new(query, currency, payment_account.to_base58_string(42), death);
 
             Self::insert_slot(&mut self.0, &key, &order)?;
 
@@ -371,14 +359,23 @@ impl OrdersWrite<'_> {
 }
 
 struct RootWrite;
+struct KeysWrite;
 
-impl TableWrite for RootWrite {
+impl<T: TableRead> TableWrite for T {}
+
+impl TableRead for OrdersRead {
+    type Table = OrdersTable;
+}
+
+impl TableRead for OrdersWrite<'_> {
+    type Table = OrdersTable;
+}
+
+impl TableRead for RootWrite {
     type Table = RootTable;
 }
 
-struct KeysWrite;
-
-impl TableWrite for KeysWrite {
+impl TableRead for KeysWrite {
     type Table = KeysTable;
 }
 
@@ -414,8 +411,8 @@ impl<'a> Tables<'a> {
         for table in tx.list_tables().map_err(DbError::TableList)? {
             match table.name() {
                 RootTable::NAME => {}
-                KeysTable::NAME => keys = Some(KeysWrite::open_table(tx)?),
-                OrdersTable::NAME => orders = Some(OrdersWrite::open_table(tx)?),
+                KeysTable::NAME => keys = Some(KeysTable::open(tx)?),
+                OrdersTable::NAME => orders = Some(OrdersTable::open(tx)?),
                 // InvoicesTable::NAME => invoices = Some(open_table::<InvoicesTable>(tx)?),
                 other_name => {
                     if open_chain_tables(
@@ -602,6 +599,7 @@ fn process_keys(
     keys: Option<Table<'_, <KeysTable as TableTypes>::Key, <KeysTable as TableTypes>::Value>>,
 ) -> Result<(Vec<(Public, Timestamp)>, Signer), DbError> {
     // Since the current key can be changed, this array should've a capacity of one more element.
+    #[allow(clippy::arithmetic_side_effects)]
     let mut new_old_publics_death_timestamps =
         Vec::with_capacity(old_publics_death_timestamps.len() + 1);
     let mut filtered_old_pairs = HashMap::with_capacity(key_store.old_pairs_len());
@@ -660,7 +658,7 @@ fn process_keys(
         }
 
         let is_db_public_in_circulation = keys.map_or(Ok(false), |table| {
-            get_slot::<KeysTable>(&table, &db_public).map(|slot_option| slot_option.is_some())
+            KeysWrite::get_slot(&table, &db_public).map(|slot_option| slot_option.is_some())
         })?;
 
         if is_db_public_in_circulation {
@@ -679,79 +677,4 @@ fn process_keys(
         new_old_publics_death_timestamps,
         key_store.into_signer::<true>(filtered_old_pairs),
     ))
-}
-
-pub trait TableRead {
-    type Table: TableTrait;
-
-    fn get_slot<'a>(
-        table: &'a impl ReadableTable<
-            <Self::Table as TableTypes>::Key,
-            <Self::Table as TableTypes>::Value,
-        >,
-        key: &<<Self::Table as TableTypes>::Key as Value>::SelfType<'_>,
-    ) -> Result<Option<AccessGuard<'a, <Self::Table as TableTypes>::Value>>, DbError> {
-        get_slot::<Self::Table>(table, key)
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn open_table(
-        tx: &ReadTransaction,
-    ) -> Result<
-        Option<ReadOnlyTable<<Self::Table as TableTypes>::Key, <Self::Table as TableTypes>::Value>>,
-        DbError,
-    > {
-        tx.open_table(Self::Table::DEFINITION)
-            .map(Some)
-            .or_else(|error| {
-                if matches!(error, TableError::TableDoesNotExist(_)) {
-                    Ok(None)
-                } else {
-                    Err(error)
-                }
-            })
-            .map_err(DbError::OpenTable)
-    }
-}
-
-pub trait TableWrite {
-    type Table: TableTrait;
-
-    fn get_slot<'a>(
-        table: &'a impl ReadableTable<
-            <Self::Table as TableTypes>::Key,
-            <Self::Table as TableTypes>::Value,
-        >,
-        key: &<<Self::Table as TableTypes>::Key as Value>::SelfType<'_>,
-    ) -> Result<Option<AccessGuard<'a, <Self::Table as TableTypes>::Value>>, DbError> {
-        get_slot::<Self::Table>(table, key)
-    }
-
-    fn open_table(
-        tx: &WriteTransaction,
-    ) -> Result<
-        Table<'_, <Self::Table as TableTypes>::Key, <Self::Table as TableTypes>::Value>,
-        DbError,
-    > {
-        tx.open_table(Self::Table::DEFINITION)
-            .map_err(DbError::OpenTable)
-    }
-
-    fn insert_slot(
-        table: &mut Table<'_, <Self::Table as TableTypes>::Key, <Self::Table as TableTypes>::Value>,
-        key: &<<Self::Table as TableTypes>::Key as Value>::SelfType<'_>,
-        value: &<<Self::Table as TableTypes>::Value as Value>::SelfType<'_>,
-    ) -> Result<(), DbError> {
-        table
-            .insert(key, value)
-            .map(|_| ())
-            .map_err(DbError::Insert)
-    }
-}
-
-fn get_slot<'a, T: TableTrait>(
-    table: &'a impl ReadableTable<T::Key, T::Value>,
-    key: &<T::Key as Value>::SelfType<'_>,
-) -> Result<Option<AccessGuard<'a, T::Value>>, DbError> {
-    table.get(key).map_err(DbError::Get)
 }
