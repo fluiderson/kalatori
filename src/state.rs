@@ -341,7 +341,6 @@ impl StateData {
             )
         })? {
             OrderCreateResponse::New(new_order_info) => {
-                tracing::error!("3");
                 self.chain_manager
                     .add_invoice(order.clone(), new_order_info.clone(), self.recipient)
                     .await?;
