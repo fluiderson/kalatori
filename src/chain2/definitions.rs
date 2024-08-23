@@ -2,7 +2,6 @@
 
 use jsonrpsee::ws_client::WsClient;
 use primitive_types::H256;
-use ruint::aliases::U256;
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::sync::oneshot;
 
@@ -33,9 +32,9 @@ impl BlockHash {
     pub fn from_str(s: &str) -> Result<Self, crate::error::ChainError> {
         let block_hash_raw = unhex(&s, NotHex::BlockHash)?;
         Ok(BlockHash(H256(
-            U256::try_from_le_slice(&block_hash_raw)
-                .map(|bytes| bytes.to_le_bytes())
-                .ok_or(ChainError::BlockHashLength)?,
+            block_hash_raw
+                .try_into()
+                .map_err(|_| ChainError::BlockHashLength)?,
         )))
     }
 }

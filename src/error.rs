@@ -19,7 +19,6 @@ use redb::{
 };
 use serde_json::Error as JsonError;
 use serde_json::Value;
-use sled::Error as DatabaseErrorr;
 use std::{io::Error as IoError, net::SocketAddr, str::Utf8Error, time::SystemTimeError};
 use substrate_constructor::error::{ErrorFixMe, StorageRegistryError};
 use substrate_crypto_light::error::Error as CryptoError;
@@ -73,9 +72,6 @@ pub enum Error {
 
     #[error("RPC server error is occurred")]
     Chain(#[from] ChainError),
-
-    #[error("database error is occurred")]
-    Db(#[from] DbErrorr),
 
     #[error("order error is occurred")]
     Order(#[from] OrderError),
@@ -485,40 +481,6 @@ pub enum TimestampError {
         Timestamp::MAX_STRING
     )]
     Overflow,
-}
-
-#[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
-pub enum DbErrorr {
-    #[error("currency key isn't found")]
-    CurrencyKeyNotFound,
-
-    #[error("database engine isn't running")]
-    DbEngineDown,
-
-    #[error("database internal error is occurred")]
-    DbInternalError(#[from] DatabaseErrorr),
-
-    #[error("failed to start the database service")]
-    DbStartError(DatabaseErrorr),
-
-    #[error("operating system related I/O error is occurred")]
-    IoError(#[from] IoError),
-
-    #[error("database storage decoding error is occurred")]
-    CodecError(#[from] CodecError),
-
-    #[error("order {0:?} isn't found")]
-    OrderNotFound(String),
-
-    #[error("order {0:?} was already paid")]
-    AlreadyPaid(String),
-
-    #[error("order {0:?} isn't paid yet")]
-    NotPaid(String),
-
-    #[error("there was already an attempt to withdraw order {0:?}")]
-    WithdrawalWasAttempted(String),
 }
 
 #[derive(Debug, Error)]

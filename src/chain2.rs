@@ -63,7 +63,7 @@ impl ChainManager {
             watch_chain.insert(c.name.clone(), chain_tx.clone());
 
             // this MUST assert that there are no duplicates in requested assets
-            if let Some(ref a) = c.config.inner.native_token {
+            if let Some(ref a) = c.config.inner.native {
                 if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
                     return Err(Error::DuplicateCurrency(a.name.clone()));
                 }

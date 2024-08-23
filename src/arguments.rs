@@ -156,8 +156,7 @@ pub struct ChainConfig {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct ChainConfigInner {
-    #[serde(flatten)]
-    pub native_token: Option<NativeToken>,
+    pub native: Option<Native>,
     #[serde(default)]
     pub asset: Vec<AssetInfo>,
     #[serde(flatten)]
@@ -174,8 +173,7 @@ pub struct ChainIntervals {
 }
 
 #[derive(Deserialize, Clone, Debug)]
-pub struct NativeToken {
-    #[serde(rename = "native-token")]
+pub struct Native {
     pub name: String,
     pub decimals: Decimals,
 }

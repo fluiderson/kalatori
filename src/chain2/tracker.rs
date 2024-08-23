@@ -155,7 +155,10 @@ pub fn start_chain_watch(
                                 let watcher_for_reaper = watcher.clone();
                                 let signer_for_reaper = signer.clone();
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
-                                    payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
+                                    let result = payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
+                                    if let Err(er) = result {
+                                        tracing::error!("{:?}", er);
+                                    }
                                     Ok(format!("Payout attempt for order {id} terminated"))
                                 });
                             }
@@ -212,7 +215,7 @@ impl ChainWatcher {
         tracing::info!(
             "chain {} requires native token {:?} and {:?}",
             &chain.name,
-            &chain.config.inner.native_token,
+            &chain.config.inner.native,
             &chain.config.inner.asset
         );
         // Remove unwanted assets
@@ -223,7 +226,7 @@ impl ChainWatcher {
                 &name,
                 &properties
             );
-            if let Some(native_token) = &chain.config.inner.native_token {
+            if let Some(native_token) = &chain.config.inner.native {
                 (native_token.name == *name) && (native_token.decimals.0 == specs.decimals)
             } else {
                 chain
@@ -246,7 +249,7 @@ impl ChainWatcher {
         // down
         if assets.len()
             != chain.config.inner.asset.len()
-                + if chain.config.inner.native_token.is_some() {
+                + if chain.config.inner.native.is_some() {
                     1
                 } else {
                     0

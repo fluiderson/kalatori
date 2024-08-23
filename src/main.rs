@@ -1,4 +1,3 @@
-use chain2::ChainManager;
 use clap::Parser;
 use std::process::ExitCode;
 use substrate_crypto_light::common::AccountId32;
@@ -11,22 +10,19 @@ mod callback;
 mod chain;
 mod chain2;
 mod database;
-// mod database2;
 mod definitions;
 mod error;
 mod server;
 mod signer;
-// mod signer2;
 mod state;
 mod utils;
 
 use arguments::{CliArgs, Config};
 use chain::definitions::Account;
+use chain2::ChainManager;
 use database::Database;
-// use database2::ConfigWoChains;
 use error::{Error, PrettyCause};
 use signer::KeyStore;
-// use signer2::Signer;
 use state::State;
 use utils::{
     logger,

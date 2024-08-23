@@ -106,26 +106,38 @@ pub async fn get_keys_from_storage(
         hex::encode(twox_128(storage_name.as_bytes()))
     );
 
-    let count = 1000; // TODO make full scan just in case
-    let start_key: Option<&str> = None; // Start from the beginning
-
+    let count = 1000;
     let mut params = vec![
         serde_json::to_value(storage_key_prefix.clone()).unwrap(),
         serde_json::to_value(count).unwrap(),
     ];
 
-    if let Some(start_key) = start_key {
-        params.push(serde_json::to_value(start_key).unwrap());
-    }
-
-    params.push(serde_json::to_value(block.to_string()).unwrap());
-
-    let keys: Value = client
+    let mut total_keys = vec![];
+    let Value::Array(mut fetched_keys) = client
         .request("state_getKeysPaged", params)
         .await
-        .map_err(ChainError::Client)?;
+        .map_err(ChainError::Client)?
+    else {
+        return Ok(Value::Null);
+    };
 
-    Ok(keys)
+    loop {
+        let Some(last_key) = fetched_keys.last() else {
+            return Ok(Value::Array(total_keys));
+        };
+
+        params = vec![
+            serde_json::to_value(storage_key_prefix.clone()).unwrap(),
+            serde_json::to_value(count).unwrap(),
+            last_key.clone(),
+        ];
+        total_keys.extend(fetched_keys);
+
+        fetched_keys = client
+            .request("state_getKeysPaged", params)
+            .await
+            .map_err(ChainError::Client)?;
+    }
 }
 
 /// fetch genesis hash, must be a hexadecimal string transformable into
@@ -565,6 +577,7 @@ pub async fn system_balance_at_account(
     let query = system_balance_query(metadata_v15, account_id)?;
 
     let value_fetch = get_value_from_storage(client, &query.key, block).await?;
+    tracing::error!("{value_fetch:?}");
     if let Value::String(ref string_value) = value_fetch {
         let value_data = unhex(string_value, NotHex::StorageValue)?;
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(

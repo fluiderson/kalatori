@@ -3,34 +3,6 @@
 use serde::Deserialize;
 use std::ops::{Deref, Sub};
 
-pub type Version = u64;
-pub type Nonce = u32;
-pub type PalletIndex = u8;
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct Chain {
-    pub name: String,
-    pub endpoints: Vec<String>,
-    #[serde(flatten)]
-    pub native_token: Option<NativeToken>,
-    #[serde(default)]
-    pub asset: Vec<AssetInfo>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct NativeToken {
-    pub name: String,
-    pub decimals: api_v2::Decimals,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct AssetInfo {
-    pub name: String,
-    pub id: api_v2::AssetId,
-}
-
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Balance(pub u128);
 

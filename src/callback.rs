@@ -7,7 +7,7 @@ pub async fn callback(path: &str, order_status: OrderStatus) {
     let req = ureq::post(path);
 
     task::spawn_blocking(move || {
-        let _d = req.send_json(order_status).unwrap();
+        let _d = req.send_json(order_status);
     })
     .await
     .unwrap();
