@@ -269,17 +269,6 @@ pub async fn assets_set_at_block(
     let mut assets_set = HashMap::new();
     let chain_name =
         <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(metadata_v15)?.spec_name;
-    assets_set.insert(
-        specs.unit,
-        CurrencyProperties {
-            chain_name: chain_name.clone(),
-            kind: TokenKind::Native,
-            decimals: specs.decimals,
-            rpc_url: rpc_url.to_owned(),
-            asset_id: None,
-        },
-    );
-
     let mut assets_asset_storage_metadata = None;
     let mut assets_metadata_storage_metadata = None;
 
@@ -577,7 +566,6 @@ pub async fn system_balance_at_account(
     let query = system_balance_query(metadata_v15, account_id)?;
 
     let value_fetch = get_value_from_storage(client, &query.key, block).await?;
-    tracing::error!("{value_fetch:?}");
     if let Value::String(ref string_value) = value_fetch {
         let value_data = unhex(string_value, NotHex::StorageValue)?;
         let value = decode_all_as_type::<&[u8], (), RuntimeMetadataV15>(
@@ -607,7 +595,7 @@ pub async fn system_balance_at_account(
         }
     }
 
-    Err(ChainError::BalanceNotFound)
+    Ok(Balance(0))
 }
 
 pub async fn transfer_events(

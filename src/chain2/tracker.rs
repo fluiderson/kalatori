@@ -23,7 +23,7 @@ use crate::{
         },
         utils::{events_entry_metadata, was_balance_received_at_account},
     },
-    definitions::api_v2::CurrencyProperties,
+    definitions::api_v2::{CurrencyProperties, TokenKind},
     error::ChainError,
     signer::Signer,
     state::State,
@@ -185,6 +185,7 @@ pub struct ChainWatcher {
 }
 
 impl ChainWatcher {
+    #[allow(clippy::too_many_lines)]
     pub async fn prepare_chain(
         client: &WsClient,
         chain: Chain,
@@ -218,25 +219,46 @@ impl ChainWatcher {
             &chain.config.inner.native,
             &chain.config.inner.asset
         );
+
         // Remove unwanted assets
-        assets.retain(|name, properties| {
-            tracing::info!(
-                "chain {} has token {} with properties {:?}",
-                &chain.name,
-                &name,
-                &properties
-            );
-            if let Some(native_token) = &chain.config.inner.native {
-                (native_token.name == *name) && (native_token.decimals.0 == specs.decimals)
-            } else {
+
+        assets = assets
+            .into_iter()
+            .filter_map(|(name, properties)| {
+                tracing::info!(
+                    "chain {} has token {} with properties {:?}",
+                    &chain.name,
+                    &name,
+                    &properties
+                );
+
                 chain
                     .config
                     .inner
                     .asset
                     .iter()
-                    .any(|a| (a.name == *name) && (Some(a.id.0) == properties.asset_id))
+                    .find(|a| Some(a.id.0) == properties.asset_id)
+                    .map(|a| (a.name.clone(), properties))
+            })
+            .collect();
+
+        if let Some(native_token) = chain.config.inner.native.clone() {
+            if native_token.decimals.0 == specs.decimals {
+                assets.insert(
+                    native_token.name,
+                    CurrencyProperties {
+                        chain_name: <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(
+                            &metadata,
+                        )?
+                        .spec_name,
+                        kind: TokenKind::Native,
+                        decimals: specs.decimals,
+                        rpc_url: rpc_url.to_owned(),
+                        asset_id: None,
+                    },
+                );
             }
-        });
+        }
 
         // Deduplication is done on chain manager level;
         // Check that we have same number of assets as requested (we've checked that we have only
@@ -248,12 +270,7 @@ impl ChainWatcher {
         // TODO: maybe check if at least one endpoint responds with proper assets and if not, shut
         // down
         if assets.len()
-            != chain.config.inner.asset.len()
-                + if chain.config.inner.native.is_some() {
-                    1
-                } else {
-                    0
-                }
+            != chain.config.inner.asset.len() + usize::from(chain.config.inner.native.is_some())
         {
             return Err(ChainError::AssetsInvalid(chain.name.to_string()));
         }
