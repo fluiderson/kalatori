@@ -20,9 +20,9 @@ endpoints = [
 ]
 
 [[chain.asset]]
-name = "USDCL"
+name = "USDC"
 id = 1337
 
 [[chain.asset]]
-name = "USDtL"
+name = "USDt"
 id = 1984

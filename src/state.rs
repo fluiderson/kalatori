@@ -325,6 +325,7 @@ impl StateData {
 
     async fn create_invoice(&self, order_query: OrderQuery) -> Result<OrderResponse, Error> {
         let order = order_query.order.clone();
+        tracing::debug!("creating order {order_query:?}");
         let currency = self
             .currencies
             .get(&order_query.currency)

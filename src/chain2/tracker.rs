@@ -109,6 +109,7 @@ pub fn start_chain_watch(
                                             if events.iter().any(|event| was_balance_received_at_account(&invoice.address, &event.0.fields)) {
                                                 match invoice.check(&client, &watcher, &block).await {
                                                     Ok(true) => {
+                                                        tracing::debug!("order paid");
                                                         state.order_paid(id.clone()).await;
                                                         id_remove_list.push(id.to_owned());
                                                     }
@@ -117,9 +118,7 @@ pub fn start_chain_watch(
                                                         tracing::warn!("account fetch error: {0:?}", e);
                                                     }
                                                 }
-                                            }
-
-                                            if invoice.death.as_millis() >= now {
+                                            } else if invoice.death.as_millis() <= now {
                                                 match invoice.check(&client, &watcher, &block).await {
                                                     Ok(paid) => {
                                                         if paid {
@@ -135,6 +134,7 @@ pub fn start_chain_watch(
                                             }
                                         }
                                         for id in id_remove_list {
+                                            tracing::debug!("removing {id}");
                                             watched_accounts.remove(&id);
                                         }
                                     },

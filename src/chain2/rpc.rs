@@ -553,7 +553,7 @@ pub async fn asset_balance_at_account(
             Err(ChainError::AssetBalanceFormat)
         }
     } else {
-        Err(ChainError::StorageValueFormat(value_fetch))
+        Ok(Balance(0))
     }
 }
 

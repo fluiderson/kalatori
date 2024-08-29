@@ -644,7 +644,7 @@ pub fn was_balance_received_at_account(
     balance_transfer_event_fields: &[FieldData],
 ) -> bool {
     let mut found_receiver = None;
-    for field in balance_transfer_event_fields.iter() {
+    for field in balance_transfer_event_fields {
         if let Some(ref field_name) = field.field_name {
             if field_name == "to" {
                 if let ParsedData::Id(ref account_id32) = field.data.data {
