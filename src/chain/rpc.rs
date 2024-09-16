@@ -43,6 +43,12 @@ const BLOCK_NONCE_ERROR: &str = "failed to fetch an account nonce by the scanner
 
 const CHARGE_ASSET_TX_PAYMENT: &str = "ChargeAssetTxPayment";
 
+/// To prevent infinite loop while scanning for keys if the node decides to misbehave, limit number
+/// of pages
+///
+/// TODO: add more timeouts
+const MAX_KEY_PAGES: usize = 256;
+
 // Pallets
 
 const SYSTEM: &str = "System";
@@ -99,33 +105,54 @@ pub async fn get_keys_from_storage(
     prefix: &str,
     storage_name: &str,
     block: &BlockHash,
-) -> Result<Value, ChainError> {
+) -> Result<Vec<Value>, ChainError> {
+    let mut keys_vec = Vec::new();
     let storage_key_prefix = format!(
         "0x{}{}",
         hex::encode(twox_128(prefix.as_bytes())),
         hex::encode(twox_128(storage_name.as_bytes()))
     );
 
-    let count = 100; // TODO make full scan just in case
-    let start_key: Option<&str> = None; // Start from the beginning
+    let count = 10; // TODO make full scan just in case
+    let mut start_key: Option<String> = None; // Start from the beginning
 
-    let mut params = vec![
+    let params_template = vec![
         serde_json::to_value(storage_key_prefix.clone()).unwrap(),
         serde_json::to_value(count).unwrap(),
     ];
 
-    if let Some(start_key) = start_key {
-        params.push(serde_json::to_value(start_key).unwrap());
+    for i in 0..MAX_KEY_PAGES {
+        let mut params = params_template.clone();
+        if let Some(ref start_key) = start_key {
+            params.push(serde_json::to_value(start_key.clone()).unwrap());
+        }
+
+        params.push(serde_json::to_value(block.to_string()).unwrap());
+        if let Ok(keys) = client
+            .request("state_getKeysPaged", params)
+            .await
+        {
+            if let Value::Array(ref keys_inside) = keys {
+                if keys_inside.len() == 0 { return Ok(keys_vec) }
+                if let Some(last) = keys_inside.last() {
+                    if let Value::String(key_string) = last {
+                        start_key = Some(key_string.clone())
+                    } else {
+                        return Ok(keys_vec)
+                    }
+                } else {
+                    return Ok(keys_vec)
+                }
+            } else { 
+                return Ok(keys_vec)
+            };
+            keys_vec.push(keys);
+        } else { 
+            return Ok(keys_vec)
+        }
     }
 
-    params.push(serde_json::to_value(block.to_string()).unwrap());
-
-    let keys: Value = client
-        .request("state_getKeysPaged", params)
-        .await
-        .map_err(ChainError::Client)?;
-
-    Ok(keys)
+    Ok(keys_vec)
 }
 
 /// fetch genesis hash, must be a hexadecimal string transformable into
@@ -297,8 +324,9 @@ pub async fn assets_set_at_block(
         assets_asset_storage_metadata,
         assets_metadata_storage_metadata,
     ) {
-        let available_keys_assets_asset =
+        let available_keys_assets_asset_vec =
             get_keys_from_storage(client, "Assets", "Asset", block).await?;
+        for available_keys_assets_asset in available_keys_assets_asset_vec {
         if let Value::Array(ref keys_array) = available_keys_assets_asset {
             for key in keys_array.iter() {
                 if let Value::String(string_key) = key {
@@ -517,6 +545,7 @@ pub async fn assets_set_at_block(
                 }
             }
         }
+        }
     }
     Ok(assets_set)
 }
@@ -626,8 +655,9 @@ async fn events_at_block(
     events_entry_metadata: &StorageEntryMetadata<PortableForm>,
     types: &PortableRegistry,
 ) -> Result<Vec<Event>, ChainError> {
-    let keys_from_storage = get_keys_from_storage(client, "System", "Events", block).await?;
+    let keys_from_storage_vec = get_keys_from_storage(client, "System", "Events", block).await?;
     let mut out = Vec::new();
+    for keys_from_storage in keys_from_storage_vec {
     match keys_from_storage {
         Value::Array(ref keys_array) => {
             for key in keys_array {
@@ -679,13 +709,13 @@ async fn events_at_block(
                     }
                 }
             }
-            return Ok(out);
         }
         _ => {
             tracing::warn!("{keys_from_storage}");
-            return Err(ChainError::EventsMissing);
         }
     }
+    }
+            return Ok(out);
 }
 
 pub async fn current_block_number(
@@ -728,12 +758,9 @@ pub async fn get_nonce(
     Ok(())
 }
 
-pub async fn send_stuff(client: &WsClient, data: &str) -> Result<(), ChainError> {
+pub async fn send_stuff(client: &WsClient, data: &str) -> Result<Value, ChainError> {
     let rpc_params = rpc_params![data];
-    let mut subscription: Subscription<Value> = client
-        .subscribe("author_submitAndWatchExtrinsic", rpc_params, "")
-        .await?;
-    let _reply = subscription.next().await.unwrap();
-    //println!("{reply:?}"); // TODO!
-    Ok(())
+    Ok(client
+        .request("author_submitAndWatchExtrinsic", rpc_params)
+        .await?)
 }
