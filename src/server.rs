@@ -95,9 +95,6 @@ async fn process_order(
             .parse()
             .map_err(|_| OrderError::InvalidParameter(AMOUNT.into()))?;
 
-        if currency != "USDC" {
-            return Err(OrderError::UnknownCurrency);
-        }
 
         if amount < 0.07 {
             return Err(OrderError::LessThanExistentialDeposit(0.07));
