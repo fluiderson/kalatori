@@ -1,0 +1,27 @@
+account-lifetime = 604800000 # 1 week.
+debug = true
+depth = 86400000 # 1 day.
+
+[[chain]]
+name = "polkadot"
+native-token = "DOT"
+decimals = 10
+endpoints = [
+    "wss://rpc.polkadot.io",
+    "wss://1rpc.io/dot",
+]
+
+[[chain]]
+name = "statemint"
+endpoints = [
+    "wss://polkadot-asset-hub-rpc.polkadot.io",
+    "wss://statemint-rpc.dwellir.com",
+]
+
+[[chain.asset]]
+name = "USDC"
+id = 1337
+
+[[chain.asset]]
+name = "USDt"
+id = 1984

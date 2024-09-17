@@ -1,209 +1,254 @@
 use crate::{
-    database::{Database, Invoice, InvoiceStatus},
-    Account,
+    definitions::api_v2::*,
+    error::{Error, ForceWithdrawalError, OrderError, ServerError},
+    state::State,
 };
-use anyhow::{Context, Result};
 use axum::{
-    extract::{Path, State},
-    routing::get,
-    Json, Router,
+    extract::{self, rejection::RawPathParamsRejection, MatchedPath, Query, RawPathParams},
+    http::{header, HeaderName, StatusCode},
+    response::{IntoResponse, Response},
+    routing, Json, Router,
 };
-use serde::Serialize;
-use std::{future::Future, net::SocketAddr, sync::Arc};
-use subxt::ext::sp_core::{hexdisplay::HexDisplay, DeriveJunction, Pair};
+use axum_macros::debug_handler;
+use serde::{Serialize, Serializer};
+use std::{borrow::Cow, collections::HashMap, future::Future, net::SocketAddr};
+
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-pub(crate) const MODULE: &str = module_path!();
+pub const MODULE: &str = module_path!();
 
-#[derive(Serialize)]
-#[serde(untagged)]
-pub enum Response {
-    Error(Error),
-    Success(Success),
-}
-
-#[derive(Serialize)]
-pub struct Error {
-    error: String,
-    wss: String,
-    mul: u64,
-    version: String,
-}
-
-#[derive(Serialize)]
-pub struct Success {
-    pay_account: String,
-    price: f64,
-    recipient: String,
-    order: String,
-    wss: String,
-    mul: u64,
-    result: String,
-    version: String,
-}
-
-pub(crate) async fn new(
+pub async fn new(
     shutdown_notification: CancellationToken,
     host: SocketAddr,
-    database: Arc<Database>,
-) -> Result<impl Future<Output = Result<&'static str>>> {
+    state: State,
+) -> Result<impl Future<Output = Result<Cow<'static, str>, Error>>, ServerError> {
+    let v2: Router<State> = Router::new()
+        .route("/order/:order_id", routing::post(order))
+        .route(
+            "/order/:order_id/forceWithdrawal",
+            routing::post(force_withdrawal),
+        )
+        .route("/status", routing::get(status))
+        .route("/health", routing::get(health))
+        .route("/audit", routing::get(audit))
+        .route("/order/:order_id/investigate", routing::post(investigate));
     let app = Router::new()
         .route(
-            "/recipient/:recipient/order/:order/price/:price",
-            get(handler_recip),
+            "/public/v2/payment/:paymentAccount",
+            routing::post(public_payment_account),
         )
-        .route("/order/:order/price/:price", get(handler))
-        .with_state(database);
+        .nest("/v2", v2)
+        .with_state(state);
 
     let listener = TcpListener::bind(host)
         .await
-        .context("failed to bind the TCP listener")?;
+        .map_err(|_| ServerError::TcpListenerBind(host))?;
 
-    log::info!("The server is listening on {host:?}.");
-
-    Ok(async move {
+    Ok(async {
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_notification.cancelled_owned())
             .await
-            .context("failed to fire up the server")?;
+            .map_err(|_| ServerError::ThreadError)?;
 
-        Ok("The server module is shut down.")
+        Ok("The server module is shut down.".into())
     })
 }
 
-async fn handler_recip(
-    State(database): State<Arc<Database>>,
-    Path((recipient, order, price)): Path<(String, String, f64)>,
-) -> Json<Response> {
-    let wss = database.rpc().to_string();
-    let mul = database.properties().await.decimals;
-
-    match abcd(database, Some(recipient), order, price).await {
-        Ok(re) => Response::Success(re),
-        Err(error) => Response::Error(Error {
-            wss,
-            mul,
-            version: env!("CARGO_PKG_VERSION").into(),
-            error: error.to_string(),
-        }),
-    }
-    .into()
+#[derive(Debug, Serialize)]
+struct InvalidParameter {
+    parameter: String,
+    message: String,
 }
 
-async fn handler(
-    State(database): State<Arc<Database>>,
-    Path((order, price)): Path<(String, f64)>,
-) -> Json<Response> {
-    let wss = database.rpc().to_string();
-    let mul = database.properties().await.decimals;
-    let recipient = database
-        .destination()
-        .as_ref()
-        .map(|d| format!("0x{}", HexDisplay::from(AsRef::<[u8; 32]>::as_ref(&d))));
+async fn process_order(
+    state: State,
+    matched_path: &MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+    query: &HashMap<String, String>,
+) -> Result<OrderResponse, OrderError> {
+    const ORDER_ID: &str = "order_id";
 
-    match abcd(database, recipient, order, price).await {
-        Ok(re) => Response::Success(re),
-        Err(error) => Response::Error(Error {
-            wss,
-            mul,
-            version: env!("CARGO_PKG_VERSION").into(),
-            error: error.to_string(),
-        }),
-    }
-    .into()
-}
+    let path_parameters =
+        path_result.map_err(|_| OrderError::InvalidParameter(matched_path.as_str().to_owned()))?;
+    let order = path_parameters
+        .iter()
+        .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
+        .ok_or_else(|| OrderError::MissingParameter(ORDER_ID.into()))?
+        .to_owned();
 
-async fn abcd(
-    database: Arc<Database>,
-    recipient_option: Option<String>,
-    order: String,
-    price_f64: f64,
-) -> Result<Success, anyhow::Error> {
-    let recipient = recipient_option.context("destionation address isn't set")?;
-    let decoded_recip = hex::decode(&recipient[2..])?;
-    let recipient_account = Account::try_from(decoded_recip.as_ref())
-        .map_err(|()| anyhow::anyhow!("Unknown address length"))?;
-    let properties = database.properties().await;
-    #[allow(clippy::cast_precision_loss)]
-    let mul = 10u128.pow(properties.decimals.try_into()?) as f64;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let price = (price_f64 * mul).round() as u128;
-    let order_encoded = DeriveJunction::hard(&order).unwrap_inner();
-    let invoice_account: Account = database
-        .pair()
-        .derive(
-            [
-                DeriveJunction::Hard(<[u8; 32]>::from(recipient_account.clone())),
-                DeriveJunction::Hard(order_encoded),
-            ]
-            .into_iter(),
-            None,
-        )?
-        .0
-        .public()
-        .into();
+    if query.is_empty() {
+        state
+            .order_status(&order)
+            .await
+            .map_err(|_| OrderError::InternalError)
+    } else {
+        let get_parameter = |parameter: &str| {
+            query
+                .get(parameter)
+                .ok_or_else(|| OrderError::MissingParameter(parameter.into()))
+        };
 
-    if let Some(encoded_invoice) = database.read()?.invoices()?.get(&invoice_account)? {
-        let invoice = encoded_invoice.value();
+        let currency = get_parameter(CURRENCY)?.to_owned();
+        let callback = get_parameter(CALLBACK)?.to_owned();
+        let amount = get_parameter(AMOUNT)?
+            .parse()
+            .map_err(|_| OrderError::InvalidParameter(AMOUNT.into()))?;
 
-        if let InvoiceStatus::Unpaid(saved_price) = invoice.status {
-            if saved_price != price {
-                anyhow::bail!("The invoice was created with different price ({price}).");
-            }
+        if amount < 0.07 {
+            return Err(OrderError::LessThanExistentialDeposit(0.07));
         }
 
-        Ok(Success {
-            pay_account: format!("0x{}", HexDisplay::from(&invoice_account.as_ref())),
-            price: match invoice.status {
-                InvoiceStatus::Unpaid(invoice_price) => {
-                    convert(properties.decimals, invoice_price)?
-                }
-                InvoiceStatus::Paid(invoice_price) => convert(properties.decimals, invoice_price)?,
-            },
-            wss: database.rpc().to_string(),
-            mul: properties.decimals,
-            recipient,
-            order,
-            result: match invoice.status {
-                InvoiceStatus::Unpaid(_) => "waiting",
-                InvoiceStatus::Paid(_) => "paid",
-            }
-            .into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        })
-    } else {
-        let tx = database.write()?;
-
-        tx.invoices()?.save(
-            &invoice_account,
-            &Invoice {
-                recipient: recipient_account,
-                order: order_encoded,
-                status: InvoiceStatus::Unpaid(price),
-            },
-        )?;
-
-        tx.commit()?;
-
-        Ok(Success {
-            pay_account: format!("0x{}", HexDisplay::from(&invoice_account.as_ref())),
-            price: price_f64,
-            wss: database.rpc().to_string(),
-            mul: properties.decimals,
-            recipient,
-            order,
-            version: env!("CARGO_PKG_VERSION").into(),
-            result: "waiting".into(),
-        })
+        state
+            .create_order(OrderQuery {
+                order,
+                amount,
+                callback,
+                currency,
+            })
+            .await
+            .map_err(|_| OrderError::InternalError)
     }
 }
 
-fn convert(dec: u64, num: u128) -> Result<f64> {
-    #[allow(clippy::cast_precision_loss)]
-    let numfl = num as f64;
-    #[allow(clippy::cast_precision_loss)]
-    let mul = 10u128.pow(dec.try_into()?) as f64;
+#[debug_handler]
+async fn order(
+    extract::State(state): extract::State<State>,
+    matched_path: MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+    query: Query<HashMap<String, String>>,
+) -> Response {
+    match process_order(state, &matched_path, path_result, &query).await {
+        Ok(order) => match order {
+            OrderResponse::NewOrder(order_status) => (StatusCode::CREATED, Json(order_status)).into_response(),
+            OrderResponse::FoundOrder(order_status) => (StatusCode::OK, Json(order_status)).into_response(),
+            OrderResponse::ModifiedOrder(order_status) => (StatusCode::OK, Json(order_status)).into_response(),
+            OrderResponse::CollidedOrder(order_status) => (StatusCode::CONFLICT, Json(order_status)).into_response(),
+            OrderResponse::NotFound => (StatusCode::NOT_FOUND, "").into_response(),
+        },
+        Err(error) => match error {
+            OrderError::LessThanExistentialDeposit(existential_deposit) => (
+                StatusCode::BAD_REQUEST,
+                Json([InvalidParameter {
+                    parameter: AMOUNT.into(),
+                    message: format!("provided amount is less than the currency's existential deposit ({existential_deposit})"),
+                }]),
+            )
+                .into_response(),
+            OrderError::UnknownCurrency => (
+                StatusCode::BAD_REQUEST,
+                Json([InvalidParameter {
+                    parameter: CURRENCY.into(),
+                    message: "provided currency isn't supported".into(),
+                }]),
+            )
+                .into_response(),
+            OrderError::MissingParameter(parameter) => (
+                StatusCode::BAD_REQUEST,
+                Json([InvalidParameter {
+                    parameter,
+                    message: "parameter wasn't found".into(),
+                }]),
+            )
+                .into_response(),
+            OrderError::InvalidParameter(parameter) => (
+                StatusCode::BAD_REQUEST,
+                Json([InvalidParameter {
+                    parameter,
+                    message: "parameter's format is invalid".into(),
+                }]),
+            )
+                .into_response(),
+            OrderError::InternalError => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+    }
+}
 
-    Ok(numfl / mul)
+async fn process_force_withdrawal(
+    state: State,
+    matched_path: &MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+) -> Result<OrderStatus, ForceWithdrawalError> {
+    const ORDER_ID: &str = "order_id";
+
+    let path_parameters = path_result
+        .map_err(|_| ForceWithdrawalError::InvalidParameter(matched_path.as_str().to_owned()))?;
+    let order = path_parameters
+        .iter()
+        .find_map(|(key, value)| (key == ORDER_ID).then_some(value))
+        .ok_or_else(|| ForceWithdrawalError::MissingParameter(ORDER_ID.into()))?
+        .to_owned();
+    state
+        .force_withdrawal(order)
+        .await
+        .map_err(|e| ForceWithdrawalError::WithdrawalError(e.into()))
+}
+
+#[debug_handler]
+async fn force_withdrawal(
+    extract::State(state): extract::State<State>,
+    matched_path: MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+) -> Response {
+    match process_force_withdrawal(state, &matched_path, path_result).await {
+        Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
+        Err(ForceWithdrawalError::WithdrawalError(a)) => {
+            (StatusCode::BAD_REQUEST, Json(a)).into_response()
+        }
+        Err(ForceWithdrawalError::MissingParameter(parameter)) => (
+            StatusCode::BAD_REQUEST,
+            Json([InvalidParameter {
+                parameter,
+                message: "parameter wasn't found".into(),
+            }]),
+        )
+            .into_response(),
+        Err(ForceWithdrawalError::InvalidParameter(parameter)) => (
+            StatusCode::BAD_REQUEST,
+            Json([InvalidParameter {
+                parameter,
+                message: "parameter's format is invalid".into(),
+            }]),
+        )
+            .into_response(),
+    }
+}
+
+async fn status(
+    extract::State(state): extract::State<State>,
+) -> ([(HeaderName, &'static str); 1], Json<ServerStatus>) {
+    match state.server_status().await {
+        Ok(status) => ([(header::CACHE_CONTROL, "no-store")], status.into()),
+        Err(_e) => panic!("db connection is down, state is lost"), //TODO tell this to client
+    }
+}
+
+async fn health(
+    extract::State(state): extract::State<State>,
+) -> ([(HeaderName, &'static str); 1], Json<ServerStatus>) {
+    todo!();
+}
+
+async fn audit(extract::State(state): extract::State<State>) -> Response {
+    StatusCode::NOT_IMPLEMENTED.into_response()
+}
+
+#[debug_handler]
+async fn investigate(
+    extract::State(state): extract::State<State>,
+    matched_path: MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+    query: Query<HashMap<String, String>>,
+) -> Response {
+    todo!()
+}
+
+#[debug_handler]
+async fn public_payment_account(
+    extract::State(state): extract::State<State>,
+    matched_path: MatchedPath,
+    path_result: Result<RawPathParams, RawPathParamsRejection>,
+    query: Query<HashMap<String, String>>,
+) -> Response {
+    todo!()
 }

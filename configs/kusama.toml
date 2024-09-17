@@ -1,0 +1,11 @@
+account-lifetime = 604800000 # 1 week.
+depth = 86400000 # 1 day.
+
+[[chain]]
+name = "kusama"
+native-token = "KSM"
+decimals = 12
+endpoints = [
+    "wss://kusama-rpc.polkadot.io",
+    "wss://1rpc.io/ksm",
+]

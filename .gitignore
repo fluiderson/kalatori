@@ -1,4 +1,6 @@
 target
-database.redb
-database-ah-usdc.redb
-database-ah-usdt.redb
+*.db
+
+# IDE
+.vscode
+.idea
