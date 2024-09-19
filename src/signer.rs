@@ -12,10 +12,8 @@
 use crate::{
     definitions::Entropy,
     error::{Error, SignerError},
-    TaskTracker,
+    task_tracker::TaskTracker,
 };
-
-use std::env;
 
 use mnemonic_external::{regular::InternalWordList, WordSet};
 use substrate_crypto_light::{
@@ -98,7 +96,7 @@ impl Signer {
     }
 
     pub async fn shutdown(&self) {
-        let (tx, rx) = oneshot::channel();
+        let (tx, _rx) = oneshot::channel();
         let _unused = self.tx.send(SignerRequest::Shutdown(tx)).await;
         // let _ = rx.await;
     }

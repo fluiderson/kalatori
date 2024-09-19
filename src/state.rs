@@ -6,11 +6,11 @@ use crate::{
             CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse,
             OrderStatus, ServerInfo, ServerStatus,
         },
-        Entropy,
     },
     error::{Error, OrderError},
     signer::Signer,
-    ConfigWoChains, TaskTracker,
+    task_tracker::TaskTracker,
+    database::ConfigWoChains,
 };
 
 use std::collections::HashMap;
@@ -218,6 +218,7 @@ impl State {
         };
     }
 
+    #[allow(dead_code)]
     pub async fn force_withdrawal(&self, order: String) -> Result<OrderStatus, OrderStatus> {
         todo!()
     }

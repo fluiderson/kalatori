@@ -38,11 +38,6 @@ use substrate_parser::{
     AsMetadata, ResolveType, ShortSpecs,
 };
 
-const MAX_BLOCK_NUMBER_ERROR: &str = "block number type overflow is occurred";
-const BLOCK_NONCE_ERROR: &str = "failed to fetch an account nonce by the scanner client";
-
-const CHARGE_ASSET_TX_PAYMENT: &str = "ChargeAssetTxPayment";
-
 /// To prevent infinite loop while scanning for keys if the node decides to misbehave, limit number
 /// of pages
 ///
@@ -51,16 +46,10 @@ const MAX_KEY_PAGES: usize = 256;
 
 // Pallets
 
-const SYSTEM: &str = "System";
 const BALANCES: &str = "Balances";
-const UTILITY: &str = "Utility";
-const ASSETS: &str = "Assets";
-const BABE: &str = "Babe";
 const TRANSFER: &str = "Transfer";
 
 // Runtime APIs
-
-const AURA: &str = "AuraApi";
 
 /// Fetch some runtime version identifier.
 ///

@@ -11,11 +11,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     definitions::{
-        api_v2::{OrderInfo, Timestamp},
+        api_v2::{OrderInfo},
         Chain,
     },
+    task_tracker::TaskTracker,
     error::{ChainError, Error},
-    Signer, State, TaskTracker,
+    signer::Signer,
+    state::State,
 };
 
 pub mod definitions;
@@ -41,7 +43,7 @@ pub struct ChainManager {
 
 impl ChainManager {
     /// Run once to start all chain connections; this should be very robust, if manager fails
-    /// - all modules should be restarted probably.
+    /// - all modules should be restarted, probably.
     pub fn ignite(
         chain: Vec<Chain>,
         state: State,

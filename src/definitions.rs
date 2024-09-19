@@ -7,7 +7,6 @@ use serde::Deserialize;
 pub type Version = u64;
 pub type Nonce = u32;
 
-pub type PalletIndex = u8;
 
 pub type Entropy = Vec<u8>; // TODO: maybe enforce something here
 
@@ -55,6 +54,7 @@ impl Sub for Balance {
 }
 
 impl Balance {
+    #[allow(dead_code)] // TODO: remove once populated
     pub fn format(&self, decimals: api_v2::Decimals) -> f64 {
         #[allow(clippy::cast_precision_loss)]
         let float = **self as f64;
@@ -83,8 +83,6 @@ pub mod api_v2 {
 
     pub const AMOUNT: &str = "amount";
     pub const CURRENCY: &str = "currency";
-    pub const CALLBACK: &str = "callback";
-
     pub type AssetId = u32;
     pub type Decimals = u8;
     pub type BlockNumber = u64;
@@ -92,6 +90,12 @@ pub mod api_v2 {
 
     #[derive(Encode, Decode, Debug, Clone, Copy, Serialize, Deserialize)]
     pub struct Timestamp(pub u64);
+
+    #[derive(Debug, Serialize)]
+    pub struct InvalidParameter {
+       pub parameter: String,
+       pub message: String,
+    }
 
     #[derive(Debug)]
     pub struct OrderQuery {
@@ -181,6 +185,7 @@ pub mod api_v2 {
         pub supported_currencies: HashMap<std::string::String, CurrencyProperties>,
     }
 
+    #[allow(dead_code)] // TODO: Use this for health response?
     #[derive(Debug, Serialize)]
     struct ServerHealth {
         server_info: ServerInfo,
