@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "kalatori"
-version = "0.2.0-rc5"
+version = "0.2.1"
 dependencies = [
  "ahash",
  "axum",
@@ -1436,8 +1436,6 @@ dependencies = [
  "frame-metadata",
  "futures",
  "hex",
- "http",
- "hyper",
  "indoc",
  "jsonrpsee",
  "lazy_static",
@@ -1459,7 +1457,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml_edit",
- "tower",
  "tracing",
  "tracing-subscriber",
  "ureq",
@@ -3033,7 +3030,6 @@ dependencies = [
  "tokio",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -3054,7 +3050,6 @@ version = "0.1.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3523ab5a71916ccf420eebdf5521fcef02141234bbc0b8a49f2fdc4544364ef"
 dependencies = [
- "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
