@@ -24,6 +24,7 @@ pub struct Chain {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct NativeToken {
+    #[serde(rename = "native-token")]
     pub name: String,
     pub decimals: api_v2::Decimals,
 }
