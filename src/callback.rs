@@ -3,6 +3,8 @@ use tokio::task;
 
 pub const MODULE: &str = module_path!();
 
+// TODO: This will be used once we setup callback functionality
+#[allow(dead_code)]
 pub async fn callback(path: String, order_status: OrderStatus) {
     let req = ureq::post(&path);
 

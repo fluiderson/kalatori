@@ -7,21 +7,17 @@
 use crate::{
     definitions::{
         api_v2::{
-            AssetId, BlockNumber, CurrencyInfo, CurrencyProperties, OrderCreateResponse, OrderInfo,
-            OrderQuery, PaymentStatus, ServerInfo, ServerStatus, Timestamp, WithdrawalStatus,
+            CurrencyInfo, OrderCreateResponse, OrderInfo,
+            OrderQuery, PaymentStatus, Timestamp, WithdrawalStatus,
         },
-        Balance, Nonce, Version,
+        Version,
     },
     error::{DbError, Error},
-    TaskTracker,
+    task_tracker::TaskTracker,
 };
-use parity_scale_codec::{Compact, Decode, Encode};
-use serde::Deserialize;
+use parity_scale_codec::{Decode, Encode};
 use std::{
-    collections::HashMap,
-    fs::File,
-    io::ErrorKind,
-    time::{Duration, Instant, SystemTime},
+    time::SystemTime,
 };
 use substrate_crypto_light::common::AccountId32;
 use tokio::sync::{mpsc, oneshot};

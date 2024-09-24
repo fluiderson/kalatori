@@ -14,19 +14,19 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     chain::{
-        definitions::{BlockHash, ChainTrackerRequest, EventFilter, Invoice},
+        definitions::{BlockHash, ChainTrackerRequest, Invoice},
         payout::payout,
         rpc::{
             assets_set_at_block, block_hash, genesis_hash, metadata, next_block, next_block_number,
             runtime_version_identifier, specs, subscribe_blocks, transfer_events,
         },
-        utils::{events_entry_metadata, was_balance_received_at_account},
+        utils::{was_balance_received_at_account},
     },
     definitions::{api_v2::CurrencyProperties, Chain},
     error::ChainError,
     signer::Signer,
     state::State,
-    TaskTracker,
+    task_tracker::TaskTracker,
 };
 
 #[allow(clippy::too_many_lines)]
