@@ -20,7 +20,7 @@ use crate::{
             assets_set_at_block, block_hash, genesis_hash, metadata, next_block, next_block_number,
             runtime_version_identifier, specs, subscribe_blocks, transfer_events,
         },
-        utils::{was_balance_received_at_account},
+        utils::was_balance_received_at_account,
     },
     definitions::{api_v2::CurrencyProperties, Chain},
     error::ChainError,

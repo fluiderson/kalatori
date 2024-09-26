@@ -7,8 +7,8 @@
 use crate::{
     definitions::{
         api_v2::{
-            CurrencyInfo, OrderCreateResponse, OrderInfo,
-            OrderQuery, PaymentStatus, Timestamp, WithdrawalStatus,
+            CurrencyInfo, OrderCreateResponse, OrderInfo, OrderQuery, PaymentStatus, Timestamp,
+            WithdrawalStatus,
         },
         Version,
     },
@@ -16,9 +16,7 @@ use crate::{
     task_tracker::TaskTracker,
 };
 use parity_scale_codec::{Decode, Encode};
-use std::{
-    time::SystemTime,
-};
+use std::time::SystemTime;
 use substrate_crypto_light::common::AccountId32;
 use tokio::sync::{mpsc, oneshot};
 

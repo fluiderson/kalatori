@@ -1,16 +1,14 @@
 use crate::{
     chain::ChainManager,
+    database::ConfigWoChains,
     database::Database,
-    definitions::{
-        api_v2::{
-            CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse,
-            OrderStatus, ServerInfo, ServerStatus,
-        },
+    definitions::api_v2::{
+        CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse, OrderStatus,
+        ServerInfo, ServerStatus,
     },
     error::{Error, OrderError},
     signer::Signer,
     task_tracker::TaskTracker,
-    database::ConfigWoChains,
 };
 
 use std::collections::HashMap;

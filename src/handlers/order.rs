@@ -1,13 +1,15 @@
+use crate::{
+    definitions::api_v2::{
+        InvalidParameter, OrderQuery, OrderResponse, OrderStatus, AMOUNT, CURRENCY,
+    },
+    error::{ForceWithdrawalError, OrderError},
+    state::State,
+};
 use axum::{
     extract::{Path, State as ExtractState},
+    http::StatusCode,
     response::{IntoResponse, Response},
     Json,
-    http::StatusCode,
-};
-use crate::{
-    state::State,
-    definitions::api_v2::{OrderQuery, OrderResponse, InvalidParameter, AMOUNT, CURRENCY, OrderStatus},
-    error::{OrderError, ForceWithdrawalError},
 };
 use serde::Deserialize;
 

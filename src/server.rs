@@ -1,14 +1,14 @@
 use crate::{
     error::{Error, ServerError},
-    state::State,
     handlers::{
-        health::{status, health, audit},
-        order::{order, force_withdrawal, investigate},
+        health::{audit, health, status},
+        order::{force_withdrawal, investigate, order},
     },
+    state::State,
 };
 use axum::{
     extract::{self, rejection::RawPathParamsRejection, MatchedPath, Query, RawPathParams},
-    response::{Response},
+    response::Response,
     routing, Router,
 };
 use axum_macros::debug_handler;
