@@ -23,8 +23,17 @@ pub async fn process_order(
     order_id: String,
     payload: OrderPayload,
 ) -> Result<OrderResponse, OrderError> {
-    if payload.amount < 0.07 {
-        return Err(OrderError::LessThanExistentialDeposit(0.07));
+    let currency_supported = state.is_currency_supported(&payload.currency)
+        .await
+        .map_err(|_| OrderError::InternalError)?;
+    if !currency_supported {
+        return Err(OrderError::UnknownCurrency);
+    }
+
+    const EXISTENTIAL_DEPOSIT: f64 = 0.07;
+
+    if payload.amount < EXISTENTIAL_DEPOSIT {
+        return Err(OrderError::LessThanExistentialDeposit(EXISTENTIAL_DEPOSIT));
     }
 
     state

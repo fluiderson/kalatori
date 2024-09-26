@@ -113,6 +113,10 @@ impl State {
                                     .send(state.create_invoice(request.order_query).await)
                                     .map_err(|_| Error::Fatal)?;
                             }
+                            StateAccessRequest::IsCurrencySupported { currency, res } => {
+                                let supported = state.currencies.contains_key(&currency);
+                                res.send(supported).map_err(|_| Error::Fatal)?;
+                            }
                             StateAccessRequest::ServerStatus(res) => {
                                 let server_status = ServerStatus {
                                     server_info: state.server_info.clone(),
@@ -207,6 +211,18 @@ impl State {
         rx.await.map_err(|_| Error::Fatal)?
     }
 
+    pub async fn is_currency_supported(&self, currency: &str) -> Result<bool, Error> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(StateAccessRequest::IsCurrencySupported {
+                currency: currency.to_string(),
+                res,
+            })
+            .await
+            .map_err(|_| Error::Fatal)?;
+        rx.await.map_err(|_| Error::Fatal)
+    }
+
     pub async fn order_paid(&self, order: String) {
         if self
             .tx
@@ -234,6 +250,10 @@ enum StateAccessRequest {
     ConnectChain(HashMap<String, CurrencyProperties>),
     GetInvoiceStatus(GetInvoiceStatus),
     CreateInvoice(CreateInvoice),
+    IsCurrencySupported {
+        currency: String,
+        res: oneshot::Sender<bool>,
+    },
     ServerStatus(oneshot::Sender<ServerStatus>),
     OrderPaid(String),
 }
