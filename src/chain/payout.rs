@@ -52,7 +52,7 @@ pub async fn payout(
         // Payout operation logic
         let transactions = match balance.0 - order.amount.0 {
             a if (0..=loss_tolerance).contains(&a) => match currency.kind {
-                TokenKind::Balances => {
+                TokenKind::Native => {
                     let balance_transfer_constructor = BalanceTransferConstructor {
                         amount: order.amount.0,
                         to_account: &order.recipient,

@@ -265,7 +265,7 @@ pub mod api_v2 {
     #[serde(rename_all = "lowercase")]
     pub enum TokenKind {
         Asset,
-        Balances,
+        Native,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
