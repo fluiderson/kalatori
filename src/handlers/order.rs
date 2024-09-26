@@ -1,3 +1,4 @@
+use std::f32::consts::E;
 use axum::{
     extract::{Path, State as ExtractState},
     response::{IntoResponse, Response},
@@ -13,8 +14,8 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct OrderPayload {
-    pub amount: f64,
-    pub currency: String,
+    pub amount: Option<f64>,
+    pub currency: Option<String>,
     pub callback: Option<String>,
 }
 
@@ -23,25 +24,34 @@ pub async fn process_order(
     order_id: String,
     payload: OrderPayload,
 ) -> Result<OrderResponse, OrderError> {
-    let currency_supported = state.is_currency_supported(&payload.currency)
-        .await
-        .map_err(|_| OrderError::InternalError)?;
-    if !currency_supported {
-        return Err(OrderError::UnknownCurrency);
+    if payload.amount.is_none() && payload.currency.is_none() && payload.callback.is_none() {
+        return Err(OrderError::MissingParameter(AMOUNT.to_string()));
+    }
+    // AMOUNT
+    if payload.amount.is_none() {
+        return Err(OrderError::MissingParameter(AMOUNT.to_string()));
+    } else if payload.amount.unwrap() < EXISTENTIAL_DEPOSIT {
+        return Err(OrderError::LessThanExistentialDeposit(EXISTENTIAL_DEPOSIT));
     }
 
-    const EXISTENTIAL_DEPOSIT: f64 = 0.07;
-
-    if payload.amount < EXISTENTIAL_DEPOSIT {
-        return Err(OrderError::LessThanExistentialDeposit(EXISTENTIAL_DEPOSIT));
+    // CURRENCY
+    if payload.currency.is_none() {
+        return Err(OrderError::MissingParameter(CURRENCY.to_string()));
+    } else {
+        let currency = payload.currency.clone().unwrap();
+        if !state.is_currency_supported(&currency)
+            .await
+            .map_err(|_| OrderError::InternalError)? {
+            return Err(OrderError::UnknownCurrency);
+        }
     }
 
     state
         .create_order(OrderQuery {
             order: order_id,
-            amount: payload.amount,
+            amount: payload.amount.unwrap(),
             callback: payload.callback.unwrap_or_default(),
-            currency: payload.currency,
+            currency: payload.currency.unwrap(),
         })
         .await
         .map_err(|_| OrderError::InternalError)
