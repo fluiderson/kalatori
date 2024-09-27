@@ -3,11 +3,9 @@ use std::{process::ExitCode, sync::Arc};
 use substrate_crypto_light::common::{AccountId32, AsBase58};
 use tokio::{
     runtime::Runtime,
-    sync::{
-        oneshot, RwLock,
-    },
+    sync::{oneshot, RwLock},
 };
-use tokio_util::{sync::CancellationToken};
+use tokio_util::sync::CancellationToken;
 use tracing::Level;
 
 use kalatori::arguments::{CliArgs, Config, SeedEnvVars, DATABASE_DEFAULT};
@@ -160,7 +158,7 @@ async fn async_try_main(
         config.host,
         state.interface(),
     )
-        .await?;
+    .await?;
 
     task_tracker.spawn("the server module", server);
 

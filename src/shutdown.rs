@@ -151,9 +151,9 @@ impl Display for PrettyPanic<'_> {
         // Print the report request only on the first panic.
         if self.first {
             f.write_str(concat!(
-            "\n\nThis is a bug. Please report it at ",
-            env!("CARGO_PKG_REPOSITORY"),
-            "/issues."
+                "\n\nThis is a bug. Please report it at ",
+                env!("CARGO_PKG_REPOSITORY"),
+                "/issues."
             ))?;
         }
 

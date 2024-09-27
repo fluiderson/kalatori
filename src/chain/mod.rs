@@ -10,14 +10,11 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    definitions::{
-        api_v2::{OrderInfo},
-        Chain,
-    },
-    task_tracker::TaskTracker,
+    definitions::{api_v2::OrderInfo, Chain},
     error::{ChainError, Error},
     signer::Signer,
     state::State,
+    task_tracker::TaskTracker,
 };
 
 pub mod definitions;
