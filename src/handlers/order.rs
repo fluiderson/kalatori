@@ -1,13 +1,15 @@
+use crate::{
+    definitions::api_v2::{
+        InvalidParameter, OrderQuery, OrderResponse, OrderStatus, AMOUNT, CURRENCY,
+    },
+    error::{Error, ForceWithdrawalError, OrderError},
+    state::State,
+};
 use axum::{
     extract::{Path, State as ExtractState},
+    http::StatusCode,
     response::{IntoResponse, Response},
     Json,
-    http::StatusCode,
-};
-use crate::{
-    state::State,
-    definitions::api_v2::{OrderQuery, OrderResponse, InvalidParameter, AMOUNT, CURRENCY, OrderStatus},
-    error::{Error, OrderError, ForceWithdrawalError},
 };
 use serde::Deserialize;
 
@@ -37,9 +39,11 @@ pub async fn process_order(
             return Err(OrderError::MissingParameter(CURRENCY.to_string()));
         } else {
             let currency = payload.currency.clone().unwrap();
-            if !state.is_currency_supported(&currency)
+            if !state
+                .is_currency_supported(&currency)
                 .await
-                .map_err(|_| OrderError::InternalError)? {
+                .map_err(|_| OrderError::InternalError)?
+            {
                 return Err(OrderError::UnknownCurrency);
             }
         }
@@ -54,10 +58,12 @@ pub async fn process_order(
             .await
             .map_err(|_| OrderError::InternalError)
     } else {
-        return state.order_status(&order_id).await.map_err(|_| OrderError::InternalError);
+        return state
+            .order_status(&order_id)
+            .await
+            .map_err(|_| OrderError::InternalError);
     }
 }
-
 
 pub async fn order(
     ExtractState(state): ExtractState<State>,

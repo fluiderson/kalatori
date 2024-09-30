@@ -7,7 +7,6 @@ use serde::Deserialize;
 pub type Version = u64;
 pub type Nonce = u32;
 
-
 pub type Entropy = Vec<u8>; // TODO: maybe enforce something here
 
 #[derive(Clone, Deserialize)]
@@ -94,8 +93,8 @@ pub mod api_v2 {
 
     #[derive(Debug, Serialize)]
     pub struct InvalidParameter {
-       pub parameter: String,
-       pub message: String,
+        pub parameter: String,
+        pub message: String,
     }
 
     #[derive(Debug)]

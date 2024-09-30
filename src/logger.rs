@@ -1,4 +1,4 @@
-use crate::{callback, chain, database, server, error::Error};
+use crate::{callback, chain, database, error::Error, server};
 use tracing_subscriber::{fmt::time::UtcTime, EnvFilter};
 
 const TARGETS: &[&str] = &[

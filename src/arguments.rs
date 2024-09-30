@@ -118,18 +118,16 @@ impl SeedEnvVars {
                     };
                 }
                 raw_key_bytes => {
-                    if let Some(stripped_raw_key) =
-                        raw_key_bytes.strip_prefix(OLD_SEED.as_bytes())
+                    if let Some(stripped_raw_key) = raw_key_bytes.strip_prefix(OLD_SEED.as_bytes())
                     {
                         // TODO: Audit that the environment access only happens in single-threaded code.
                         unsafe { env::remove_var(&raw_key) };
 
                         let key = str::from_utf8(stripped_raw_key)
                             .map_err(|_| SeedEnvError::InvalidUnicodeOldSeedKey)?;
-                        let value =
-                            raw_value.to_str().ok_or(SeedEnvError::InvalidUnicodeValue(
-                                format!("{OLD_SEED}{key}").into(),
-                            ))?;
+                        let value = raw_value.to_str().ok_or(SeedEnvError::InvalidUnicodeValue(
+                            format!("{OLD_SEED}{key}").into(),
+                        ))?;
 
                         old_seeds.insert(key.into(), value.into());
                     }

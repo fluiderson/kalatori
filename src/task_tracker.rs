@@ -57,11 +57,12 @@ impl TaskTracker {
 
         while let Some((from, error)) = error_rx.recv().await {
             tracing::error!(
-            "Received a fatal error from {from}:\n    {error:?}.{}",
-            error.pretty_cause()
-        );
+                "Received a fatal error from {from}:\n    {error:?}.{}",
+                error.pretty_cause()
+            );
 
-            if failed || !shutdown_notification.is_ignited() { // Use is_ignited from ShutdownNotification
+            if failed || !shutdown_notification.is_ignited() {
+                // Use is_ignited from ShutdownNotification
                 tracing::info!("Initializing the shutdown...");
 
                 failed = true;
