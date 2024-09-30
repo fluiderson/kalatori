@@ -1,7 +1,7 @@
 [package]
 name = "kalatori"
 authors = ["Alzymologist Oy <contact@zymologia.fi>"]
-version = "0.2.0-rc3"
+version = "0.2.0-rc4"
 edition = "2021"
 description = "A gateway daemon for Kalatori."
 license = "GPL-3.0-or-later"
@@ -9,9 +9,10 @@ repository = "https://github.com/Alzymologist/Kalatori-backend"
 readme = true
 keywords = ["substrate", "blockchain", "finance", "service", "middleware"]
 categories = ["finance"]
+rust-version = "1.81"
 
 [dependencies]
-shadow-rs = { version = "0.33", default-features = false }
+shadow-rs = { version = "0.35", default-features = false }
 names = { version = "0.14", default-features = false }
 toml_edit = { version = "0.22", default-features = false, features = [
     "serde",
@@ -51,6 +52,12 @@ frame-metadata = "16"
 rand = "0.8"
 paste = "1"
 scale-info = "2"
+indoc = "2"
+async-lock = "3"
+scale-encode = { version = "0.7", default-features = false, features = ["std"] }
+scale-decode = { version = "0.13", default-features = false, features = ["std", "derive"] }
+scale-type-resolver = "0.2"
+hasher = { package = "sp-crypto-hashing", version = "0.1" }
 
 axum = { version = "0.7", default-features = false, features = [
     "tokio",
@@ -62,8 +69,6 @@ axum = { version = "0.7", default-features = false, features = [
 ureq = { version = "2", default-features = false, features = ["json"] }
 axum-macros = "0.4"
 primitive-types = "0.12"
-hex = "0.4"
-sp-crypto-hashing = "0.1"
 
 substrate_parser = { git = "https://github.com/Alzymologist/substrate-parser" }
 substrate-constructor = { git = "https://github.com/Alzymologist/substrate-constructor" }
@@ -71,13 +76,7 @@ mnemonic-external = { git = "https://github.com/Alzymologist/mnemonic-external" 
 substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-crypto-light" }
 
 [build-dependencies]
-shadow-rs = { version = "0.33", default-features = false }
-
-[dev-dependencies]
-indoc = "2"
-
-reqwest = { version = "0.12", features = ["json"] }
-lazy_static = "1"
+shadow-rs = { version = "0.35", default-features = false }
 
 [profile.release]
 strip = true
@@ -95,6 +94,7 @@ unused = "warn"
 rust-2024-compatibility = { level = "warn", priority = -1 }
 
 [lints.clippy]
+allow_attributes = "warn"
 shadow_reuse = "warn"
 shadow_same = "warn"
 shadow_unrelated = "warn"

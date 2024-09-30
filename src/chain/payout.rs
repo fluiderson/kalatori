@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use crate::{
-    chain2::{
+    chain::{
         definitions::Invoice,
         rpc::{block_hash, current_block_number, send_stuff},
         tracker::ChainWatcher,
@@ -112,7 +112,7 @@ pub async fn payout(
             .send_this_signed::<(), RuntimeMetadataV15>(&chain.metadata)?
             .ok_or(ChainError::NothingToSend)?;
 
-        send_stuff(&client, &format!("0x{}", hex::encode(extrinsic))).await?;
+        send_stuff(&client, &format!("0x{}", const_hex::encode(extrinsic))).await?;
 
         // TODO obvious
     }

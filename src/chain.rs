@@ -1,159 +1,187 @@
+//! Everything related to the actual interaction with a blockchain.
+
+use std::{collections::HashMap, sync::Arc};
+use substrate_crypto_light::common::AccountId32;
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{timeout, Duration},
+};
+use tokio_util::sync::CancellationToken;
+
 use crate::{
     arguments::Chain,
-    error::{Error, TaskError},
-    utils::task_tracker::ShortTaskTracker,
-};
-use ahash::RandomState;
-use indexmap::{map::Entry, IndexMap, IndexSet};
-use jsonrpsee::ws_client::{PingConfig, WsClientBuilder};
-use std::sync::Arc;
-use tokio::sync::{
-    mpsc::{self, Sender as MpscSender},
-    oneshot::{self, Sender as OsSender},
+    definitions::api_v2::OrderInfo,
+    error::{ChainError, Error},
+    signer::Signer,
+    utils::task_tracker::TaskTracker,
+    State,
 };
 
 pub mod definitions;
+pub mod payout;
+pub mod rpc;
+pub mod tracker;
+pub mod utils;
 
-mod api;
-// mod reconnecting_client;
+use definitions::{ChainRequest, ChainTrackerRequest, WatchAccount};
+use tracker::start_chain_watch;
 
-use definitions::{ChainPreparator, ConnectedChain};
-
+/// Logging filter
 pub const MODULE: &str = module_path!();
 
-pub async fn connect(
-    chains: Vec<Chain>,
-) -> Result<IndexMap<Arc<str>, ConnectedChain, RandomState>, Error> {
-    let mut connected_chains = IndexMap::with_capacity_and_hasher(chains.len(), RandomState::new());
-    let (connected_chains_tx, mut connected_chains_rx) = mpsc::channel::<(_, _, OsSender<_>)>(1);
+/// Wait this long before forgetting about stuck chain watcher
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(120000);
 
-    let connected_chains_jh = tokio::spawn(async move {
-        while let Some((name, connected_chain, is_occupied)) = connected_chains_rx.recv().await {
-            is_occupied
-                .send(match connected_chains.entry(name) {
-                    Entry::Occupied(_) => true,
-                    Entry::Vacant(entry) => {
-                        tracing::info!("Connected to the {:?} chain.", entry.key());
+/// RPC server handle
+#[derive(Clone, Debug)]
+pub struct ChainManager {
+    pub tx: tokio::sync::mpsc::Sender<ChainRequest>,
+}
 
-                        entry.insert(connected_chain);
+impl ChainManager {
+    /// Run once to start all chain connections; this should be very robust, if manager fails
+    /// - all modules should be restarted probably.
+    pub fn ignite(
+        chain: Vec<Chain>,
+        state: State,
+        signer: Arc<Signer>,
+        task_tracker: TaskTracker,
+        cancellation_token: CancellationToken,
+    ) -> Result<Self, Error> {
+        let (tx, mut rx) = mpsc::channel(1024);
 
-                        false
+        let mut watch_chain = HashMap::new();
+
+        let mut currency_map = HashMap::new();
+
+        // start network monitors
+        for c in chain {
+            if c.config.endpoints.is_empty() {
+                return Err(Error::EmptyEndpoints(c.name.to_string()));
+            }
+            let (chain_tx, chain_rx) = mpsc::channel(1024);
+            watch_chain.insert(c.name.clone(), chain_tx.clone());
+
+            // this MUST assert that there are no duplicates in requested assets
+            if let Some(ref a) = c.config.inner.native {
+                if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
+                    return Err(Error::DuplicateCurrency(a.name.clone()));
+                }
+            }
+            for a in &c.config.inner.asset {
+                if let Some(_) = currency_map.insert(a.name.clone(), c.name.clone()) {
+                    return Err(Error::DuplicateCurrency(a.name.clone()));
+                }
+            }
+
+            start_chain_watch(
+                c,
+                chain_tx.clone(),
+                chain_rx,
+                state.interface(),
+                signer.clone(),
+                task_tracker.clone(),
+                cancellation_token.clone(),
+            );
+        }
+
+        task_tracker
+            .clone()
+            .spawn("Blockchain connections manager", async move {
+
+                // start requests engine
+                while let Some(request) = rx.recv().await {
+                    match request {
+                        ChainRequest::WatchAccount(request) => {
+                            if let Some(chain) = currency_map.get(&request.currency) {
+                                if let Some(receiver) = watch_chain.get(chain) {
+                                    let _unused = receiver
+                                        .send(ChainTrackerRequest::WatchAccount(request))
+                                        .await;
+                                } else {
+                                    let _unused = request
+                                        .res
+                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
+                                }
+                            } else {
+                                let _unused = request
+                                    .res
+                                    .send(Err(ChainError::InvalidCurrency(request.currency)));
+                            }
+                        }
+                        ChainRequest::Reap(request) => {
+                            if let Some(chain) = currency_map.get(&request.currency) {
+                                if let Some(receiver) = watch_chain.get(chain) {
+                                    let _unused =
+                                        receiver.send(ChainTrackerRequest::Reap(request)).await;
+                                } else {
+                                    let _unused = request
+                                        .res
+                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
+                                }
+                            } else {
+                                let _unused = request
+                                    .res
+                                    .send(Err(ChainError::InvalidCurrency(request.currency)));
+                            }
+                        }
+                        ChainRequest::Shutdown(res) => {
+                            for (name, chain) in watch_chain.drain() {
+                                let (tx, rx) = oneshot::channel();
+                                if chain.send(ChainTrackerRequest::Shutdown(tx)).await.is_ok() {
+                                    if timeout(SHUTDOWN_TIMEOUT, rx).await.is_err() {
+                                        tracing::error!("Chain monitor for {name} took too much time to wind down, probably it was frozen. Discarding it.");
+                                    };
+                                }
+                            }
+                            let _ = res.send(());
+                            break;
+                        }
                     }
-                })
-                .expect("receiver side should be alive");
-        }
+                }
 
-        connected_chains
-    });
+                Ok("Chain manager is shutting down")
+            });
 
-    let task_tracker = ShortTaskTracker::new();
-
-    for chain in chains {
-        task_tracker.spawn(
-            ChainPreparator(chain.name.clone()),
-            connect_to_chain(chain, connected_chains_tx.clone()),
-        );
+        Ok(Self { tx })
     }
 
-    // Drop the sender before `task_tracker.try_wait()` to prevent a deadlock.
-    drop(connected_chains_tx);
-
-    task_tracker.try_wait().await?;
-
-    Ok(connected_chains_jh
-        .await
-        .expect("this `JoinHandle` shouldn't panic"))
-}
-
-#[tracing::instrument(skip_all, fields(chain = %chain.name))]
-async fn connect_to_chain(
-    chain: Chain,
-    connected_chains: MpscSender<(Arc<str>, ConnectedChain, OsSender<bool>)>,
-) -> Result<(), TaskError> {
-    let mut endpoints = chain.config.endpoints.into_iter();
-    let first_endpoint = endpoints.next().ok_or(TaskError::NoChainEndpoints)?;
-    let mut remaining_endpoints =
-        IndexSet::with_capacity_and_hasher(endpoints.len(), RandomState::new());
-
-    for endpoint in endpoints {
-        if !remaining_endpoints.insert(endpoint) {
-            return Err(TaskError::DuplicateEndpoints);
-        }
+    pub async fn add_invoice(
+        &self,
+        id: String,
+        order: OrderInfo,
+        recipient: AccountId32,
+    ) -> Result<(), ChainError> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(ChainRequest::WatchAccount(WatchAccount::new(
+                id, order, recipient, res,
+            )?))
+            .await
+            .map_err(|_| ChainError::MessageDropped)?;
+        rx.await.map_err(|_| ChainError::MessageDropped)?
     }
 
-    if remaining_endpoints.contains(&first_endpoint) {
-        return Err(TaskError::DuplicateEndpoints);
+    pub async fn reap(
+        &self,
+        id: String,
+        order: OrderInfo,
+        recipient: AccountId32,
+    ) -> Result<(), ChainError> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(ChainRequest::Reap(WatchAccount::new(
+                id, order, recipient, res,
+            )?))
+            .await
+            .map_err(|_| ChainError::MessageDropped)?;
+        rx.await.map_err(|_| ChainError::MessageDropped)?
     }
 
-    let rpc_config = WsClientBuilder::new().enable_ws_ping(PingConfig::new());
-    let rpc_client = rpc_config.clone().build(&first_endpoint).await?;
-    let genesis = api::fetch_genesis_hash(&rpc_client).await?;
-    let (is_occupied_tx, is_occupied_rx) = oneshot::channel();
-
-    connected_chains
-        .send((
-            chain.name,
-            ConnectedChain {
-                endpoints: (first_endpoint, remaining_endpoints),
-                config: chain.config.inner,
-                genesis,
-                rpc_client,
-                rpc_config,
-            },
-            is_occupied_tx,
-        ))
-        .await
-        .expect("receiver side should be open");
-
-    if is_occupied_rx
-        .await
-        .expect("sender side should send a value")
-    {
-        Err(TaskError::ChainDuplicate)
-    } else {
-        Ok(())
+    pub async fn shutdown(&self) -> () {
+        let (tx, rx) = oneshot::channel();
+        let _unused = self.tx.send(ChainRequest::Shutdown(tx)).await;
+        let _ = rx.await;
+        ()
     }
 }
-
-// #[allow(clippy::module_name_repetitions)]
-// pub struct ChainManager;
-
-// impl ChainManager {
-//     pub async fn new(
-//         database: Arc<Database>,
-//         chains: IndexMap<Arc<str>, ConnectedChain, RandomState>,
-//         root_intervals: ArgChainIntervals,
-//     ) -> Result<Self, Error> {
-//         let root_ci = RootChainIntervals::new(&root_intervals)?;
-//         let task_tracker = ShortTaskTracker::new();
-
-//         for chain in chains {
-//             task_tracker.spawn(
-//                 ChainPreparator(chain.0.clone()),
-//                 prepare_chain(chain.0, chain.1, database.clone(), root_ci),
-//             );
-//         }
-
-//         task_tracker.try_wait().await?;
-
-//         todo!()
-//     }
-// }
-
-// #[tracing::instrument(skip_all, fields(name))]
-// async fn prepare_chain(
-//     name: Arc<str>,
-//     chain: ConnectedChain,
-//     database: Arc<Database>,
-//     root_ci: RootChainIntervals,
-// ) -> Result<(), TaskError> {
-//     let intervals = ChainIntervals::new(root_ci, &chain.config.intervals)?;
-//     let finalized_head = api::fetch_finalized_head(&chain.rpc_client).await?;
-//     let metadata = api::fetch_metadata(&chain.rpc_client, &finalized_head).await?;
-//     let runtime_version: RuntimeVersion =
-//         api::extract_constant(&metadata, SystemConstant::Version)?;
-
-//     println!("{:#?}", runtime_version);
-
-//     Ok(())
-// }

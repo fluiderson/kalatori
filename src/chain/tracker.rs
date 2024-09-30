@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     arguments::Chain,
-    chain2::{
+    chain::{
         definitions::{BlockHash, ChainTrackerRequest, EventFilter, Invoice},
         payout::payout,
         rpc::{

@@ -1,5 +1,9 @@
 use clap::Parser;
-use std::process::ExitCode;
+use std::{
+    borrow::Cow,
+    ffi::{OsStr, OsString},
+    process::ExitCode,
+};
 use substrate_crypto_light::common::AccountId32;
 use tokio::{runtime::Runtime, sync::oneshot};
 use tokio_util::sync::CancellationToken;
@@ -8,7 +12,7 @@ use tracing::Level;
 mod arguments;
 mod callback;
 mod chain;
-mod chain2;
+mod chain_wip;
 mod database;
 mod definitions;
 mod error;
@@ -18,8 +22,8 @@ mod state;
 mod utils;
 
 use arguments::{CliArgs, Config};
-use chain::definitions::Account;
-use chain2::ChainManager;
+use chain::ChainManager;
+use chain_wip::definitions::Account;
 use database::Database;
 use error::{Error, PrettyCause};
 use signer::KeyStore;
@@ -39,8 +43,8 @@ fn main() -> ExitCode {
 
     if let Err(error) = try_main(shutdown_notification.clone()) {
         // TODO: https://github.com/rust-lang/rust/issues/92698
-        // An equilibristic to conditionally print an error message without storing it as
-        // `String` on the heap.
+        // An equilibristic to conditionally print an error message without storing it as `String`
+        // on the heap.
         let print = |message| {
             if tracing::event_enabled!(Level::ERROR) {
                 tracing::error!("{message}");
@@ -56,7 +60,7 @@ fn main() -> ExitCode {
 
         ExitCode::FAILURE
     } else {
-        match *shutdown_notification.outcome.blocking_read() {
+        match *shutdown_notification.outcome.read_blocking() {
             ShutdownOutcome::UserRequested => {
                 tracing::info!("Goodbye!");
 
@@ -85,7 +89,7 @@ fn try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
 
     tracing::info!("Kalatori {} is starting...", env!("CARGO_PKG_VERSION"));
 
-    let recipient_account: Account = cli_args.recipient.parse()?;
+    let recipient_account = Account::from_os_str(cli_args.recipient)?;
 
     tracing::info!("The given recipient: {recipient_account:#}.");
 
@@ -105,23 +109,31 @@ fn try_main(shutdown_notification: ShutdownNotification) -> Result<(), Error> {
         ))
 }
 
-#[allow(clippy::option_option)]
+#[expect(clippy::option_option)]
 async fn async_try_main(
     shutdown_notification: ShutdownNotification,
     recipient: AccountId32,
     remark: Option<String>,
-    db_option_option: Option<Option<String>>,
+    db_option_option: Option<Option<OsString>>,
     config: Config,
     key_store: KeyStore,
 ) -> Result<(), Error> {
     let (task_tracker, error_rx) = TaskTracker::new();
-    let connected_chains = chain::connect(config.chain.clone()).await?;
+    let connected_chains =
+        chain_wip::connect(config.chain.clone(), config.intervals.clone()).await?;
     let (database, signer) = Database::new(
-        db_option_option.map_or(Some(config.database), |path| path.map(Into::into)),
+        db_option_option.map_or_else(
+            || {
+                Some(match config.database {
+                    Cow::Borrowed(s) => Cow::from(OsStr::new(s)),
+                    Cow::Owned(s) => Cow::from(OsString::from(s)),
+                })
+            },
+            |path| path.map(Into::into),
+        ),
         &connected_chains,
         key_store,
     )?;
-    // let bababa = ChainManager::new(database.clone(), connected_chains, config.intervals).await?;
 
     let (cm_tx, cm_rx) = oneshot::channel();
     let state = State::initialise(

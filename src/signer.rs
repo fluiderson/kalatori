@@ -8,7 +8,7 @@
 
 use crate::{
     arguments::{OLD_SEED, SEED},
-    chain::definitions::H256,
+    chain_wip::definitions::H256,
     database::definitions::Public,
     error::{SeedEnvError, SignerError},
 };
@@ -100,20 +100,22 @@ impl KeyStore {
         self.old_pairs.swap_remove(key)
     }
 
-    pub fn into_signer<const IS_DB_OLD: bool>(
+    pub fn into_signer<const IS_DB_NEW: bool>(
         self,
         filtered_old_pairs: HashMap<Public, (Entropy, String)>,
     ) -> Signer {
-        if IS_DB_OLD {
+        if IS_DB_NEW {
+            if !self.old_pairs.is_empty() {
+                tracing::warn!(
+                    "The daemon has no existing database, so all `{OLD_SEED}*` are ignored."
+                );
+            }
+        } else {
             for (_, name) in self.old_pairs.into_values() {
                 tracing::warn!(
                     "`{OLD_SEED}{name:?}` has no matching public keys and thus is ignored."
                 );
             }
-        } else {
-            tracing::warn!(
-                "The daemon has no existing database, so all `{OLD_SEED}*` are ignored."
-            );
         }
 
         Signer {
@@ -219,7 +221,7 @@ pub struct Signer {
 }
 
 impl Signer {
-    pub fn construct_invoice_account(
+    pub fn construct_order_account(
         &self,
         id: impl AsRef<[u8]>,
     ) -> Result<AccountId32, SignerError> {

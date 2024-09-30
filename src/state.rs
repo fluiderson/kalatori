@@ -1,6 +1,6 @@
 use crate::{
     callback,
-    chain2::ChainManager,
+    chain::ChainManager,
     database::{definitions::Timestamp, Database},
     definitions::api_v2::{
         CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse, OrderStatus,
@@ -331,7 +331,7 @@ impl StateData {
             .get(&order_query.currency)
             .ok_or(OrderError::UnknownCurrency)?;
         let currency = currency.info(order_query.currency.clone());
-        let payment_account = self.signer.construct_invoice_account(&order)?;
+        let payment_account = self.signer.construct_order_account(&order)?;
         match self.db.write(|tx| {
             tx.orders()?.create_order(
                 &order,

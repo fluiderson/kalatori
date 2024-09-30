@@ -1,16 +1,41 @@
+//! The module for miscellaneous utilities.
+
 use crate::error::{NotHex, UtilError};
+use std::{
+    fmt::{Display, Formatter, Result as FmtResult},
+    path::{self, Path},
+};
 
 pub fn unhex(hex_data: &str, what_is_hex: NotHex) -> Result<Vec<u8>, UtilError> {
     if let Some(stripped) = hex_data.strip_prefix("0x") {
-        hex::decode(stripped).map_err(|_| UtilError::NotHex(what_is_hex))
+        const_hex::decode(stripped).map_err(|_| UtilError::NotHex(what_is_hex))
     } else {
-        hex::decode(hex_data).map_err(|_| UtilError::NotHex(what_is_hex))
+        const_hex::decode(hex_data).map_err(|_| UtilError::NotHex(what_is_hex))
+    }
+}
+
+pub struct PathDisplay<T>(pub T);
+
+impl<T: AsRef<Path>> Display for PathDisplay<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        let path = self.0.as_ref();
+
+        match path::absolute(path) {
+            Ok(absolute) => absolute.display().fmt(f),
+            Err(_) => path.display().fmt(f),
+        }
     }
 }
 
 pub mod task_tracker {
-    use super::shutdown::ShutdownNotification;
+    //! The task tracker module.
+    //!
+    //! Contains utilities for orchestrating crucial initialization & loop tasks, and logic for
+    //! handling errors occurring in them.
+
+    use super::shutdown::{ShutdownNotification, ShutdownOutcome};
     use crate::error::{Error, PrettyCause, TaskError};
+    use async_lock::RwLockUpgradableReadGuard;
     use std::{
         error::Error as StdError,
         fmt::{Debug, Display},
@@ -77,6 +102,10 @@ pub mod task_tracker {
         );
     }
 
+    /// The main task tracker for processing the core main loop.
+    ///
+    /// Only 1 should be used across the program (see [`Self::wait_and_shutdown`]). Otherwise, the
+    /// shutdown behaviour is unknown.
     #[derive(Clone)]
     pub struct TaskTracker {
         inner: InnerTaskTracker,
@@ -84,8 +113,8 @@ pub mod task_tracker {
     }
 
     impl TaskTracker {
-        /// [`tokio::mpsc::UnboundedReceiver`] can't be cloned and hence stored inside the struct,
-        /// so it's the caller's responsibility to take the receiver and then pass it to
+        /// [`tokio::mpsc::UnboundedReceiver`] can't be cloned and hence isn't stored inside the
+        /// struct, so it's the caller's responsibility to take the receiver and then pass it to
         /// [`Self::wait_and_shutdown`].
         pub fn new() -> (Self, UnboundedReceiver<(TaskName, Error)>) {
             let (error_tx, error_rx) = mpsc::unbounded_channel();
@@ -121,25 +150,32 @@ pub mod task_tracker {
             )
         }
 
+        /// Starts the program main loop & waits until all tasks are finished.
+        ///
+        /// If any errors would occur in awaited tasks, `shutdown_notification` is triggered to shut
+        /// down all listening it tasks, and, eventually, the program.
         pub async fn wait_and_shutdown(
             self,
             mut error_rx: UnboundedReceiver<(TaskName, Error)>,
             shutdown_notification: ShutdownNotification,
         ) {
             wait_inner(self.inner, self.error_tx, async {
-                let mut failed = false;
+                let mut no_errors = true;
 
                 while let Some((from, error)) = error_rx.recv().await {
                     print_fatal_error(&from, &error);
 
-                    if failed {
-                        shutdown_notification
-                            .ignite(|| {
-                                tracing::info!("Initialising the shutdown...");
+                    if no_errors {
+                        let outcome = shutdown_notification.outcome.upgradable_read().await;
 
-                                failed = true;
-                            })
-                            .await;
+                        if matches!(*outcome, ShutdownOutcome::UserRequested) {
+                            *RwLockUpgradableReadGuard::upgrade(outcome).await =
+                                ShutdownOutcome::UnrecoverableError { panic: false };
+
+                            shutdown_notification.token.cancel();
+                        }
+
+                        no_errors = false;
                     }
                 }
 
@@ -155,7 +191,10 @@ pub mod task_tracker {
         Receiver<(TaskName, TaskError)>,
     );
 
-    #[allow(clippy::module_name_repetitions)]
+    /// The short-lived task tracker.
+    ///
+    /// Should be used for tracking temporal tasks (e.g. initialization ones).
+    #[expect(clippy::module_name_repetitions)]
     pub struct ShortTaskTracker {
         inner: InnerTaskTracker,
         error_channel: ErrorChannel,
@@ -192,6 +231,11 @@ pub mod task_tracker {
             )
         }
 
+        /// Waits until all [`spawn`](Self::spawn)ed tasks are finished.
+        ///
+        /// If an error occurs in awaited tasks, this method immediately returns the first error. Do
+        /// note that it doesn't cancel unfinished tasks, they will continue running until
+        /// completion & log all occured errors.
         pub async fn try_wait(mut self) -> Result<(), Error> {
             wait_inner(self.inner, self.error_channel.0, async {
                 if let Some((from, error)) = self.error_channel.1.recv().await {
@@ -207,13 +251,13 @@ pub mod task_tracker {
 
 pub mod logger {
     use super::shutdown;
-    use crate::{callback, chain, database, server, Error};
+    use crate::{callback, chain_wip, database, server, Error};
     use tracing_subscriber::{fmt::time::UtcTime, EnvFilter};
 
     const TARGETS: &[&str] = &[
         callback::MODULE,
         database::MODULE,
-        chain::MODULE,
+        chain_wip::MODULE,
         server::MODULE,
         shutdown::MODULE,
         env!("CARGO_PKG_NAME"),
@@ -222,9 +266,8 @@ pub mod logger {
     const INFO: &str = "=info";
     const OFF: &str = "off";
 
-    pub fn initialize(directives: String) -> Result<(), Error> {
-        let filter =
-            EnvFilter::try_new(&directives).map_err(|e| Error::LoggerDirectives(directives, e))?;
+    pub fn initialize(directives: impl AsRef<str>) -> Result<(), Error> {
+        let filter = EnvFilter::try_new(directives)?;
 
         tracing_subscriber::fmt()
             .with_timer(UtcTime::rfc_3339())
@@ -282,15 +325,21 @@ pub mod logger {
 }
 
 pub mod shutdown {
+    //! The shutdown module.
+    //!
+    //! Handles a graceful shutdown with an asynchronous runtime with respect of panics (by
+    //! incorporating a custom panic handler) & unrecoverable errors from another modules.
+
     use crate::Error;
+    use async_lock::{RwLock, RwLockUpgradableReadGuard};
     use std::{
         fmt::{Display, Formatter, Result as FmtResult},
         io::Result as IoResult,
-        panic::{self, PanicInfo},
+        panic::{self, PanicHookInfo},
         sync::Arc,
         time::Duration,
     };
-    use tokio::{signal, sync::RwLock, task, time};
+    use tokio::{signal, time};
     use tokio_util::sync::CancellationToken;
 
     pub const MODULE: &str = module_path!();
@@ -298,7 +347,7 @@ pub mod shutdown {
     const TIP_FUSE_SECS: u64 = 15;
 
     #[derive(Clone)]
-    #[allow(clippy::module_name_repetitions)]
+    #[expect(clippy::module_name_repetitions)]
     pub struct ShutdownNotification {
         pub token: CancellationToken,
         pub outcome: Arc<RwLock<ShutdownOutcome>>,
@@ -309,18 +358,6 @@ pub mod shutdown {
             Self {
                 token: CancellationToken::new(),
                 outcome: Arc::new(RwLock::new(ShutdownOutcome::UserRequested)),
-            }
-        }
-
-        pub async fn ignite(&self, f: impl FnOnce()) {
-            let mut outcome = self.outcome.write().await;
-
-            if matches!(*outcome, ShutdownOutcome::UserRequested) {
-                f();
-
-                *outcome = ShutdownOutcome::UnrecoverableError { panic: false };
-
-                self.token.cancel();
             }
         }
     }
@@ -338,7 +375,9 @@ pub mod shutdown {
 
                 shutdown_notification.cancel();
             }
-            () = shutdown_notification.cancelled() => {}
+            () = shutdown_notification.cancelled() => {
+                tracing::info!("The shutdown started by an unrecoverable error...");
+            }
         }
 
         let shutdown_completed_clone = shutdown_completed.clone();
@@ -348,7 +387,8 @@ pub mod shutdown {
                 () = shutdown_completed_clone.cancelled() => {}
                 () = time::sleep(Duration::from_secs(TIP_FUSE_SECS)) => {
                     tracing::warn!(
-                        "TIP: Send the shutdown signal one more time to early terminate the daemon instead of waiting for the graceful shutdown."
+                        "Send the shutdown signal one more time to early terminate the daemon \
+                        instead of waiting for the graceful shutdown."
                     );
                 }
             }
@@ -383,7 +423,7 @@ pub mod shutdown {
     }
 
     #[derive(Clone, Copy)]
-    #[allow(clippy::module_name_repetitions)]
+    #[expect(clippy::module_name_repetitions)]
     pub enum ShutdownOutcome {
         UserRequested,
         UnrecoverableError { panic: bool },
@@ -394,29 +434,20 @@ pub mod shutdown {
         shutdown_notification: ShutdownNotification,
     ) {
         panic::set_hook(Box::new(move |panic_info| {
-            // `task::block_in_place()` is needed here since panic may be called within an async
-            // context that'll result in a panic in `blocking_*()` methods (see their docs).
+            let outcome = shutdown_notification.outcome.upgradable_read_blocking();
 
-            let is_panicking =
-                |outcome| matches!(outcome, ShutdownOutcome::UnrecoverableError { panic: true });
-
-            let first = if is_panicking(task::block_in_place(|| {
-                *shutdown_notification.outcome.blocking_read()
-            })) {
+            let first = if matches!(
+                *outcome,
+                ShutdownOutcome::UnrecoverableError { panic: true }
+            ) {
                 false
             } else {
-                let mut outcome =
-                    task::block_in_place(|| shutdown_notification.outcome.blocking_write());
+                *RwLockUpgradableReadGuard::upgrade_blocking(outcome) =
+                    ShutdownOutcome::UnrecoverableError { panic: true };
 
-                if is_panicking(*outcome) {
-                    false
-                } else {
-                    *outcome = ShutdownOutcome::UnrecoverableError { panic: true };
+                shutdown_notification.token.cancel();
 
-                    shutdown_notification.token.cancel();
-
-                    true
-                }
+                true
             };
 
             print(PrettyPanic { panic_info, first });
@@ -424,7 +455,7 @@ pub mod shutdown {
     }
 
     pub struct PrettyPanic<'a> {
-        panic_info: &'a PanicInfo<'a>,
+        panic_info: &'a PanicHookInfo<'a>,
         first: bool,
     }
 

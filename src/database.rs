@@ -5,18 +5,15 @@
 //! are spawned here and all locking methods are called in sync functions without sharing lock
 //! guards with the async code.
 
-// TODO: Add an interface for manipulating the database content from CLI.
-
 use crate::{
     arguments::OLD_SEED,
-    chain::definitions::{Account, BlockHash, ConnectedChain, H256},
-    definitions::api_v2::{
-        CurrencyInfo, OrderCreateResponse, OrderInfo, OrderQuery, PaymentStatus,
-    },
+    chain_wip::definitions::{BlockHash, ConnectedChain, H256, H64},
     error::DbError,
     signer::{KeyStore, Signer},
+    utils::PathDisplay,
 };
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt, RandomState};
+use arguments::CreatedOrder;
 use codec::{Decode, Encode};
 use indexmap::{
     map::{Entry, VacantEntry},
@@ -25,40 +22,24 @@ use indexmap::{
 use names::{Generator, Name};
 use redb::{
     backends::{FileBackend, InMemoryBackend},
-    Database as Redb, ReadOnlyTable, ReadTransaction, ReadableTable, Table, TableHandle, Value,
-    WriteTransaction,
+    AccessGuard, Database as Redb, ReadOnlyTable, ReadTransaction, ReadableTable, Table,
+    TableHandle, Value, WriteTransaction,
 };
-use ruint::aliases::U256;
 use std::{
-    borrow::Cow,
-    fmt::{Display, Formatter, Result as FmtResult},
-    fs::File,
-    io::ErrorKind,
-    path,
+    array, borrow::Cow, ffi::OsStr, fs::File, io::ErrorKind, num::NonZeroU64 as StdNonZeroU64,
     sync::Arc,
 };
-use substrate_crypto_light::common::{AccountId32, AsBase58};
 
 pub mod definitions;
 
 use definitions::{
-    ChainHash, ChainProperties, DaemonInfo, KeysTable, OrdersTable, Public, RootKey, RootTable,
-    RootValue, TableRead, TableTrait, TableTypes, TableWrite, Timestamp, Version,
+    ChainHash, ChainProperties, DaemonInfo, KeysTable, NonZeroU64, OrderId, OrderInfo,
+    OrdersPerChainTable, OrdersTable, PaymentStatus, Public, RootKey, RootTable, RootValue,
+    TableRead, TableTrait, TableTypes, TableWrite, Timestamp, Version,
 };
 
 pub const MODULE: &str = module_path!();
 pub const DB_VERSION: Version = Version(0);
-
-struct PathPrinter<'a>(&'a str);
-
-impl Display for PathPrinter<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match path::absolute(self.0) {
-            Ok(absolute) => absolute.display().fmt(f),
-            Err(_) => self.0.fmt(f),
-        }
-    }
-}
 
 pub struct Database {
     db: Redb,
@@ -68,25 +49,25 @@ pub struct Database {
 impl Database {
     #[allow(clippy::too_many_lines)]
     pub fn new(
-        path_option: Option<Cow<'static, str>>,
+        path_option: Option<Cow<'static, OsStr>>,
         connected_chains: &IndexMap<Arc<str>, ConnectedChain, RandomState>,
         key_store: KeyStore,
     ) -> Result<(Arc<Self>, Arc<Signer>), DbError> {
         let builder = Redb::builder();
 
         let (mut database, is_new) = if let Some(path) = path_option {
-            match File::create_new(&*path) {
+            match File::create_new(&path) {
                 Ok(file) => {
-                    tracing::info!("Creating the database at {}.", PathPrinter(&path));
+                    tracing::info!("Creating the database at {}.", PathDisplay(path));
 
                     FileBackend::new(file)
                         .and_then(|backend| builder.create_with_backend(backend))
                         .map(|db| (db, true))
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    tracing::info!("Opening the database at {}.", PathPrinter(&path));
+                    tracing::info!("Opening the database at {}.", PathDisplay(&path));
 
-                    builder.open(&*path).map(|db| (db, false))
+                    builder.open(path).map(|db| (db, false))
                 }
                 Err(error) => Err(error.into()),
             }
@@ -110,7 +91,7 @@ impl Database {
         let signer;
 
         if is_new {
-            signer = key_store.into_signer::<false>(HashMap::new());
+            signer = key_store.into_signer::<true>(HashMap::new());
 
             let mut new_db_chains = Vec::with_capacity(connected_chains.len());
 
@@ -130,13 +111,12 @@ impl Database {
                 instance: instance.clone().into_bytes(),
             };
 
-            RootWrite::insert_slot(
-                &mut root,
-                &RootKey::DbVersion,
-                &RootValue(&Version::as_bytes(&DB_VERSION)),
+            root.insert_slot(
+                RootKey::DbVersion,
+                RootValue(&Version::as_bytes(&DB_VERSION)),
             )?;
         } else {
-            let Some(encoded_db_version) = RootWrite::get_slot(&root, &RootKey::DbVersion)? else {
+            let Some(encoded_db_version) = root.get_slot(RootKey::DbVersion)? else {
                 return Err(DbError::NoVersion);
             };
 
@@ -146,8 +126,7 @@ impl Database {
                 return Err(DbError::UnexpectedVersion(db_version));
             }
 
-            let Some(encoded_daemon_info) = RootWrite::get_slot(&root, &RootKey::DaemonInfo)?
-            else {
+            let Some(encoded_daemon_info) = root.get_slot(RootKey::DaemonInfo)? else {
                 return Err(DbError::NoDaemonInfo);
             };
 
@@ -158,11 +137,12 @@ impl Database {
                 instance: db_instance,
             } = DaemonInfo::decode(&mut encoded_daemon_info.value().0)?;
 
-            #[allow(clippy::arithmetic_side_effects)]
+            #[expect(clippy::arithmetic_side_effects)]
             let mut new_db_chains = IndexMap::with_capacity_and_hasher(
                 db_chains.len() + connected_chains.len(),
                 RandomState::new(),
             );
+            let mut orders_per_chain = OrdersPerChainTable::open(&tx)?;
 
             for (name, properties) in db_chains {
                 process_db_chain(
@@ -171,6 +151,7 @@ impl Database {
                     &mut chain_hashes,
                     &mut new_db_chains,
                     connected_chains,
+                    &mut orders_per_chain,
                 )?;
             }
 
@@ -205,11 +186,8 @@ impl Database {
             };
         }
 
-        RootWrite::insert_slot(
-            &mut root,
-            &RootKey::DaemonInfo,
-            &RootValue(&daemon_info.encode()),
-        )?;
+        root.insert_slot(&RootKey::DaemonInfo, &RootValue(&daemon_info.encode()))?;
+
         drop(root);
 
         tx.commit()?;
@@ -261,25 +239,38 @@ pub struct OrdersRead(
 );
 
 impl OrdersRead {
-    pub fn read_order(&self, key: &str) -> Result<Option<OrderInfo>, DbError> {
-        Self::get_slot(&self.0, &key).map(|some| some.map(|ag| ag.value()))
+    pub fn read(
+        &self,
+        key: impl AsRef<str>,
+    ) -> Result<Option<<OrdersTable as TableTypes>::Value>, DbError> {
+        self.0
+            .get_slot(OrderId::from(key.as_ref()))
+            .map(|some| some.map(|ag| ag.value()))
     }
 
-    pub fn active_order_list(&self) -> Result<Vec<Result<(String, OrderInfo), DbError>>, DbError> {
+    pub fn active(
+        &self,
+    ) -> Result<
+        impl Iterator<
+            Item = Result<
+                (
+                    AccessGuard<'_, <OrdersTable as TableTypes>::Key>,
+                    <OrdersTable as TableTypes>::Value,
+                ),
+                DbError,
+            >,
+        >,
+        DbError,
+    > {
         self.0.iter().map_err(DbError::Range).map(|range| {
-            range
-                .filter_map(|result| {
-                    result
-                        .map_err(DbError::RangeIter)
-                        .map(|(k, v)| {
-                            let order = v.value();
+            range.filter_map(|result| match result {
+                Ok(r) => {
+                    let order = r.1.value();
 
-                            (order.payment_status == PaymentStatus::Pending)
-                                .then(|| (k.value().to_owned(), order))
-                        })
-                        .transpose()
-                })
-                .collect()
+                    (order.payment_status == PaymentStatus::Pending).then(|| Ok((r.0, order)))
+                }
+                Err(e) => Some(Err(DbError::RangeIter(e))),
+            })
         })
     }
 }
@@ -294,6 +285,48 @@ impl TxWrite {
     pub fn orders(&self) -> Result<OrdersWrite<'_>, DbError> {
         OrdersTable::open(&self.0).map(OrdersWrite)
     }
+
+    pub fn orders_per_chain(&self) -> Result<OrdersPerChainWrite<'_>, DbError> {
+        OrdersPerChainTable::open(&self.0).map(OrdersPerChainWrite)
+    }
+
+    pub fn create_order(
+        mut orders: OrdersWrite<'_>,
+        mut orders_per_chain: OrdersPerChainWrite<'_>,
+        chain: ChainHash,
+        key: impl AsRef<str>,
+        new_order: OrderInfo,
+    ) -> Result<CreatedOrder, DbError> {
+        let order_id = OrderId::from(key.as_ref());
+        let order_option = orders.0.get_slot(order_id)?.map(|ag| ag.value());
+
+        Ok(if let Some(order) = order_option {
+            if order.payment_status == PaymentStatus::Pending {
+                CreatedOrder::Modified(new_order)
+            } else {
+                CreatedOrder::Unchanged(order)
+            }
+        } else {
+            orders.0.insert_slot(order_id, &new_order)?;
+
+            let orders_amount = orders_per_chain
+                .0
+                .get_slot(chain)?
+                .map(|ag| {
+                    ag.value()
+                        .0
+                        .checked_add(1)
+                        .expect("database can't store more than `u64::MAX` orders per chain")
+                })
+                .unwrap_or(StdNonZeroU64::MIN);
+
+            orders_per_chain
+                .0
+                .insert_slot(chain, NonZeroU64(orders_amount))?;
+
+            CreatedOrder::Unchanged(new_order)
+        })
+    }
 }
 
 pub struct OrdersWrite<'a>(
@@ -301,98 +334,39 @@ pub struct OrdersWrite<'a>(
 );
 
 impl OrdersWrite<'_> {
-    pub fn create_order(
+    pub fn mark_paid(
         &mut self,
-        key: &str,
-        query: OrderQuery,
-        currency: CurrencyInfo,
-        payment_account: AccountId32,
-        account_lifetime: Timestamp,
-    ) -> Result<OrderCreateResponse, DbError> {
-        let get_death_ts = || {
-            Timestamp::from_millis(
-                Timestamp::now()?
-                    .as_millis()
-                    .saturating_add(account_lifetime.as_millis()),
-            )
-        };
-        let order_option = Self::get_slot(&self.0, &key)?.map(|ag| ag.value());
+        key: impl AsRef<str>,
+    ) -> Result<<OrdersTable as TableTypes>::Value, DbError> {
+        let key_as_ref = key.as_ref();
 
-        Ok(if let Some(mut order) = order_option {
-            if order.payment_status == PaymentStatus::Pending {
-                let death = get_death_ts()?;
-
-                order.death = death;
-
-                Self::insert_slot(&mut self.0, &key, &order)?;
-
-                OrderCreateResponse::Modified(order)
-            } else {
-                OrderCreateResponse::Collision(order)
-            }
-        } else {
-            let death = get_death_ts()?;
-            let order =
-                OrderInfo::new(query, currency, payment_account.to_base58_string(42), death);
-
-            Self::insert_slot(&mut self.0, &key, &order)?;
-
-            OrderCreateResponse::New(order)
-        })
-    }
-
-    pub fn mark_paid(&mut self, key: &str) -> Result<OrderInfo, DbError> {
-        let Some(mut order) = Self::get_slot(&self.0, &key)?.map(|ag| ag.value()) else {
-            return Err(DbError::OrderNotFound(key.into()));
+        let Some(mut order) = self
+            .0
+            .get_slot(OrderId::from(key_as_ref))?
+            .map(|ag| ag.value())
+        else {
+            return Err(DbError::OrderNotFound(key_as_ref.into()));
         };
 
         if order.payment_status != PaymentStatus::Pending {
-            return Err(DbError::OrderAlreadyPaid(key.into()));
+            return Err(DbError::OrderAlreadyPaid(key_as_ref.into()));
         }
 
         order.payment_status = PaymentStatus::Paid;
 
-        Self::insert_slot(&mut self.0, &key, &order)?;
+        self.0.insert_slot(OrderId::from(key_as_ref), &order)?;
 
         Ok(order)
     }
 }
 
-struct RootWrite;
-struct KeysWrite;
-
-impl<T: TableRead> TableWrite for T {}
-
-impl TableRead for OrdersRead {
-    type Table = OrdersTable;
-}
-
-impl TableRead for OrdersWrite<'_> {
-    type Table = OrdersTable;
-}
-
-impl TableRead for RootWrite {
-    type Table = RootTable;
-}
-
-impl TableRead for KeysWrite {
-    type Table = KeysTable;
-}
+pub struct OrdersPerChainWrite<'a>(
+    Table<'a, <OrdersPerChainTable as TableTypes>::Key, <OrdersPerChainTable as TableTypes>::Value>,
+);
 
 struct Tables<'a> {
     keys: Option<Table<'a, <KeysTable as TableTypes>::Key, <KeysTable as TableTypes>::Value>>,
     orders: Option<Table<'a, <OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>>,
-    // invoices:
-    //     Option<Table<'a, <InvoicesTable as TableTypes>::Key, <InvoicesTable as TableTypes>::Value>>,
-
-    // accounts: HashMap<
-    //     ChainHash,
-    //     Table<'a, <AccountsTable as TableTypes>::Key, <AccountsTable as TableTypes>::Value>,
-    // >,
-    // hit_list: HashMap<
-    //     ChainHash,
-    //     Table<'a, <HitListTable as TableTypes>::Key, <HitListTable as TableTypes>::Value>,
-    // >,
 }
 
 impl<'a> Tables<'a> {
@@ -404,24 +378,14 @@ impl<'a> Tables<'a> {
     ) -> Result<Tables<'a>, DbError> {
         let mut keys = None;
         let mut orders = None;
-        // let mut invoices = None;
-        // let mut accounts = HashMap::new();
-        // let mut hit_list = HashMap::new();
 
         for table in tx.list_tables().map_err(DbError::TableList)? {
             match table.name() {
-                RootTable::NAME => {}
+                RootTable::NAME | OrdersPerChainTable::NAME => {}
                 KeysTable::NAME => keys = Some(KeysTable::open(tx)?),
                 OrdersTable::NAME => orders = Some(OrdersTable::open(tx)?),
-                // InvoicesTable::NAME => invoices = Some(open_table::<InvoicesTable>(tx)?),
                 other_name => {
-                    if open_chain_tables(
-                        tx,
-                        chain_hashes,
-                        other_name,
-                        // &mut accounts,
-                        // &mut hit_list,
-                    )? {
+                    if open_chain_tables(tx, chain_hashes, other_name)? {
                         tracing::debug!(
                             "Detected an unknown table {other_name:?}, it'll be purged."
                         );
@@ -432,30 +396,17 @@ impl<'a> Tables<'a> {
             }
         }
 
-        Ok(Self {
-            keys,
-            orders,
-            // invoices,
-            // accounts,
-            // hit_list,
-        })
+        Ok(Self { keys, orders })
     }
 }
 
-fn open_chain_tables<'a>(
-    tx: &'a WriteTransaction,
+#[expect(clippy::unnecessary_wraps, unused)]
+fn open_chain_tables(
+    tx: &WriteTransaction,
     chain_hashes: &HashSet<ChainHash>,
     other_name: &str,
-    // accounts: &mut HashMap<
-    //     ChainHash,
-    //     Table<'a, <AccountsTable as TableTypes>::Key, <AccountsTable as TableTypes>::Value>,
-    // >,
-    // hit_list: &mut HashMap<
-    //     ChainHash,
-    //     Table<'a, <HitListTable as TableTypes>::Key, <HitListTable as TableTypes>::Value>,
-    // >,
 ) -> Result<bool, DbError> {
-    let Some(hash_start) = other_name.len().checked_sub(H256::HEX_LENGTH) else {
+    let Some(hash_start) = other_name.len().checked_sub(H64::HEX_LENGTH) else {
         return Ok(true);
     };
 
@@ -463,9 +414,9 @@ fn open_chain_tables<'a>(
         return Ok(true);
     };
 
+    #[expect(clippy::match_single_binding)]
     match stripped {
-        // AccountsTable::PREFIX => AccountsTable::try_open(maybe_hash, chain_hashes, tx, accounts),
-        // HitListTable::PREFIX => HitListTable::try_open(maybe_hash, chain_hashes, tx, hit_list),
+        // TODO: Arms with chain tables.
         _ => Ok(true),
     }
 }
@@ -495,21 +446,31 @@ impl ProcessNewChainHelper for (String, &mut Vec<(String, ChainProperties)>) {
     }
 }
 
+fn strip_array<T, const N1: usize, const N2: usize>(array: [T; N1]) -> [T; N2] {
+    let mut iterator = array.into_iter();
+
+    array::from_fn(|_| {
+        iterator.next().expect(
+            "number of elements in the returned array should be equal or less than in the given \
+            array",
+        )
+    })
+}
+
 fn process_new_chain(
     chain_hashes: &mut HashSet<ChainHash>,
     helper: impl ProcessNewChainHelper,
     genesis: BlockHash,
 ) {
-    let mut chain_hash = genesis.0.into();
-    let one = U256::try_from(1u64).unwrap();
-    let mut step = one;
+    let mut chain_hash = ChainHash(strip_array(genesis.0.to_be_bytes()));
+    let mut step = 1;
 
     loop {
         if chain_hashes.insert(chain_hash) {
             tracing::debug!(
                 "The new {:?} chain is assigned to the {:#} hash.",
                 helper.name(),
-                H256::from(chain_hash)
+                H64::from(chain_hash)
             );
 
             helper.add_to_db_chains(ChainProperties {
@@ -523,13 +484,13 @@ fn process_new_chain(
         tracing::debug!(
             "Failed to assign the new {:?} chain to the {:#} hash. Probing the next slot...",
             helper.name(),
-            H256::from(chain_hash)
+            H64::from(chain_hash)
         );
 
-        chain_hash = H256(U256::from_be_bytes(chain_hash.0).overflowing_add(step).0).into();
+        chain_hash = H64(H64::from_be_bytes(chain_hash.0).0.overflowing_add(step).0).into();
         step = step
-            .checked_add(one)
-            .expect("database can't store more than `U256::MAX` chains");
+            .checked_add(1)
+            .expect("database can't store more than `u64::MAX` chains");
     }
 }
 
@@ -539,11 +500,16 @@ fn process_db_chain(
     chain_hashes: &mut HashSet<ChainHash>,
     new_db_chains: &mut IndexMap<String, ChainProperties, RandomState>,
     connected_chains: &IndexMap<Arc<str>, ConnectedChain, RandomState>,
+    orders_per_chain: &mut Table<
+        '_,
+        <OrdersPerChainTable as TableTypes>::Key,
+        <OrdersPerChainTable as TableTypes>::Value,
+    >,
 ) -> Result<(), DbError> {
     if !chain_hashes.insert(properties.hash) {
         tracing::debug!(
             "Found the {name:?} chain with the hash duplicate {:#} in the database.",
-            H256::from(properties.hash)
+            H64::from(properties.hash)
         );
 
         return Ok(());
@@ -577,13 +543,21 @@ fn process_db_chain(
         tracing::debug!(
             "The {:?} chain stored in the database is assigned to the {:?} hash.",
             entry.key(),
-            H256::from(properties.hash),
+            H64::from(properties.hash),
+        );
+    } else if orders_per_chain.get_slot(properties.hash)?.is_some() {
+        tracing::warn!(
+            "The {:?} chain exists in the database but isn't present in the config.",
+            entry.key(),
         );
     } else {
         tracing::warn!(
-            "The {:?} chain exists in the database but doesn't present in the config.",
-            entry.key(),
+            "The {:?} chain exists in the database but isn't present in the config and has no \
+            orders. It will be deleted.",
+            entry.key()
         );
+
+        return Ok(());
     }
 
     entry.insert(properties);
@@ -599,7 +573,7 @@ fn process_keys(
     keys: Option<Table<'_, <KeysTable as TableTypes>::Key, <KeysTable as TableTypes>::Value>>,
 ) -> Result<(Vec<(Public, Timestamp)>, Signer), DbError> {
     // Since the current key can be changed, this array should've a capacity of one more element.
-    #[allow(clippy::arithmetic_side_effects)]
+    #[expect(clippy::arithmetic_side_effects)]
     let mut new_old_publics_death_timestamps =
         Vec::with_capacity(old_publics_death_timestamps.len() + 1);
     let mut filtered_old_pairs = HashMap::with_capacity(key_store.old_pairs_len());
@@ -658,7 +632,9 @@ fn process_keys(
         }
 
         let is_db_public_in_circulation = keys.map_or(Ok(false), |table| {
-            KeysWrite::get_slot(&table, &db_public).map(|slot_option| slot_option.is_some())
+            table
+                .get_slot(&db_public)
+                .map(|slot_option| slot_option.is_some())
         })?;
 
         if is_db_public_in_circulation {
@@ -675,6 +651,16 @@ fn process_keys(
 
     Ok((
         new_old_publics_death_timestamps,
-        key_store.into_signer::<true>(filtered_old_pairs),
+        key_store.into_signer::<false>(filtered_old_pairs),
     ))
+}
+
+pub mod arguments {
+    use super::definitions::OrderInfo;
+
+    pub enum CreatedOrder {
+        New(OrderInfo),
+        Modified(OrderInfo),
+        Unchanged(OrderInfo),
+    }
 }

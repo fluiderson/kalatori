@@ -1,6 +1,6 @@
 use crate::{
     arguments::{OLD_SEED, SEED},
-    chain::definitions::{ChainIntervalField, H256},
+    chain_wip::definitions::H256,
     database::{
         definitions::{BlockHash, Public, Timestamp, Version},
         DB_VERSION,
@@ -35,14 +35,8 @@ pub enum Error {
     #[error("failed to read a seed environment variable")]
     SeedEnv(#[from] SeedEnvError),
 
-    #[error("failed to read the config file at {0:?}")]
-    ConfigFileRead(String, #[source] IoError),
-
-    #[error("failed to parse the config")]
-    ConfigFileParse(#[from] TomlError),
-
-    #[error("failed to parse given filter directives for the logger ({0:?})")]
-    LoggerDirectives(String, #[source] ParseError),
+    #[error("failed to parse given filter directives for the logger")]
+    LoggerDirectives(#[from] ParseError),
 
     #[error("failed to initialize the asynchronous runtime")]
     Runtime(#[source] IoError),
@@ -56,17 +50,15 @@ pub enum Error {
     #[error("got a database initialization error")]
     Database(#[from] DbError),
 
-    #[error("failed to parse the recipient parameter")]
-    RecipientParse(#[from] AccountFromStrError),
-
-    #[error("failed to parse the chain interval {0} in the config root")]
-    ConfigRootIntervals(ChainIntervalField, #[source] ChainIntervalError),
+    #[error("failed to parse the recipient argument")]
+    RecipientParse(#[from] AccountParseError),
 
     #[error("signer error is occurred")]
     Signer(#[from] SignerError),
 
-    // #[error("failed to parse the config parameter `{0}`")]
-    // ConfigParse(&'static str),
+    #[error("failed to process the config file")]
+    Config(#[from] ConfigError),
+
     #[error("chain {0:?} doesn't have any `endpoints` in the config")]
     EmptyEndpoints(String),
 
@@ -90,7 +82,23 @@ pub enum Error {
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
+pub enum ConfigError {
+    #[error("failed to read the config file")]
+    Read(#[from] IoError),
+
+    #[error("failed to parse the config")]
+    Parse(#[from] TomlError),
+
+    #[error("failed to parse the chain interval {0} in the config root")]
+    ConfigRootIntervals(
+        /* ChainIntervalField */ String,
+        #[source] ChainIntervalError,
+    ),
+}
+
+#[derive(Debug, Error)]
+#[expect(clippy::module_name_repetitions)]
 pub enum SeedEnvError {
     #[error("one of the `{OLD_SEED}*` variables has an invalid Unicode text in the name")]
     InvalidUnicodeOldKey(#[from] Utf8Error),
@@ -124,42 +132,34 @@ pub enum TaskError {
     #[error("config of this chain contains 2 or more identical endpoints")]
     DuplicateEndpoints,
 
-    #[error("failed to parse the chain interval {0} for this chain")]
-    ChainInterval(ChainIntervalField, #[source] ChainIntervalError),
+    #[error("failed to parse the chain interval for this chain")]
+    ChainInterval(#[from] ChainIntervalError),
 }
 
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
 pub enum ChainIntervalError {
-    #[error("chain interval isn't set neither in the config nor for this chain")]
-    NotSet,
+    #[error("`restart-gap` isn't set neither in the config root nor for this chain")]
+    RestartGap,
 
-    #[error(
-        "received 2 values for an interval parameter that expects only 1, \
-        choose between blocks (`*_in_blocks`) & time"
-    )]
-    DoubleSet,
+    #[error("`account-lifetime` isn't set neither in the config root nor for this chain")]
+    AccountLifetime,
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum ApiError {
     #[error("failed to fetch the genesis hash")]
     GenesisHash(#[source] RpcError),
+
     // #[error("failed to fetch the finalized head")]
     // FinalizedHead(#[source] RpcError),
 
+    // #[error("got an error while processing metadata")]
+    // MetadataError(#[from] MetadataError),
+
     // #[error("failed to fetch the runtime version")]
     // RuntimeVersion(#[source] RpcError),
-
-    // #[error("failed to decode the runtime metadata")]
-    // MetadataDecode(#[from] CodecError),
-
-    // #[error("fetched metadata has an unexpected prefix")]
-    // UnexpectedMetadataPrefix,
-
-    // #[error("fetched metadata of an unsupprted version")]
-    // UnsupportedMetadataVersion,
 
     // #[error("runtime metadata has no {0} pallet")]
     // PalletNotFound(Pallet),
@@ -170,6 +170,51 @@ pub enum ApiError {
     // #[error("got an error from the SCALE parser")]
     // Parser(#[from] ParserError<()>),
 }
+
+// #[derive(Debug, Error)]
+// #[expect(clippy::module_name_repetitions)]
+// pub enum MetadataError {
+//     #[error("failed to decode the runtime metadata")]
+//     Decode(#[from] CodecError),
+
+//     #[error("fetched metadata has an unexpected prefix")]
+//     UnexpectedPrefix(u32),
+
+//     #[error("version of fetched metadata is \"{0}\", the daemon supports only the \"14\" version")]
+//     UnsupportedVersion(u32),
+
+//     #[error("got an error while processing the {0:?} pallet's storage metadata")]
+//     Storage(PalletName, #[source] PalletStorageMetadataError),
+
+//     #[error("{0:?} pallet metadata wasn't found")]
+//     PalletNotFound(PalletName),
+// }
+
+// #[derive(Debug, Error)]
+// #[expect(clippy::module_name_repetitions)]
+// pub enum PalletStorageMetadataError {
+//     #[error("pallet has no storage metadata")]
+//     NotFound,
+
+//     #[error("got an error while processing the {0:?} storage entry metadata")]
+//     Entry(StorageEntryName, #[source] StorageEntryMetadataError),
+
+//     #[error("{0:?} storage entry metadata wasn't found")]
+//     EntryNotFound(StorageEntryName),
+// }
+
+// #[derive(Debug, Error)]
+// #[expect(clippy::module_name_repetitions)]
+// pub enum StorageEntryMetadataError {
+//     #[error("storage entry has the unexpected {got:?} type, expected the {expected:?} type")]
+//     UnexpectedStorageType {
+//         expected: StorageEntryTypeName,
+//         got: StorageEntryTypeName,
+//     },
+
+//     #[error("storage entry has an unexpected amount of hashers ({got:?}), expected {expected:?}")]
+//     UnexpectedStorageHashersAmount { expected: u8, got: u8 },
+// }
 
 #[derive(Debug, Error)]
 #[allow(clippy::module_name_repetitions)]
@@ -377,8 +422,11 @@ pub enum ChainError {
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
-pub enum AccountFromStrError {
+#[expect(clippy::module_name_repetitions)]
+pub enum AccountParseError {
+    #[error("provided string contains an invalid Unicode text")]
+    InvalidUnicode,
+
     #[error("failed to parse an address string in the hexadecimal format")]
     Hex(#[from] FromHexError),
 
@@ -699,12 +747,11 @@ mod pretty_cause {
                 .to_string();
             let mut expected_message = String::with_capacity(message.len());
 
-            // expected_message.push_str("\n\nCaused by:");
             expected_message.push_str(indoc::indoc! {"
 
-                TestError(10004).
+                    TestError(10004).
 
-            Caused by:"
+                Caused by:"
             });
 
             for number in 0..=OVERLOAD {
@@ -720,7 +767,8 @@ mod pretty_cause {
             }
 
             expected_message.push_str(indoc::indoc! {"
-                \n>9999: TestError(3).
+
+                >9999: TestError(3).
                 >9999: TestError(2).
                 >9999: TestError(1).
                 >9999: TestError(0)."

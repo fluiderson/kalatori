@@ -1,6 +1,6 @@
 //! Utils to process chain data without accessing the chain
 
-use crate::{chain2::definitions::BlockHash, definitions::api_v2::AssetId, error::ChainError};
+use crate::{chain::definitions::BlockHash, definitions::api_v2::AssetId, error::ChainError};
 use codec::Encode;
 use frame_metadata::{
     v14::StorageHasher,
@@ -8,7 +8,7 @@ use frame_metadata::{
 };
 use scale_info::{form::PortableForm, TypeDef, TypeDefPrimitive};
 use serde_json::{Map, Value};
-use sp_crypto_hashing::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
+use hasher::{blake2_128, blake2_256, twox_128, twox_256, twox_64};
 use substrate_constructor::{
     fill_prepare::{
         prepare_type, EraToFill, PrimitiveToFill, RegularPrimitiveToFill, SpecialTypeToFill,
@@ -887,9 +887,9 @@ pub fn whole_key_u32_value(
                                         TypeDef::Primitive(TypeDefPrimitive::U32) => {
                                             return Ok(format!(
                                                 "0x{}{}{}",
-                                                hex::encode(twox_128(prefix.as_bytes())),
-                                                hex::encode(twox_128(storage_name.as_bytes())),
-                                                hex::encode(hashed_key_element(
+                                                const_hex::encode(twox_128(prefix.as_bytes())),
+                                                const_hex::encode(twox_128(storage_name.as_bytes())),
+                                                const_hex::encode(hashed_key_element(
                                                     &entered_data.encode(),
                                                     hasher
                                                 ))
@@ -1084,8 +1084,8 @@ pub fn pallet_index(metadata: &RuntimeMetadataV15, name: &str) -> Option<u8> {
 pub fn storage_key(prefix: &str, storage_name: &str) -> String {
     format!(
         "0x{}{}",
-        hex::encode(twox_128(prefix.as_bytes())),
-        hex::encode(twox_128(storage_name.as_bytes()))
+        const_hex::encode(twox_128(prefix.as_bytes())),
+        const_hex::encode(twox_128(storage_name.as_bytes()))
     )
 }
 

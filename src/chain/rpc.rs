@@ -1,7 +1,7 @@
 //! Blockchain operations that actually require calling the chain
 
 use crate::{
-    chain2::{
+    chain::{
         definitions::{BlockHash, EventFilter},
         utils::{
             asset_balance_query, block_number_query, events_entry_metadata, hashed_key_element,
@@ -27,7 +27,7 @@ use jsonrpsee::ws_client::WsClient;
 use scale_info::{form::PortableForm, PortableRegistry, TypeDef, TypeDefPrimitive};
 use serde::Deserialize;
 use serde_json::{Number, Value};
-use sp_crypto_hashing::twox_128;
+use hasher::twox_128;
 use std::{collections::HashMap, fmt::Debug};
 use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
@@ -102,8 +102,8 @@ pub async fn get_keys_from_storage(
 ) -> Result<Value, ChainError> {
     let storage_key_prefix = format!(
         "0x{}{}",
-        hex::encode(twox_128(prefix.as_bytes())),
-        hex::encode(twox_128(storage_name.as_bytes()))
+        const_hex::encode(twox_128(prefix.as_bytes())),
+        const_hex::encode(twox_128(storage_name.as_bytes()))
     );
 
     let count = 1000;
@@ -367,9 +367,9 @@ pub async fn assets_set_at_block(
                                             TypeDef::Primitive(TypeDefPrimitive::U32) => {
                                                 let key_assets_metadata = format!(
                                                     "0x{}{}{}",
-                                                    hex::encode(twox_128("Assets".as_bytes())),
-                                                    hex::encode(twox_128("Metadata".as_bytes())),
-                                                    hex::encode(hashed_key_element(
+                                                    const_hex::encode(twox_128("Assets".as_bytes())),
+                                                    const_hex::encode(twox_128("Metadata".as_bytes())),
+                                                    const_hex::encode(hashed_key_element(
                                                         &asset_id.encode(),
                                                         hasher
                                                     ))

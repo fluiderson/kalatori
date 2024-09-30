@@ -1,34 +1,29 @@
-pub use v0::OrdersTable;
+//! Database definitions from tables to their keys & values.
+//!
+//! Ideally, this module should contain only primitive types & structs with them to be always
+//! stable since primitive types don't change their representation.
+
 pub use v1::{
-    Asset, BlockHash, BlockNumber, ChainHash, ChainProperties, ChainTableTrait, DaemonInfo,
-    KeysTable, Public, RootKey, RootTable, RootValue, TableRead, TableTrait, TableTypes,
-    TableWrite, Timestamp, Version,
+    AssetId, BlockHash, ChainHash, ChainProperties, DaemonInfo, KeysTable, NonZeroU64, OrderId,
+    OrderInfo, OrdersPerChainTable, OrdersTable, PaymentStatus, Public, RootKey, RootTable,
+    RootValue, TableRead, TableTrait, TableTypes, TableWrite, Timestamp, Version,
 };
-
-mod v0 {
-    use super::{TableTrait, TableTypes};
-    use crate::definitions::api_v2::OrderInfo;
-    use codec::{Decode, Encode};
-    use redb::{TypeName, Value};
-
-    crate::table!(OrdersTable<&'static str, OrderInfo> = "orders");
-    crate::scale_slot!(OrderInfo);
-}
 
 mod v1 {
     use crate::{
-        chain::definitions::{BlockHash as ChainBlockHash, H256},
+        chain_wip::definitions::{BlockHash as ChainBlockHash, H256, H64},
         error::{DbError, TimestampError},
     };
     use ahash::{HashMap, HashSet};
     use arrayvec::{ArrayString, ArrayVec};
-    use codec::{Decode, Encode};
+    use codec::{Decode, Encode, Error as CodecError, Input};
     use redb::{
         AccessGuard, Key, ReadOnlyTable, ReadTransaction, ReadableTable, Table, TableDefinition,
         TableError, TypeName, Value, WriteTransaction,
     };
     use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
     use std::{
+        borrow::Borrow,
         cmp::Ordering,
         fmt::{Debug, Display, Formatter, Result as FmtResult},
         num::NonZeroU64 as StdNonZeroU64,
@@ -45,12 +40,25 @@ mod v1 {
         type Value: Value + 'static;
     }
 
-    #[macro_export]
     macro_rules! table_types {
-        ($table:ident<$key:ty, $value:ty>) => {
+        ($table:ident<$key:ident, $value:ident>) => {
             impl TableTypes for $table {
                 type Key = $key;
                 type Value = $value;
+            }
+        };
+
+        ($table:ident<$key:ident<'_>, $value:ident>) => {
+            impl TableTypes for $table {
+                type Key = $key<'static>;
+                type Value = $value;
+            }
+        };
+
+        ($table:ident<$key:ident, $value:ident<'_>>) => {
+            impl TableTypes for $table {
+                type Key = $key;
+                type Value = $value<'static>;
             }
         };
     }
@@ -60,7 +68,7 @@ mod v1 {
         const DEFINITION: TableDefinition<'static, Self::Key, Self::Value> =
             TableDefinition::new(Self::NAME);
 
-        #[allow(clippy::type_complexity)]
+        #[expect(clippy::type_complexity)]
         fn open_ro(
             tx: &ReadTransaction,
         ) -> Result<Option<ReadOnlyTable<Self::Key, Self::Value>>, DbError> {
@@ -81,12 +89,31 @@ mod v1 {
         }
     }
 
-    #[macro_export]
     macro_rules! table {
-        ($table:ident<$key:ty, $value:ty> = $name:literal) => {
+        ($table:ident<$key:ident, $value:ident> = $name:literal) => {
             pub struct $table;
 
-            $crate::table_types!($table<$key, $value>);
+            table_types!($table<$key, $value>);
+
+            impl TableTrait for $table {
+                const NAME: &'static str = $name;
+            }
+        };
+
+        ($table:ident<$key:ident<'_>, $value:ident> = $name:literal) => {
+            pub struct $table;
+
+            table_types!($table<$key<'_>, $value>);
+
+            impl TableTrait for $table {
+                const NAME: &'static str = $name;
+            }
+        };
+
+        ($table:ident<$key:ident, $value:ident<'_>> = $name:literal) => {
+            pub struct $table;
+
+            table_types!($table<$key, $value<'_>>);
 
             impl TableTrait for $table {
                 const NAME: &'static str = $name;
@@ -94,37 +121,39 @@ mod v1 {
         };
     }
 
-    pub trait TableRead {
-        type Table: TableTrait;
-
+    pub trait TableRead<K: Key + 'static, V: Value + 'static>: ReadableTable<K, V> {
         fn get_slot<'a>(
-            table: &'a impl ReadableTable<
-                <Self::Table as TableTypes>::Key,
-                <Self::Table as TableTypes>::Value,
-            >,
-            key: &<<Self::Table as TableTypes>::Key as Value>::SelfType<'_>,
-        ) -> Result<Option<AccessGuard<'a, <Self::Table as TableTypes>::Value>>, DbError> {
-            table.get(key).map_err(DbError::Get)
+            &self,
+            key: impl Borrow<K::SelfType<'a>>,
+        ) -> Result<Option<AccessGuard<'_, V>>, DbError> {
+            self.get(key).map_err(DbError::Get)
         }
     }
 
-    pub trait TableWrite: TableRead {
-        fn insert_slot(
-            table: &mut Table<
-                '_,
-                <Self::Table as TableTypes>::Key,
-                <Self::Table as TableTypes>::Value,
-            >,
-            key: &<<Self::Table as TableTypes>::Key as Value>::SelfType<'_>,
-            value: &<<Self::Table as TableTypes>::Value as Value>::SelfType<'_>,
-        ) -> Result<(), DbError> {
-            table
-                .insert(key, value)
-                .map(|_| ())
-                .map_err(DbError::Insert)
+    impl<K: Key + 'static, V: Value + 'static, T: ReadableTable<K, V>> TableRead<K, V> for T {}
+
+    pub trait TableWrite<'t, 'tx: 't, K: Key + 'static, V: Value + 'static> {
+        fn table(&mut self) -> &mut Table<'tx, K, V>;
+
+        fn insert_slot<'a>(
+            &'t mut self,
+            key: impl Borrow<K::SelfType<'a>>,
+            value: impl Borrow<V::SelfType<'a>>,
+        ) -> Result<Option<AccessGuard<'t, V>>, DbError> {
+            self.table().insert(key, value).map_err(DbError::Insert)
         }
     }
 
+    impl<'t, 'tx: 't, K: Key + 'static, V: Value + 'static> TableWrite<'t, 'tx, K, V>
+        for Table<'tx, K, V>
+    {
+        fn table(&mut self) -> &mut Table<'tx, K, V> {
+            self
+        }
+    }
+
+    // Unused but should stay as a possible mechanism for chain table trees.
+    #[expect(unused)]
     // TODO: `<const N: usize>` is redundant.
     // https://github.com/rust-lang/rust/issues/76560
     pub trait ChainTableTrait<const N: usize>: TableTypes {
@@ -137,20 +166,24 @@ mod v1 {
             let mut name = ArrayString::<N>::new();
 
             name.try_push_str(Self::PREFIX).unwrap();
-            name.try_push_str(&H256::from_be_bytes(chain.0).to_hex())
+            name.try_push_str(&H64::from_be_bytes(chain.0).to_hex())
                 .unwrap();
 
             tx.open_table(TableDefinition::new(&name))
                 .map_err(DbError::OpenTable)
         }
 
+        /// An utility function for the database cleanup.
+        ///
+        /// Returns [`true`] if provided `maybe_hash` has an invalid format, or is unknown for the
+        /// daemon (i.e. `chain_hashes` don't have `maybe_hash`).
         fn try_open<'a>(
             maybe_hash: &str,
             chain_hashes: &HashSet<ChainHash>,
             tx: &'a WriteTransaction,
             tables: &mut HashMap<ChainHash, Table<'a, Self::Key, Self::Value>>,
         ) -> Result<bool, DbError> {
-            let Ok(hash) = H256::from_hex(maybe_hash) else {
+            let Ok(hash) = H64::from_hex(maybe_hash) else {
                 return Ok(true);
             };
 
@@ -166,6 +199,8 @@ mod v1 {
         }
     }
 
+    // Unused but should stay as a possible mechanism for chain table trees.
+    #[expect(unused)]
     macro_rules! chain_table {
         ($table:ident<$key:ty, $value:ty> = $prefix:literal) => {
             pub struct $table;
@@ -207,6 +242,7 @@ mod v1 {
         };
     }
 
+    #[expect(edition_2024_expr_fragment_specifier)]
     macro_rules! slot {
         ($name:ident([u8; $length:expr])) => {
             impl Value for $name {
@@ -234,7 +270,7 @@ mod v1 {
             }
         };
 
-        ($name:ident<'a>(&'a [u8])) => {
+        ($name:ident<'_>(&[u8])) => {
             impl Value for $name<'_> {
                 type SelfType<'a> = $name<'a> where Self: 'a;
                 type AsBytes<'a> = &'a [u8] where Self: 'a;
@@ -290,6 +326,7 @@ mod v1 {
         };
     }
 
+    #[expect(edition_2024_expr_fragment_specifier)]
     macro_rules! key_slot {
         ($name:ident([u8; $length:expr])) => {
             slot!($name([u8; $length]));
@@ -301,8 +338,8 @@ mod v1 {
             }
         };
 
-        ($name:ident<'a>(&'a [u8])) => {
-            slot!($name<'a>(&'a [u8]));
+        ($name:ident<'_>(&[u8])) => {
+            slot!($name<'_>(&[u8]));
 
             impl Key for $name<'_> {
                 fn compare(former: &[u8], latter: &[u8]) -> Ordering {
@@ -324,27 +361,78 @@ mod v1 {
 
     // Tables
 
-    table!(RootTable<RootKey, RootValue<'static>> = "root");
+    table!(RootTable<RootKey, RootValue<'_>> = "root");
     table!(KeysTable<Public, NonZeroU64> = "keys");
-    // table!(InvoicesTable<InvoiceKey<'static>, Invoice> = "invoices");
-    // pub const INVOICES_NAME: &str = "invoices";
-    // pub const INVOICES: TableDefinition<'_, InvoiceKey, Invoice> =
-    //     TableDefinition::new(INVOICES_NAME);
-
-    // chain_table!(AccountsTable<Account, InvoiceKey<'static>> = "accounts");
-    // chain_table!(HitListTable<BlockNumber, InvoiceKey<'static>> = "hit_list");
-
-    // // const TRANSACTIONS: &str = "transactions";
-
-    // // type TRANSACTIONS_KEY = BlockNumber;
-    // // type TRANSACTIONS_VALUE = (Account, Transfer);
-
-    // // const HIT_LIST: &str = "hit_list";
-
-    // // type HIT_LIST_KEY = BlockNumber;
-    // // type HIT_LIST_VALUE = (Option<AssetId>, Account);
+    table!(OrdersPerChainTable<ChainHash, NonZeroU64> = "orders_per_chain");
+    table!(OrdersTable<OrderId<'_>, OrderInfo> = "orders");
 
     // Slots
+
+    #[derive(Debug, Decode, Encode)]
+    pub struct OrderInfo {
+        pub withdrawal_status: WithdrawalStatus,
+        pub payment_status: PaymentStatus,
+        pub amount: Amount,
+        pub message: Vec<u8>,
+        pub currency: CurrencyInfo,
+        pub callback: Vec<u8>,
+        pub transactions: Vec<TransactionInfo>,
+        pub payment_account: Account,
+        pub death: Timestamp,
+    }
+
+    scale_slot!(OrderInfo);
+
+    #[derive(Debug, Decode, Encode)]
+    pub enum WithdrawalStatus {
+        Waiting,
+        Failed,
+        Completed,
+        None,
+    }
+
+    #[derive(Debug, Decode, Encode, PartialEq, Eq)]
+    pub enum PaymentStatus {
+        Pending,
+        Paid,
+        TimedOut,
+    }
+
+    #[derive(Debug, Decode, Encode)]
+    pub struct CurrencyInfo {
+        pub kind: TokenKind,
+        pub asset_id: Option<AssetId>,
+    }
+
+    #[derive(Debug, Decode, Encode)]
+    pub enum TokenKind {
+        Asset,
+        Native,
+    }
+
+    #[derive(Debug, Decode, Encode)]
+    pub struct TransactionInfo {
+        finalized_tx: Option<FinalizedTx>,
+        transaction_bytes: String,
+        sender: Account,
+        recipient: Account,
+        amount: Amount,
+        status: TxStatus,
+    }
+
+    #[derive(Debug, Decode, Encode)]
+    struct FinalizedTx {
+        block_number: BlockNumber,
+        position_in_block: ExtrinsicIndex,
+        timestamp: Timestamp,
+    }
+
+    #[derive(Debug, Decode, Encode)]
+    enum TxStatus {
+        Pending,
+        Finalized,
+        Failed,
+    }
 
     #[derive(Debug)]
     pub struct NonZeroU64(pub StdNonZeroU64);
@@ -373,6 +461,7 @@ mod v1 {
             TypeName::new(stringify!(NonZeroU64))
         }
     }
+
     #[derive(Debug)]
     pub enum RootKey {
         // The database version must be stored in a separate slot.
@@ -427,15 +516,17 @@ mod v1 {
         }
     }
 
+    #[derive(Debug, Encode, Decode)]
+    pub struct ExtrinsicIndex(pub u32);
     #[derive(Debug, Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
     pub struct Public(pub [u8; 32]);
-    #[derive(Debug, Deserialize, Clone, Copy)]
+    #[derive(Debug, Deserialize, Clone, Copy, Decode, Encode)]
     pub struct BlockNumber(u32);
-    #[derive(Debug, Deserialize, Clone, Copy)]
-    pub struct Asset(pub u32);
-    #[derive(Debug)]
-    pub struct InvoiceKey<'a>(&'a [u8]);
-    #[derive(Debug)]
+    #[derive(Debug, Deserialize, Clone, Copy, Decode, Encode)]
+    pub struct AssetId(pub u32);
+    #[derive(Debug, Clone, Copy)]
+    pub struct OrderId<'a>(&'a [u8]);
+    #[derive(Debug, Encode, Decode)]
     pub struct Account([u8; 32]);
     #[derive(Debug, PartialEq)]
     pub struct Version(pub u64);
@@ -444,20 +535,31 @@ mod v1 {
     #[derive(Debug, Encode, Decode, PartialEq, Clone, Copy)]
     pub struct BlockHash(pub [u8; 32]);
     #[derive(Debug, Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
-    pub struct ChainHash(pub [u8; 32]);
+    pub struct ChainHash(pub [u8; 8]);
+    #[derive(Debug, Encode, Decode, PartialEq, Eq, Clone, Copy)]
+    pub struct Amount(pub u128);
 
     key_slot!(Public([u8; 32]));
     key_slot!(BlockNumber(u32));
-    key_slot!(InvoiceKey<'a>(&'a [u8]));
+    key_slot!(OrderId<'_>(&[u8]));
     key_slot!(Account([u8; 32]));
+    key_slot!(ChainHash([u8; 8]));
     slot!(Version(u64));
-    slot!(RootValue<'a>(&'a [u8]));
+    slot!(RootValue<'_>(&[u8]));
     slot!(BlockHash([u8; 32]));
-    slot!(ChainHash([u8; 32]));
-    slot!(Asset(u32));
+    slot!(AssetId(u32));
 
-    // pub type BalanceSlot = u128;
-    // pub type Derivation = [u8; 32];
+    impl<'a> From<&'a str> for OrderId<'a> {
+        fn from(value: &'a str) -> Self {
+            Self(value.as_bytes())
+        }
+    }
+
+    impl<'a> From<OrderId<'a>> for &'a str {
+        fn from(value: OrderId<'a>) -> Self {
+            str::from_utf8(value.0).unwrap()
+        }
+    }
 
     impl From<ChainBlockHash> for BlockHash {
         fn from(hash: ChainBlockHash) -> Self {
@@ -465,9 +567,15 @@ mod v1 {
         }
     }
 
-    impl From<H256> for ChainHash {
-        fn from(hash: H256) -> Self {
+    impl From<H64> for ChainHash {
+        fn from(hash: H64) -> Self {
             Self(hash.to_be_bytes())
+        }
+    }
+
+    impl From<ChainHash> for H64 {
+        fn from(value: ChainHash) -> Self {
+            H64::from_be_bytes(value.0)
         }
     }
 
@@ -489,7 +597,6 @@ mod v1 {
 
     into_h256!(Public);
     into_h256!(BlockHash);
-    into_h256!(ChainHash);
 
     #[derive(Encode, Decode)]
     pub struct DaemonInfo {
@@ -505,8 +612,22 @@ mod v1 {
         }
     }
 
-    #[derive(Encode, Decode, Debug, Clone, Copy, Serialize)]
+    #[derive(Encode, Debug, Clone, Copy, Serialize)]
     pub struct Timestamp(#[codec(compact)] u64);
+
+    impl Decode for Timestamp {
+        fn decode<I: Input>(input: &mut I) -> Result<Self, CodecError> {
+            let millis = u64::decode(input)?;
+
+            Self::from_millis(millis).map_err(|e| {
+                const ERROR: &str = concat!("failed to decode `", stringify!(Timestamp), "`");
+
+                tracing::debug!("{ERROR}: {e}");
+
+                CodecError::from(ERROR)
+            })
+        }
+    }
 
     impl Timestamp {
         pub const MAX: u64 = 253_402_300_799_999;
@@ -531,12 +652,13 @@ mod v1 {
                 Err(TimestampError::Overflow)
             } else {
                 // Shouldn't truncate as `mills <= Self::MAX`.
-                #[allow(clippy::cast_possible_truncation)]
+                #[expect(clippy::cast_possible_truncation)]
                 Ok(Self(millis as u64))
             }
         }
 
         /// Saturating. Should be used to create a timestamp for the display purpose only.
+        #[expect(unused)]
         pub fn from_duration_in_millis(millis: u64) -> Self {
             let Ok(system_ms) = get_system_millis().unwrap_or_default().try_into() else {
                 return Self(Self::MAX);
@@ -579,117 +701,16 @@ mod v1 {
         fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
             f.debug_struct(stringify!(ChainProperties))
                 .field("genesis", &H256::from_be_bytes(self.genesis.0))
-                .field("hash", &H256::from_be_bytes(self.hash.0))
+                .field("hash", &H64::from_be_bytes(self.hash.0))
                 .finish()
         }
     }
 
-    // // #[derive(Encode, Decode)]
-    // // #[codec(crate = subxt::ext::codec)]
-    // // struct Transfer(Option<Compact<AssetId>>, #[codec(compact)] BalanceSlot);
-
-    #[derive(Encode, Decode, Debug)]
-    pub struct Invoice {
-        pub paid: bool,
-        pub dasd: [u8; 32],
-    }
-
-    scale_slot!(Invoice);
-
-    // impl Value for Invoice {
-    //     type SelfType<'a> = Self;
-
-    //     type AsBytes<'a> = Vec<u8>;
-
-    //     fn fixed_width() -> Option<usize> {
-    //         None
-    //     }
-
-    //     fn from_bytes<'a>(mut data: &[u8]) -> Self::SelfType<'_>
-    //     where
-    //         Self: 'a,
-    //     {
-    //         Self::decode(&mut data).unwrap()
-    //     }
-
-    //     fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'a>) -> Self::AsBytes<'_> {
-    //         value.encode()
-    //     }
-
-    //     fn type_name() -> TypeName {
-    //         TypeName::new(stringify!(Invoice))
-    //     }
-    // }
-
-    // #[derive(Encode, Decode, Debug)]
-    // #[codec(crate = subxt::ext::codec)]
-    // struct Invoice {
-    //     derivation: (PublicSlot, Derivation),
-    //     paid: bool,
-    //     #[codec(compact)]
-    //     timestamp: Timestamp,
-    //     #[codec(compact)]
-    //     price: BalanceSlot,
-    //     callback: String,
-    //     message: String,
-    //     transactions: TransferTxs,
-    // }
-
-    // #[derive(Encode, Decode, Debug)]
-    // #[codec(crate = subxt::ext::codec)]
-    // enum TransferTxs {
-    //     Asset {
-    //         #[codec(compact)]
-    //         id: AssetId,
-    //         // transactions: TransferTxsAsset,
-    //     },
-    //     Native {
-    //         recipient: Account,
-    //         encoded: Vec<u8>,
-    //         exact_amount: Option<Compact<BalanceSlot>>,
-    //     },
-    // }
-
-    // #[derive(Encode, Decode, Debug)]
-    // #[codec(crate = subxt::ext::codec)]
-    // struct TransferTxsAsset<T> {
-    //     recipient: Account,
-    //     encoded: Vec<u8>,
-    //     #[codec(compact)]
-    //     amount: BalanceSlot,
-    // }
-
-    // #[derive(Encode, Decode, Debug)]
-    // #[codec(crate = subxt::ext::codec)]
-    // struct TransferTx {
-    //     recipient: Account,
-    //     exact_amount: Option<Compact<BalanceSlot>>,
-    // }
-
-    // pub struct ConfigWoChains {
-    //     pub recipient: String,
-    //     pub debug: Option<bool>,
-    //     pub remark: Option<String>,
-    //     pub depth: Option<BlockNumber>,
-    //     pub account_lifetime: BlockNumber,
-    //     pub rpc: String,
-    // }
-
-    // #[derive(Deserialize, Debug)]
-    // pub struct Invoicee {
-    //     pub callback: String,
-    //     pub amount: Balance,
-    //     pub paid: bool,
-    //     pub paym_acc: AccountId,
-    // }
-
     #[cfg(test)]
     mod tests {
-        use std::time::SystemTime;
-
-        use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-
         use super::Timestamp;
+        use std::time::SystemTime;
+        use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
         #[test]
         fn timestamp_max() {
