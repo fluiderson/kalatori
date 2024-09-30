@@ -47,7 +47,7 @@ pub struct Database {
 }
 
 impl Database {
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     pub fn new(
         path_option: Option<Cow<'static, OsStr>>,
         connected_chains: &IndexMap<Arc<str>, ConnectedChain, RandomState>,
@@ -244,7 +244,7 @@ impl OrdersRead {
         key: impl AsRef<str>,
     ) -> Result<Option<<OrdersTable as TableTypes>::Value>, DbError> {
         self.0
-            .get_slot(OrderId::from(key.as_ref()))
+            .get_slot(OrderId(key.as_ref()))
             .map(|some| some.map(|ag| ag.value()))
     }
 
@@ -263,13 +263,15 @@ impl OrdersRead {
         DbError,
     > {
         self.0.iter().map_err(DbError::Range).map(|range| {
-            range.filter_map(|result| match result {
-                Ok(r) => {
-                    let order = r.1.value();
+            range.filter_map(|result| {
+                result
+                    .map(|(k, v)| {
+                        let order = v.value();
 
-                    (order.payment_status == PaymentStatus::Pending).then(|| Ok((r.0, order)))
-                }
-                Err(e) => Some(Err(DbError::RangeIter(e))),
+                        (order.payment_status == PaymentStatus::Pending).then_some((k, order))
+                    })
+                    .map_err(DbError::RangeIter)
+                    .transpose()
             })
         })
     }
@@ -290,14 +292,20 @@ impl TxWrite {
         OrdersPerChainTable::open(&self.0).map(OrdersPerChainWrite)
     }
 
+    pub fn keys(&self) -> Result<KeysWrite<'_>, DbError> {
+        KeysTable::open(&self.0).map(KeysWrite)
+    }
+
     pub fn create_order(
         mut orders: OrdersWrite<'_>,
         mut orders_per_chain: OrdersPerChainWrite<'_>,
+        mut keys: KeysWrite<'_>,
         chain: ChainHash,
         key: impl AsRef<str>,
+        public: Public,
         new_order: OrderInfo,
     ) -> Result<CreatedOrder, DbError> {
-        let order_id = OrderId::from(key.as_ref());
+        let order_id = OrderId(key.as_ref());
         let order_option = orders.0.get_slot(order_id)?.map(|ag| ag.value());
 
         Ok(if let Some(order) = order_option {
@@ -307,24 +315,26 @@ impl TxWrite {
                 CreatedOrder::Unchanged(order)
             }
         } else {
-            orders.0.insert_slot(order_id, &new_order)?;
-
-            let orders_amount = orders_per_chain
-                .0
-                .get_slot(chain)?
-                .map(|ag| {
+            let increment = |option_ag: Option<AccessGuard<'_, NonZeroU64>>| {
+                NonZeroU64(option_ag.map_or(StdNonZeroU64::MIN, |ag| {
                     ag.value()
                         .0
                         .checked_add(1)
-                        .expect("database can't store more than `u64::MAX` orders per chain")
-                })
-                .unwrap_or(StdNonZeroU64::MIN);
+                        .expect("database can't store more than `u64::MAX` orders")
+                }))
+            };
 
-            orders_per_chain
-                .0
-                .insert_slot(chain, NonZeroU64(orders_amount))?;
+            orders.0.insert_slot(order_id, &new_order)?;
 
-            CreatedOrder::Unchanged(new_order)
+            let mut n = increment(orders_per_chain.0.get_slot(chain)?);
+
+            orders_per_chain.0.insert_slot(chain, n)?;
+
+            n = increment(keys.0.get_slot(public)?);
+
+            keys.0.insert_slot(public, n)?;
+
+            CreatedOrder::New(new_order)
         })
     }
 }
@@ -340,11 +350,7 @@ impl OrdersWrite<'_> {
     ) -> Result<<OrdersTable as TableTypes>::Value, DbError> {
         let key_as_ref = key.as_ref();
 
-        let Some(mut order) = self
-            .0
-            .get_slot(OrderId::from(key_as_ref))?
-            .map(|ag| ag.value())
-        else {
+        let Some(mut order) = self.0.get_slot(OrderId(key_as_ref))?.map(|ag| ag.value()) else {
             return Err(DbError::OrderNotFound(key_as_ref.into()));
         };
 
@@ -354,7 +360,7 @@ impl OrdersWrite<'_> {
 
         order.payment_status = PaymentStatus::Paid;
 
-        self.0.insert_slot(OrderId::from(key_as_ref), &order)?;
+        self.0.insert_slot(OrderId(key_as_ref), &order)?;
 
         Ok(order)
     }
@@ -362,6 +368,10 @@ impl OrdersWrite<'_> {
 
 pub struct OrdersPerChainWrite<'a>(
     Table<'a, <OrdersPerChainTable as TableTypes>::Key, <OrdersPerChainTable as TableTypes>::Value>,
+);
+
+pub struct KeysWrite<'a>(
+    Table<'a, <KeysTable as TableTypes>::Key, <KeysTable as TableTypes>::Value>,
 );
 
 struct Tables<'a> {

@@ -15,16 +15,17 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     arguments::Chain,
     chain::{
-        definitions::{BlockHash, ChainTrackerRequest, EventFilter, Invoice},
+        definitions::{ChainTrackerRequest, Invoice},
         payout::payout,
         rpc::{
             assets_set_at_block, block_hash, genesis_hash, metadata, next_block, next_block_number,
             runtime_version_identifier, specs, subscribe_blocks, transfer_events,
         },
-        utils::{events_entry_metadata, was_balance_received_at_account},
+        utils::was_balance_received_at_account,
     },
-    definitions::api_v2::{CurrencyProperties, TokenKind},
+    chain_wip::definitions::BlockHash,
     error::ChainError,
+    server::definitions::api_v2::{CurrencyProperties, TokenKind},
     signer::Signer,
     state::State,
     utils::task_tracker::TaskTracker,
@@ -88,7 +89,7 @@ pub fn start_chain_watch(
                                     },
                                 };
 
-                                tracing::debug!("Block hash {} from {}", block.to_string(), chain.name);
+                                tracing::debug!("Block hash {} from {}", block.0, chain.name);
 
                                 if watcher.version != runtime_version_identifier(&client, &block).await? {
                                     tracing::info!("Different runtime version reported! Restarting connection...");
@@ -143,7 +144,7 @@ pub fn start_chain_watch(
                                         break;
                                     },
                                     }
-                                tracing::debug!("Block {} from {} processed successfully", block.to_string(), chain.name);
+                                tracing::debug!("Block {} from {} processed successfully", block.0, chain.name);
                             }
                             ChainTrackerRequest::WatchAccount(request) => {
                                 watched_accounts.insert(request.id.clone(), Invoice::from_request(request));
@@ -255,6 +256,7 @@ impl ChainWatcher {
                         decimals: specs.decimals,
                         rpc_url: rpc_url.to_owned(),
                         asset_id: None,
+                        ss58: 0,
                     },
                 );
             }

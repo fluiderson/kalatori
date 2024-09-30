@@ -1,6 +1,6 @@
 //! Common objects for the chain interaction system.
 
-use crate::{arguments::ChainConfigInner, error::AccountParseError};
+use crate::arguments::ChainConfigInner;
 use ahash::RandomState;
 use arrayvec::ArrayString;
 use const_hex::FromHexError;
@@ -12,15 +12,12 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 use std::{
-    ffi::OsStr,
     fmt::{Debug, Display, Formatter, Result as FmtResult},
     hash::Hash,
-    ops::Deref,
     sync::Arc,
 };
-use substrate_crypto_light::common::{AccountId32, AsBase58};
 
-const HEX_PREFIX: &str = "0x";
+pub const HEX_PREFIX: &str = "0x";
 
 #[derive(Debug)]
 pub struct ChainPreparator(pub Arc<str>);
@@ -153,64 +150,7 @@ macro_rules! hash_impl {
 hash_impl!(H256, U256, U256::BYTES);
 hash_impl!(H64, u64, (u64::BITS / 8) as usize);
 
-#[derive(Clone, Copy)]
-pub enum Account {
-    Hex(AccountId32),
-    Substrate(SS58Prefix, AccountId32),
-}
-
-impl Account {
-    pub fn from_os_str(string: impl AsRef<OsStr>) -> Result<Self, AccountParseError> {
-        let s = string.as_ref();
-
-        Ok(
-            if let Some(stripped) = s.as_encoded_bytes().strip_prefix(HEX_PREFIX.as_bytes()) {
-                H256::from_hex(stripped).map(|hash| Self::Hex(AccountId32(hash.to_be_bytes())))?
-            } else {
-                AccountId32::from_base58_string(
-                    s.to_str().ok_or(AccountParseError::InvalidUnicode)?,
-                )
-                .map(|(account, p)| Self::Substrate(SS58Prefix(p), account))?
-            },
-        )
-    }
-}
-
-impl Display for Account {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Self::Hex(a) => Display::fmt(&H256::from_be_bytes(a.0), f),
-            Self::Substrate(p, a) => {
-                let s = &a.to_base58_string(p.0);
-
-                if f.alternate() {
-                    Debug::fmt(s, f)
-                } else {
-                    Display::fmt(s, f)
-                }
-            }
-        }
-    }
-}
-
-impl From<Account> for AccountId32 {
-    fn from(value: Account) -> Self {
-        match value {
-            Account::Hex(a) | Account::Substrate(_, a) => a,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct SS58Prefix(pub u16);
-
-impl From<u16> for SS58Prefix {
-    fn from(value: u16) -> Self {
-        Self(value)
-    }
-}
-
-fn decode_hex_for_visitor<T, E: DeError>(
+pub fn decode_hex_for_visitor<T, E: DeError>(
     string: &str,
     decode: impl FnOnce(&str) -> Result<T, FromHexError>,
 ) -> Result<T, E> {
@@ -266,41 +206,8 @@ impl EncaseInQuotes for Formatter<'_> {
     }
 }
 
-#[derive(Deserialize, Clone, Debug)]
-pub struct Decimals(pub u8);
-
-#[derive(Serialize)]
-pub struct StorageKey(pub String);
-
-pub struct Bytes(pub Vec<u8>);
-
-impl Deref for Bytes {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for Bytes {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct VisitorImpl;
-
-        impl Visitor<'_> for VisitorImpl {
-            type Value = Bytes;
-
-            fn expecting(&self, f: &mut Formatter<'_>) -> FmtResult {
-                write!(f, "a hexidecimal string prefixed with {HEX_PREFIX:?}")
-            }
-
-            fn visit_str<E: DeError>(self, string: &str) -> Result<Self::Value, E> {
-                decode_hex_for_visitor(string, |stripped| const_hex::decode(stripped).map(Bytes))
-            }
-        }
-
-        deserializer.deserialize_str(VisitorImpl)
-    }
-}
+// #[derive(Serialize)]
+// pub struct StorageKey(pub String);
 
 // #[derive(DecodeAsType, Debug)]
 // pub struct Asset {

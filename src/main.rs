@@ -14,16 +14,14 @@ mod callback;
 mod chain;
 mod chain_wip;
 mod database;
-mod definitions;
 mod error;
 mod server;
 mod signer;
 mod state;
 mod utils;
 
-use arguments::{CliArgs, Config};
+use arguments::{CliArgs, Config, Account};
 use chain::ChainManager;
-use chain_wip::definitions::Account;
 use database::Database;
 use error::{Error, PrettyCause};
 use signer::KeyStore;

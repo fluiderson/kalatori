@@ -5,7 +5,7 @@ use crate::{
         definitions::{BlockHash, Public, Timestamp, Version},
         DB_VERSION,
     },
-    definitions::api_v2::OrderStatus,
+    server::definitions::api_v2::OrderStatus,
     utils::task_tracker::TaskName,
 };
 use codec::Error as CodecError;
@@ -151,7 +151,6 @@ pub enum ChainIntervalError {
 pub enum ApiError {
     #[error("failed to fetch the genesis hash")]
     GenesisHash(#[source] RpcError),
-
     // #[error("failed to fetch the finalized head")]
     // FinalizedHead(#[source] RpcError),
 

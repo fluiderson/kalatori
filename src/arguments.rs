@@ -3,10 +3,11 @@
 //! Contains everything related to CLI arguments, environment variables, and the config.
 
 use crate::{
-    chain_wip::definitions::Decimals,
+    chain_wip::definitions::{H256, HEX_PREFIX},
     database::definitions::{AssetId, Timestamp},
-    error::{ChainIntervalError, ConfigError},
+    error::{AccountParseError, ChainIntervalError, ConfigError},
     logger,
+    server::definitions::new::{Decimals, SS58Prefix, SubstrateAccount},
     utils::PathDisplay,
 };
 use clap::{Arg, ArgAction, Parser};
@@ -14,7 +15,8 @@ use serde::Deserialize;
 use std::{
     borrow::Cow,
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
+    fmt::{Debug, Display, Formatter, Result as FmtResult},
     fs::File,
     io::{ErrorKind, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -22,6 +24,7 @@ use std::{
     str,
     sync::Arc,
 };
+use substrate_crypto_light::common::{AccountId32, AsBase58};
 use toml_edit::de;
 
 shadow_rs::shadow!(shadow);
@@ -370,4 +373,52 @@ pub struct Native {
 pub struct AssetInfo {
     pub name: String,
     pub id: AssetId,
+}
+
+#[derive(Clone, Copy)]
+pub enum Account {
+    Hex(AccountId32),
+    Substrate(SubstrateAccount),
+}
+
+impl Account {
+    pub fn from_os_str(string: impl AsRef<OsStr>) -> Result<Self, AccountParseError> {
+        let s = string.as_ref();
+
+        Ok(
+            if let Some(stripped) = s.as_encoded_bytes().strip_prefix(HEX_PREFIX.as_bytes()) {
+                H256::from_hex(stripped).map(|hash| Self::Hex(AccountId32(hash.to_be_bytes())))?
+            } else {
+                AccountId32::from_base58_string(
+                    s.to_str().ok_or(AccountParseError::InvalidUnicode)?,
+                )
+                .map(|(account, p)| Self::Substrate(SubstrateAccount(SS58Prefix(p), account)))?
+            },
+        )
+    }
+}
+
+impl Display for Account {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Self::Hex(a) => Display::fmt(&H256::from_be_bytes(a.0), f),
+            Self::Substrate(SubstrateAccount(p, a)) => {
+                let s = &a.to_base58_string(p.0);
+
+                if f.alternate() {
+                    Debug::fmt(s, f)
+                } else {
+                    Display::fmt(s, f)
+                }
+            }
+        }
+    }
+}
+
+impl From<Account> for AccountId32 {
+    fn from(value: Account) -> Self {
+        match value {
+            Account::Hex(a) | Account::Substrate(SubstrateAccount(_, a)) => a,
+        }
+    }
 }

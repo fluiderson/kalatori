@@ -4,14 +4,16 @@
 //! stable since primitive types don't change their representation.
 
 pub use v1::{
-    AssetId, BlockHash, ChainHash, ChainProperties, DaemonInfo, KeysTable, NonZeroU64, OrderId,
-    OrderInfo, OrdersPerChainTable, OrdersTable, PaymentStatus, Public, RootKey, RootTable,
-    RootValue, TableRead, TableTrait, TableTypes, TableWrite, Timestamp, Version,
+    Amount, AmountKind, AssetId, BlockHash, Bytes, ChainHash, ChainProperties, CurrencyInfo,
+    DaemonInfo, FinalizedTx, KeysTable, NonZeroU64, OrderId, OrderInfo, OrdersPerChainTable,
+    OrdersTable, PaymentStatus, Public, RootKey, RootTable, RootValue, TableRead, TableTrait,
+    TableTypes, TableWrite, Timestamp, TokenKind, TransactionInfo, TxStatus, Version,
+    WithdrawalStatus,
 };
 
 mod v1 {
     use crate::{
-        chain_wip::definitions::{BlockHash as ChainBlockHash, H256, H64},
+        chain_wip::definitions::{self, BlockHash as ChainBlockHash, H256, H64, HEX_PREFIX},
         error::{DbError, TimestampError},
     };
     use ahash::{HashMap, HashSet};
@@ -21,16 +23,20 @@ mod v1 {
         AccessGuard, Key, ReadOnlyTable, ReadTransaction, ReadableTable, Table, TableDefinition,
         TableError, TypeName, Value, WriteTransaction,
     };
-    use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
+    use serde::{
+        de::{Error as DeError, Visitor},
+        Deserialize, Deserializer, Serialize, Serializer,
+    };
     use std::{
         borrow::Borrow,
         cmp::Ordering,
         fmt::{Debug, Display, Formatter, Result as FmtResult},
         num::NonZeroU64 as StdNonZeroU64,
+        ops::Deref,
         str,
         time::SystemTime,
     };
-    use substrate_crypto_light::sr25519::Public as CryptoPublic;
+    use substrate_crypto_light::{common::AccountId32, sr25519::Public as CryptoPublic};
     use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
     // Traits & macros
@@ -299,6 +305,35 @@ mod v1 {
             }
         };
 
+        ($name:ident<'_>(&str)) => {
+            impl Value for $name<'_> {
+                type SelfType<'a> = $name<'a> where Self: 'a;
+                type AsBytes<'a> = &'a str where Self: 'a;
+
+                fn fixed_width() -> Option<usize> {
+                    None
+                }
+
+                fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'_>
+                where
+                    Self: 'a,
+                {
+                    $name(<&str>::from_bytes(data))
+                }
+
+                fn as_bytes<'a, 'b: 'a>(value: &Self::SelfType<'b>) -> &'a str
+                where
+                    Self: 'b,
+                {
+                    value.0
+                }
+
+                fn type_name() -> TypeName {
+                    TypeName::new(stringify!($name))
+                }
+            }
+        };
+
         ($name:ident($inner_type:ty)) => {
             impl Value for $name {
                 type SelfType<'a> = Self;
@@ -338,12 +373,12 @@ mod v1 {
             }
         };
 
-        ($name:ident<'_>(&[u8])) => {
-            slot!($name<'_>(&[u8]));
+        ($name:ident<'_>(&str)) => {
+            slot!($name<'_>(&str));
 
             impl Key for $name<'_> {
                 fn compare(former: &[u8], latter: &[u8]) -> Ordering {
-                    former.cmp(latter)
+                    Self::from_bytes(former).0.cmp(&Self::from_bytes(latter).0)
                 }
             }
         };
@@ -373,9 +408,9 @@ mod v1 {
         pub withdrawal_status: WithdrawalStatus,
         pub payment_status: PaymentStatus,
         pub amount: Amount,
-        pub message: Vec<u8>,
+        pub message: String,
         pub currency: CurrencyInfo,
-        pub callback: Vec<u8>,
+        pub callback: String,
         pub transactions: Vec<TransactionInfo>,
         pub payment_account: Account,
         pub death: Timestamp,
@@ -383,7 +418,8 @@ mod v1 {
 
     scale_slot!(OrderInfo);
 
-    #[derive(Debug, Decode, Encode)]
+    #[derive(Debug, Decode, Encode, Serialize)]
+    #[serde(rename_all = "lowercase")]
     pub enum WithdrawalStatus {
         Waiting,
         Failed,
@@ -391,7 +427,8 @@ mod v1 {
         None,
     }
 
-    #[derive(Debug, Decode, Encode, PartialEq, Eq)]
+    #[derive(Debug, Decode, Encode, PartialEq, Eq, Serialize)]
+    #[serde(rename_all = "lowercase")]
     pub enum PaymentStatus {
         Pending,
         Paid,
@@ -404,7 +441,8 @@ mod v1 {
         pub asset_id: Option<AssetId>,
     }
 
-    #[derive(Debug, Decode, Encode)]
+    #[derive(Debug, Decode, Encode, Serialize, Clone)]
+    #[serde(rename_all = "lowercase")]
     pub enum TokenKind {
         Asset,
         Native,
@@ -412,26 +450,78 @@ mod v1 {
 
     #[derive(Debug, Decode, Encode)]
     pub struct TransactionInfo {
-        finalized_tx: Option<FinalizedTx>,
-        transaction_bytes: String,
-        sender: Account,
-        recipient: Account,
-        amount: Amount,
-        status: TxStatus,
+        pub finalized_tx: Option<FinalizedTx>,
+        pub transaction_bytes: Bytes,
+        pub sender: Account,
+        pub recipient: Account,
+        pub amount: AmountKind,
+        pub status: TxStatus,
     }
 
-    #[derive(Debug, Decode, Encode)]
-    struct FinalizedTx {
-        block_number: BlockNumber,
-        position_in_block: ExtrinsicIndex,
-        timestamp: Timestamp,
+    #[derive(Debug, Decode, Encode, Serialize)]
+    pub struct FinalizedTx {
+        pub block_number: BlockNumber,
+        pub position_in_block: ExtrinsicIndex,
+        pub timestamp: Timestamp,
     }
 
-    #[derive(Debug, Decode, Encode)]
-    enum TxStatus {
+    #[derive(Debug, Decode, Encode, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum TxStatus {
         Pending,
         Finalized,
         Failed,
+    }
+
+    #[derive(Encode, Decode, Debug)]
+    pub struct Bytes(pub Vec<u8>);
+
+    impl Deref for Bytes {
+        type Target = [u8];
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl AsRef<[u8]> for Bytes {
+        fn as_ref(&self) -> &[u8] {
+            self
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Bytes {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct VisitorImpl;
+
+            impl Visitor<'_> for VisitorImpl {
+                type Value = Bytes;
+
+                fn expecting(&self, f: &mut Formatter<'_>) -> FmtResult {
+                    write!(f, "a hexidecimal string prefixed with {HEX_PREFIX:?}")
+                }
+
+                fn visit_str<E: DeError>(self, string: &str) -> Result<Self::Value, E> {
+                    definitions::decode_hex_for_visitor(string, |stripped| {
+                        const_hex::decode(stripped).map(Bytes)
+                    })
+                }
+            }
+
+            deserializer.deserialize_str(VisitorImpl)
+        }
+    }
+
+    impl Serialize for Bytes {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_str(&const_hex::encode_prefixed(self))
+        }
+    }
+
+    #[derive(Debug, Decode, Encode)]
+    pub enum AmountKind {
+        Exact(Amount),
+        All,
     }
 
     #[derive(Debug)]
@@ -516,16 +606,16 @@ mod v1 {
         }
     }
 
-    #[derive(Debug, Encode, Decode)]
+    #[derive(Debug, Encode, Decode, Serialize)]
     pub struct ExtrinsicIndex(pub u32);
     #[derive(Debug, Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
     pub struct Public(pub [u8; 32]);
-    #[derive(Debug, Deserialize, Clone, Copy, Decode, Encode)]
+    #[derive(Debug, Deserialize, Serialize, Clone, Copy, Decode, Encode)]
     pub struct BlockNumber(u32);
-    #[derive(Debug, Deserialize, Clone, Copy, Decode, Encode)]
+    #[derive(Debug, Deserialize, Serialize, Clone, Copy, Decode, Encode)]
     pub struct AssetId(pub u32);
     #[derive(Debug, Clone, Copy)]
-    pub struct OrderId<'a>(&'a [u8]);
+    pub struct OrderId<'a>(pub &'a str);
     #[derive(Debug, Encode, Decode)]
     pub struct Account([u8; 32]);
     #[derive(Debug, PartialEq)]
@@ -541,7 +631,7 @@ mod v1 {
 
     key_slot!(Public([u8; 32]));
     key_slot!(BlockNumber(u32));
-    key_slot!(OrderId<'_>(&[u8]));
+    key_slot!(OrderId<'_>(&str));
     key_slot!(Account([u8; 32]));
     key_slot!(ChainHash([u8; 8]));
     slot!(Version(u64));
@@ -549,15 +639,9 @@ mod v1 {
     slot!(BlockHash([u8; 32]));
     slot!(AssetId(u32));
 
-    impl<'a> From<&'a str> for OrderId<'a> {
-        fn from(value: &'a str) -> Self {
-            Self(value.as_bytes())
-        }
-    }
-
-    impl<'a> From<OrderId<'a>> for &'a str {
-        fn from(value: OrderId<'a>) -> Self {
-            str::from_utf8(value.0).unwrap()
+    impl From<Account> for AccountId32 {
+        fn from(value: Account) -> Self {
+            Self(value.0)
         }
     }
 
@@ -612,8 +696,14 @@ mod v1 {
         }
     }
 
-    #[derive(Encode, Debug, Clone, Copy, Serialize)]
+    #[derive(Encode, Debug, Clone, Copy)]
     pub struct Timestamp(#[codec(compact)] u64);
+
+    impl Serialize for Timestamp {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_str(&self.to_string())
+        }
+    }
 
     impl Decode for Timestamp {
         fn decode<I: Input>(input: &mut I) -> Result<Self, CodecError> {

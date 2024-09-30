@@ -1,5 +1,13 @@
 //! Everything related to the actual interaction with a blockchain.
 
+use crate::{
+    arguments::Chain,
+    error::{ChainError, Error},
+    server::definitions::api_v2::OrderInfo,
+    signer::Signer,
+    state::State,
+    utils::task_tracker::TaskTracker,
+};
 use std::{collections::HashMap, sync::Arc};
 use substrate_crypto_light::common::AccountId32;
 use tokio::{
@@ -7,15 +15,6 @@ use tokio::{
     time::{timeout, Duration},
 };
 use tokio_util::sync::CancellationToken;
-
-use crate::{
-    arguments::Chain,
-    definitions::api_v2::OrderInfo,
-    error::{ChainError, Error},
-    signer::Signer,
-    utils::task_tracker::TaskTracker,
-    State,
-};
 
 pub mod definitions;
 pub mod payout;
@@ -40,7 +39,7 @@ pub struct ChainManager {
 
 impl ChainManager {
     /// Run once to start all chain connections; this should be very robust, if manager fails
-    /// - all modules should be restarted probably.
+    /// - all modules should be restarted, probably.
     pub fn ignite(
         chain: Vec<Chain>,
         state: State,

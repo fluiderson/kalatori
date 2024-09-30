@@ -17,8 +17,8 @@ use crate::{
             BalanceTransferConstructor,
         },
     },
-    definitions::api_v2::TokenKind,
     error::ChainError,
+    server::definitions::api_v2::TokenKind,
     signer::Signer,
     state::State,
 };

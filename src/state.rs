@@ -2,13 +2,13 @@ use crate::{
     callback,
     chain::ChainManager,
     database::{definitions::Timestamp, Database},
-    definitions::api_v2::{
+    error::{Error, OrderError},
+    server::definitions::api_v2::{
         CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse, OrderStatus,
         ServerInfo, ServerStatus,
     },
-    error::{Error, OrderError},
     signer::Signer,
-    TaskTracker,
+    utils::task_tracker::TaskTracker,
 };
 use std::{collections::HashMap, sync::Arc};
 use substrate_crypto_light::common::{AccountId32, AsBase58};
@@ -71,21 +71,26 @@ impl State {
                 account_lifetime,
             };
 
-            // TODO: consider doing this even more lazy
-            if let Some(orders) = db_wakeup.read()?.orders()? {
-                    let order_list = orders.active_order_list()?;
 
-                    task_tracker.spawn("Restore saved orders", async move {
-                        for result in order_list {
+            // TODO: consider doing this even more lazy
+            task_tracker.spawn("Restore saved orders", async move {
+                if let Some(orders) = db_wakeup.read()?.orders()? {
+                    let order_list = orders.active()?;
+
+                    for result in order_list {
                             let (order, order_details) = result?;
 
-                            chain_manager_wakeup
-                                .add_invoice(order, order_details, recipient)
-                                .await?;
-                        }
-                        Ok("All saved orders restored")
-                    });
-            }
+                            // chain_manager_wakeup
+                            //     .add_invoice(order.value(), order_details, recipient)
+                            //     .await?;
+                            todo!()
+                    }
+
+                    Ok("All saved orders restored")
+                } else {
+                    Ok("")
+                }
+            });
 
             loop {
                 tokio::select! {
@@ -126,16 +131,17 @@ impl State {
                                 match state.db.write(|tx| tx.orders()?.mark_paid(&id)) {
                                     Ok(order) => {
                                         // TODO: callback here
-                                        callback::callback(&order.callback, OrderStatus {
-                                            order: id.clone(),
-                                            message: String::new(),
-                                            recipient: state.recipient.clone().to_base58_string(42),
-                                            server_info: state.server_info.clone(),
-                                            order_info: order.clone(),
-                                            payment_page: String::new(),
-                                            redirect_url: String::new(),
-                                        }).await;
-                                        drop(state.chain_manager.reap(id, order, state.recipient).await);
+                                        // callback::callback(&order.callback, OrderStatus {
+                                        //     order: id.clone(),
+                                        //     message: String::new(),
+                                        //     recipient: state.recipient.clone().to_base58_string(42),
+                                        //     server_info: state.server_info.clone(),
+                                        //     order_info: order.clone(),
+                                        //     payment_page: String::new(),
+                                        //     redirect_url: String::new(),
+                                        // }).await;
+                                        // drop(state.chain_manager.reap(id, order, state.recipient).await);
+                                        todo!()
                                     }
                                     Err(e) => {
                                         tracing::error!(
@@ -225,13 +231,9 @@ impl State {
         };
     }
 
-    pub async fn force_withdrawal(&self, order: String) -> Result<Option<OrderStatus>, Error> {
-        let (res, rx) = oneshot::channel();
-        self.tx
-            .send(StateAccessRequest::ForceWithdrawal { order, res })
-            .await
-            .map_err(|_| Error::Fatal)?;
-        rx.await.map_err(|_| Error::Fatal)?
+    #[allow(dead_code)]
+    pub async fn force_withdrawal(&self, order: String) -> Result<OrderStatus, OrderStatus> {
+        todo!()
     }
 
     pub fn interface(&self) -> Self {
@@ -275,27 +277,29 @@ struct StateData {
 
 impl StateData {
     async fn force_withdrawal(&mut self, order: String) -> Result<Option<OrderStatus>, Error> {
-        let Some(orders) = self.db.read()?.orders()? else {
-            return Ok(None);
-        };
+        // let Some(orders) = self.db.read()?.orders()? else {
+        //     return Ok(None);
+        // };
 
-        let Some(order_info) = orders.read_order(&order)? else {
-            return Ok(None);
-        };
+        // let Some(order_info) = orders.read(&order)? else {
+        //     return Ok(None);
+        // };
 
-        self.chain_manager
-            .reap(order.clone(), order_info.clone(), self.recipient)
-            .await?;
+        // self.chain_manager
+        //     .reap(order.clone(), order_info.clone(), self.recipient)
+        //     .await?;
 
-        Ok(Some(OrderStatus {
-            order,
-            message: String::new(),
-            recipient: self.recipient.clone().to_base58_string(42),
-            server_info: self.server_info.clone(),
-            order_info,
-            payment_page: String::new(),
-            redirect_url: String::new(),
-        }))
+        // Ok(Some(OrderStatus {
+        //     order,
+        //     message: String::new(),
+        //     recipient: self.recipient.clone().to_base58_string(42),
+        //     server_info: self.server_info.clone(),
+        //     order_info,
+        //     payment_page: String::new(),
+        //     redirect_url: String::new(),
+        // }))
+
+        todo!()
     }
 
     fn update_currencies(&mut self, currencies: HashMap<String, CurrencyProperties>) {
@@ -303,65 +307,67 @@ impl StateData {
     }
 
     fn get_invoice_status(&self, order: String) -> Result<OrderResponse, Error> {
-        let Some(orders) = self.db.read()?.orders()? else {
-            return Ok(OrderResponse::NotFound);
-        };
+        // let Some(orders) = self.db.read()?.orders()? else {
+        //     return Ok(OrderResponse::NotFound);
+        // };
 
-        if let Some(order_info) = orders.read_order(&order)? {
-            let message = String::new(); //TODO
-            Ok(OrderResponse::FoundOrder(OrderStatus {
-                order,
-                message,
-                recipient: self.recipient.clone().to_base58_string(2), // TODO maybe but spec says use "2"
-                server_info: self.server_info.clone(),
-                order_info,
-                payment_page: String::new(),
-                redirect_url: String::new(),
-            }))
-        } else {
-            Ok(OrderResponse::NotFound)
-        }
+        // if let Some(order_info) = orders.read_order(&order)? {
+        //     let message = String::new(); //TODO
+        //     Ok(OrderResponse::FoundOrder(OrderStatus {
+        //         order,
+        //         message,
+        //         recipient: self.recipient.clone().to_base58_string(2), // TODO maybe but spec says use "2"
+        //         server_info: self.server_info.clone(),
+        //         order_info,
+        //         payment_page: String::new(),
+        //         redirect_url: String::new(),
+        //     }))
+        // } else {
+        //     Ok(OrderResponse::NotFound)
+        // }
+        todo!()
     }
 
     async fn create_invoice(&self, order_query: OrderQuery) -> Result<OrderResponse, Error> {
-        let order = order_query.order.clone();
-        tracing::debug!("creating order {order_query:?}");
-        let currency = self
-            .currencies
-            .get(&order_query.currency)
-            .ok_or(OrderError::UnknownCurrency)?;
-        let currency = currency.info(order_query.currency.clone());
-        let payment_account = self.signer.construct_order_account(&order)?;
-        match self.db.write(|tx| {
-            tx.orders()?.create_order(
-                &order,
-                order_query,
-                currency,
-                payment_account,
-                self.account_lifetime,
-            )
-        })? {
-            OrderCreateResponse::New(new_order_info) => {
-                self.chain_manager
-                    .add_invoice(order.clone(), new_order_info.clone(), self.recipient)
-                    .await?;
-                Ok(OrderResponse::NewOrder(self.order_status(
-                    order,
-                    new_order_info,
-                    String::new(),
-                )))
-            }
-            OrderCreateResponse::Modified(order_info) => Ok(OrderResponse::ModifiedOrder(
-                self.order_status(order, order_info, String::new()),
-            )),
-            OrderCreateResponse::Collision(order_status) => {
-                Ok(OrderResponse::CollidedOrder(self.order_status(
-                    order,
-                    order_status,
-                    String::from("Order with this ID was already processed"),
-                )))
-            }
-        }
+        // let order = order_query.order.clone();
+        // tracing::debug!("creating order {order_query:?}");
+        // let currency = self
+        //     .currencies
+        //     .get(&order_query.currency)
+        //     .ok_or(OrderError::UnknownCurrency)?;
+        // let currency = currency.info(order_query.currency.clone());
+        // let payment_account = self.signer.construct_order_account(&order)?;
+        // match self.db.write(|tx| {
+        //     tx.orders()?.create_order(
+        //         &order,
+        //         order_query,
+        //         currency,
+        //         payment_account,
+        //         self.account_lifetime,
+        //     )
+        // })? {
+        //     OrderCreateResponse::New(new_order_info) => {
+        //         self.chain_manager
+        //             .add_invoice(order.clone(), new_order_info.clone(), self.recipient)
+        //             .await?;
+        //         Ok(OrderResponse::NewOrder(self.order_status(
+        //             order,
+        //             new_order_info,
+        //             String::new(),
+        //         )))
+        //     }
+        //     OrderCreateResponse::Modified(order_info) => Ok(OrderResponse::ModifiedOrder(
+        //         self.order_status(order, order_info, String::new()),
+        //     )),
+        //     OrderCreateResponse::Collision(order_status) => {
+        //         Ok(OrderResponse::CollidedOrder(self.order_status(
+        //             order,
+        //             order_status,
+        //             String::from("Order with this ID was already processed"),
+        //         )))
+        //     }
+        // }
+        todo!()
     }
 
     fn order_status(&self, order: String, order_info: OrderInfo, message: String) -> OrderStatus {
