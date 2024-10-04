@@ -288,13 +288,18 @@ pub mod api_v2 {
 }
 
 pub mod new {
-    use crate::database::definitions::{
-        Amount, AmountKind as DbAmountKind, AssetId, Bytes, CurrencyInfo as DbCurrencyInfo,
-        FinalizedTx, OrderInfo as DbOrderInfo, PaymentStatus, Timestamp, TokenKind,
-        TransactionInfo as DbTransactionInfo, TxStatus, WithdrawalStatus,
+    use crate::{
+        arguments::ChainName,
+        chain_wip::definitions::Url,
+        database::definitions::{
+            Amount, AmountKind as DbAmountKind, AssetId, Bytes, CurrencyInfo as DbCurrencyInfo,
+            FinalizedTx, OrderInfo as DbOrderInfo, PaymentStatus, Timestamp, TokenKind,
+            TransactionInfo as DbTransactionInfo, TxStatus, Url as DbUrl, WithdrawalStatus,
+        },
     };
-    use ahash::{HashMap, HashSet};
+    use ahash::HashMap;
     use serde::{Deserialize, Serialize, Serializer};
+    use std::sync::Arc;
     use substrate_crypto_light::common::{AccountId32, AsBase58};
 
     #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -302,12 +307,6 @@ pub mod new {
 
     #[derive(Clone, Copy)]
     pub struct SS58Prefix(pub u16);
-
-    impl From<u16> for SS58Prefix {
-        fn from(value: u16) -> Self {
-            Self(value)
-        }
-    }
 
     #[derive(Clone, Copy)]
     pub struct SubstrateAccount(pub SS58Prefix, pub AccountId32);
@@ -327,23 +326,23 @@ pub mod new {
     #[derive(Serialize)]
     pub struct OrderStatus {
         pub order: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub message: Option<String>,
         pub recipient: SubstrateAccount,
         pub server_info: ServerInfo,
         #[serde(flatten)]
         pub order_info: OrderInfo,
-        pub payment_page: String,
-        pub redirect_url: String,
+        pub payment_page: &'static str,
+        pub redirect_url: &'static str,
     }
 
     #[derive(Serialize)]
     pub struct OrderInfo {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub message: Option<String>,
         pub withdrawal_status: WithdrawalStatus,
         pub payment_status: PaymentStatus,
-        pub amount: AmountWithDecimals,
+        pub amount: f64,
         pub currency: CurrencyInfo,
-        pub callback: String,
+        pub callback: DbUrl,
         pub transactions: Vec<TransactionInfo>,
         pub payment_account: SubstrateAccount,
         pub death: Timestamp,
@@ -354,48 +353,60 @@ pub mod new {
             db: DbOrderInfo,
             prefix: SS58Prefix,
             decimals: Decimals,
-            currency: CurrencyInfo,
+            currency_name: Arc<str>,
+            db_currency: DbCurrencyInfo,
+            rpc_url: Url,
+            chain_name: ChainName,
         ) -> Self {
+            let currency = CurrencyInfo {
+                currency: currency_name,
+                properties: CurrencyProperties::from_db(db_currency, chain_name, decimals, rpc_url),
+            };
+
             Self {
+                message: db.message,
                 withdrawal_status: db.withdrawal_status,
                 payment_status: db.payment_status,
+                amount: db.amount.format(decimals),
                 callback: db.callback,
-                amount: todo!(),
-                currency,
                 transactions: db
                     .transactions
                     .into_iter()
-                    .map(|tx| TransactionInfo::from_db(tx, prefix, decimals, currency.clone()))
+                    .map(|tx| TransactionInfo::from_db(tx, currency.clone(), decimals, prefix))
                     .collect(),
+                currency,
                 payment_account: SubstrateAccount(prefix, db.payment_account.into()),
                 death: db.death,
             }
         }
     }
 
-    // impl OrderInfo {
-    //     pub fn new(
-    //         query: OrderQuery,
-    //         currency: CurrencyInfo,
-    //         payment_account: String,
-    //         death: Timestamp,
-    //     ) -> Self {
-    //         OrderInfo {
-    //             withdrawal_status: WithdrawalStatus::Waiting,
-    //             payment_status: PaymentStatus::Pending,
-    //             amount: query.amount,
-    //             currency,
-    //             callback: query.callback,
-    //             transactions: Vec::new(),
-    //             payment_account,
-    //             death,
-    //         }
-    //     }
-    // }
+    #[derive(Debug, Deserialize)]
+    pub struct OrderPayloadRaw {
+        pub amount: f64,
+        pub currency: String,
+        pub callback: DbUrl,
+    }
+
+    pub struct OrderPayload {
+        pub amount: Amount,
+        pub currency: String,
+        pub callback: DbUrl,
+    }
+
+    impl OrderPayload {
+        pub fn from_raw(raw: OrderPayloadRaw, decimals: Decimals) -> Self {
+            Self {
+                amount: Amount::parse(raw.amount, decimals),
+                currency: raw.currency,
+                callback: raw.callback,
+            }
+        }
+    }
 
     #[derive(Serialize)]
     pub struct ServerStatus {
-        pub description: String,
+        pub description: &'static str,
         pub server_info: ServerInfo,
         pub supported_currencies: HashMap<String, CurrencyProperties>,
     }
@@ -403,14 +414,14 @@ pub mod new {
     #[derive(Serialize)]
     struct ServerHealth {
         server_info: ServerInfo,
-        connected_rpcs: HashSet<RpcInfo>,
+        connected_rpcs: Vec<RpcInfo>,
         status: Health,
     }
 
     #[derive(Serialize)]
     struct RpcInfo {
-        rpc_url: String,
-        chain_name: String,
+        rpc_url: Url,
+        chain_name: ChainName,
         status: Health,
     }
 
@@ -424,78 +435,46 @@ pub mod new {
 
     #[derive(Serialize, Clone)]
     pub struct CurrencyInfo {
-        pub currency: String,
-        pub chain_name: String,
+        pub currency: Arc<str>,
+        #[serde(flatten)]
+        pub properties: CurrencyProperties,
+    }
+
+    #[derive(Serialize, Clone)]
+    pub struct CurrencyProperties {
+        pub chain_name: ChainName,
         pub kind: TokenKind,
         pub decimals: Decimals,
-        pub rpc_url: String,
+        pub rpc_url: Url,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub asset_id: Option<AssetId>,
     }
 
-    impl CurrencyInfo {
+    impl CurrencyProperties {
         pub fn from_db(
             db: DbCurrencyInfo,
-            currency: String,
-            chain_name: String,
+            chain_name: ChainName,
             decimals: Decimals,
-            rpc_url: String,
+            rpc_url: Url,
         ) -> Self {
             Self {
-                kind: db.kind,
-                asset_id: db.asset_id,
-                currency,
                 chain_name,
+                kind: db.kind,
                 decimals,
                 rpc_url,
+                asset_id: db.asset_id,
             }
         }
     }
 
-    // impl CurrencyInfo {
-    //     pub fn properties(&self) -> CurrencyProperties {
-    //         CurrencyProperties {
-    //             chain_name: self.chain_name.clone(),
-    //             kind: self.kind,
-    //             decimals: self.decimals,
-    //             rpc_url: self.rpc_url.clone(),
-    //             asset_id: self.asset_id,
-    //             ss58: 0,
-    //         }
-    //     }
-    // }
-
-    #[derive(Serialize)]
-    pub struct CurrencyProperties {
-        pub chain_name: String,
-        pub kind: TokenKind,
-        pub decimals: Decimals,
-        pub rpc_url: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub asset_id: Option<AssetId>,
-    }
-
-    // impl CurrencyProperties {
-    //     pub fn info(&self, currency: String) -> CurrencyInfo {
-    //         CurrencyInfo {
-    //             currency,
-    //             chain_name: self.chain_name.clone(),
-    //             kind: self.kind,
-    //             decimals: self.decimals,
-    //             rpc_url: self.rpc_url.clone(),
-    //             asset_id: self.asset_id,
-    //         }
-    //     }
-    // }
-
     #[derive(Serialize)]
     pub struct ServerInfo {
-        pub version: String,
-        pub instance_id: String,
+        pub version: &'static str,
+        pub instance_id: Arc<str>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub debug: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub kalatori_remark: Option<String>,
+        pub kalatori_remark: Option<Arc<str>>,
     }
 
     #[derive(Serialize)]
@@ -515,11 +494,9 @@ pub mod new {
     impl TransactionInfo {
         pub fn from_db(
             db: DbTransactionInfo,
-            currency: DbCurrencyInfo,
-            prefix: SS58Prefix,
+            currency: CurrencyInfo,
             decimals: Decimals,
-            chain_name: String,
-            rpc_url: String,
+            prefix: SS58Prefix,
         ) -> Self {
             Self {
                 finalized_tx: db.finalized_tx,
@@ -527,8 +504,8 @@ pub mod new {
                 sender: SubstrateAccount(prefix, db.sender.into()),
                 recipient: SubstrateAccount(prefix, db.recipient.into()),
                 amount: AmountKind::from_db(db.amount, decimals),
+                currency,
                 status: db.status,
-                currency: CurrencyInfo::from_db(currency, chain_name, decimals, rpc_url),
             }
         }
     }
@@ -536,13 +513,13 @@ pub mod new {
     #[derive(Serialize)]
     enum AmountKind {
         All,
-        Exact(AmountWithDecimals),
+        Exact(f64),
     }
 
     impl AmountKind {
         fn from_db(db: DbAmountKind, decimals: Decimals) -> Self {
             match db {
-                DbAmountKind::Exact(amount) => Self::Exact((amount, decimals).into()),
+                DbAmountKind::Exact(amount) => Self::Exact(amount.format(decimals)),
                 DbAmountKind::All => Self::All,
             }
         }
@@ -555,20 +532,6 @@ pub mod new {
         match amount {
             AmountKind::All => serializer.serialize_str("all"),
             AmountKind::Exact(exact) => exact.serialize(serializer),
-        }
-    }
-
-    pub struct AmountWithDecimals(pub Amount, pub Decimals);
-
-    impl From<(Amount, Decimals)> for AmountWithDecimals {
-        fn from((a, d): (Amount, Decimals)) -> Self {
-            Self(a, d)
-        }
-    }
-
-    impl Serialize for AmountWithDecimals {
-        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            todo!()
         }
     }
 }

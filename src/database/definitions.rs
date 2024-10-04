@@ -4,21 +4,23 @@
 //! stable since primitive types don't change their representation.
 
 pub use v1::{
-    Amount, AmountKind, AssetId, BlockHash, Bytes, ChainHash, ChainProperties, CurrencyInfo,
-    DaemonInfo, FinalizedTx, KeysTable, NonZeroU64, OrderId, OrderInfo, OrdersPerChainTable,
-    OrdersTable, PaymentStatus, Public, RootKey, RootTable, RootValue, TableRead, TableTrait,
-    TableTypes, TableWrite, Timestamp, TokenKind, TransactionInfo, TxStatus, Version,
-    WithdrawalStatus,
+    Account, Amount, AmountKind, AssetId, BlockHash, Bytes, ChainHash, ChainName, ChainProperties,
+    CurrencyInfo, DaemonInfo, FinalizedTx, KeysTable, NonZeroU64, OrderId, OrderInfo,
+    OrdersPerChainTable, OrdersTable, PaymentStatus, Public, RootKey, RootTable, RootValue,
+    TableRead, TableTrait, TableTypes, TableWrite, Timestamp, TokenKind, TransactionInfo, TxStatus,
+    Url, Version, WithdrawalStatus,
 };
 
 mod v1 {
     use crate::{
+        arguments::ChainName as ArgChainName,
         chain_wip::definitions::{self, BlockHash as ChainBlockHash, H256, H64, HEX_PREFIX},
-        error::{DbError, TimestampError},
+        error::{DbError, OrderError, TimestampError},
+        server::definitions::new::Decimals,
     };
     use ahash::{HashMap, HashSet};
     use arrayvec::{ArrayString, ArrayVec};
-    use codec::{Decode, Encode, Error as CodecError, Input};
+    use codec::{Compact, Decode, DecodeAll, Encode, Error as CodecError, Input};
     use redb::{
         AccessGuard, Key, ReadOnlyTable, ReadTransaction, ReadableTable, Table, TableDefinition,
         TableError, TypeName, Value, WriteTransaction,
@@ -93,6 +95,16 @@ mod v1 {
         fn open(tx: &WriteTransaction) -> Result<Table<'_, Self::Key, Self::Value>, DbError> {
             tx.open_table(Self::DEFINITION).map_err(DbError::OpenTable)
         }
+    }
+
+    macro_rules! into_h256 {
+        ($from:ty) => {
+            impl From<$from> for H256 {
+                fn from(value: $from) -> Self {
+                    H256::from_be_bytes(value.0)
+                }
+            }
+        };
     }
 
     macro_rules! table {
@@ -234,7 +246,7 @@ mod v1 {
                 where
                     Self: 'a,
                 {
-                    Self::decode(&mut data).unwrap()
+                    Self::decode_all(&mut data).unwrap()
                 }
 
                 fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'_>) -> Self::AsBytes<'a> {
@@ -405,18 +417,84 @@ mod v1 {
 
     #[derive(Debug, Decode, Encode)]
     pub struct OrderInfo {
+        pub chain: ChainHash,
         pub withdrawal_status: WithdrawalStatus,
         pub payment_status: PaymentStatus,
         pub amount: Amount,
-        pub message: String,
+        pub message: Option<String>,
         pub currency: CurrencyInfo,
-        pub callback: String,
+        pub callback: Url,
         pub transactions: Vec<TransactionInfo>,
         pub payment_account: Account,
         pub death: Timestamp,
     }
 
     scale_slot!(OrderInfo);
+
+    impl OrderInfo {
+        pub fn new(
+            amount: Amount,
+            callback: Url,
+            payment_account: Account,
+            currency: CurrencyInfo,
+            account_lifetime: Timestamp,
+            chain: ChainHash,
+        ) -> Result<Self, DbError> {
+            Ok(Self {
+                chain,
+                withdrawal_status: WithdrawalStatus::Waiting,
+                payment_status: PaymentStatus::Pending,
+                amount,
+                message: None,
+                currency,
+                callback,
+                transactions: vec![],
+                payment_account,
+                death: get_death_ts(account_lifetime)?,
+            })
+        }
+
+        pub fn update(
+            self,
+            callback: Url,
+            chain: ChainHash,
+            currency: CurrencyInfo,
+            amount: Amount,
+            account_lifetime: Timestamp,
+        ) -> Result<Self, DbError> {
+            if self.payment_status == PaymentStatus::Paid {
+                return Err(OrderError::Paid.into());
+            }
+
+            if !self.transactions.is_empty() {
+                return Err(OrderError::NotEmptyTxs.into());
+            }
+
+            Ok(Self {
+                amount,
+                callback,
+                currency,
+                chain,
+                death: get_death_ts(account_lifetime)?,
+                ..self
+            })
+        }
+    }
+
+    fn get_death_ts(account_lifetime: Timestamp) -> Result<Timestamp, TimestampError> {
+        Timestamp::from_millis(
+            Timestamp::now()?
+                .as_millis()
+                .saturating_add(account_lifetime.as_millis()),
+        )
+    }
+
+    /////
+
+    #[derive(Debug, Decode, Encode, Serialize, Deserialize, Clone, Hash, PartialEq, Eq)]
+    pub struct Url(pub String);
+
+    /////
 
     #[derive(Debug, Decode, Encode, Serialize)]
     #[serde(rename_all = "lowercase")]
@@ -427,6 +505,8 @@ mod v1 {
         None,
     }
 
+    /////
+
     #[derive(Debug, Decode, Encode, PartialEq, Eq, Serialize)]
     #[serde(rename_all = "lowercase")]
     pub enum PaymentStatus {
@@ -435,11 +515,15 @@ mod v1 {
         TimedOut,
     }
 
+    /////
+
     #[derive(Debug, Decode, Encode)]
     pub struct CurrencyInfo {
         pub kind: TokenKind,
         pub asset_id: Option<AssetId>,
     }
+
+    /////
 
     #[derive(Debug, Decode, Encode, Serialize, Clone)]
     #[serde(rename_all = "lowercase")]
@@ -447,6 +531,8 @@ mod v1 {
         Asset,
         Native,
     }
+
+    /////
 
     #[derive(Debug, Decode, Encode)]
     pub struct TransactionInfo {
@@ -458,12 +544,16 @@ mod v1 {
         pub status: TxStatus,
     }
 
+    /////
+
     #[derive(Debug, Decode, Encode, Serialize)]
     pub struct FinalizedTx {
         pub block_number: BlockNumber,
         pub position_in_block: ExtrinsicIndex,
         pub timestamp: Timestamp,
     }
+
+    /////
 
     #[derive(Debug, Decode, Encode, Serialize)]
     #[serde(rename_all = "lowercase")]
@@ -473,6 +563,8 @@ mod v1 {
         Failed,
     }
 
+    /////
+
     #[derive(Encode, Decode, Debug)]
     pub struct Bytes(pub Vec<u8>);
 
@@ -481,12 +573,6 @@ mod v1 {
 
         fn deref(&self) -> &Self::Target {
             &self.0
-        }
-    }
-
-    impl AsRef<[u8]> for Bytes {
-        fn as_ref(&self) -> &[u8] {
-            self
         }
     }
 
@@ -514,15 +600,19 @@ mod v1 {
 
     impl Serialize for Bytes {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            serializer.serialize_str(&const_hex::encode_prefixed(self))
+            serializer.serialize_str(&const_hex::encode_prefixed(&**self))
         }
     }
 
-    #[derive(Debug, Decode, Encode)]
+    /////
+
+    #[derive(Debug, Decode, Encode, Copy, Clone)]
     pub enum AmountKind {
         Exact(Amount),
         All,
     }
+
+    /////
 
     #[derive(Debug)]
     pub struct NonZeroU64(pub StdNonZeroU64);
@@ -551,6 +641,8 @@ mod v1 {
             TypeName::new(stringify!(NonZeroU64))
         }
     }
+
+    /////
 
     #[derive(Debug)]
     pub enum RootKey {
@@ -606,38 +698,86 @@ mod v1 {
         }
     }
 
+    /////
+
     #[derive(Debug, Encode, Decode, Serialize)]
     pub struct ExtrinsicIndex(pub u32);
-    #[derive(Debug, Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
-    pub struct Public(pub [u8; 32]);
     #[derive(Debug, Deserialize, Serialize, Clone, Copy, Decode, Encode)]
     pub struct BlockNumber(u32);
     #[derive(Debug, Deserialize, Serialize, Clone, Copy, Decode, Encode)]
     pub struct AssetId(pub u32);
     #[derive(Debug, Clone, Copy)]
     pub struct OrderId<'a>(pub &'a str);
-    #[derive(Debug, Encode, Decode)]
-    pub struct Account([u8; 32]);
     #[derive(Debug, PartialEq)]
     pub struct Version(pub u64);
     #[derive(Debug)]
     pub struct RootValue<'a>(pub &'a [u8]);
-    #[derive(Debug, Encode, Decode, PartialEq, Clone, Copy)]
-    pub struct BlockHash(pub [u8; 32]);
-    #[derive(Debug, Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
-    pub struct ChainHash(pub [u8; 8]);
-    #[derive(Debug, Encode, Decode, PartialEq, Eq, Clone, Copy)]
-    pub struct Amount(pub u128);
 
-    key_slot!(Public([u8; 32]));
     key_slot!(BlockNumber(u32));
     key_slot!(OrderId<'_>(&str));
-    key_slot!(Account([u8; 32]));
-    key_slot!(ChainHash([u8; 8]));
     slot!(Version(u64));
     slot!(RootValue<'_>(&[u8]));
     slot!(BlockHash([u8; 32]));
     slot!(AssetId(u32));
+
+    /////
+
+    #[derive(Debug, Encode, Decode, PartialEq, Eq, Clone, Copy)]
+    pub struct Amount(pub u128);
+
+    // TODO: Implement custom parsing from a string without using intermediate lossy `f64`.
+    impl Amount {
+        pub fn parse(raw: f64, decimals: Decimals) -> Self {
+            let parsed_float = (raw * decimal_exponent_product(decimals)).round();
+
+            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Self(parsed_float as _)
+        }
+
+        pub fn format(&self, decimals: Decimals) -> f64 {
+            #[expect(clippy::cast_precision_loss)]
+            let float = self.0 as f64;
+
+            float / decimal_exponent_product(decimals)
+        }
+    }
+
+    pub fn decimal_exponent_product(decimals: Decimals) -> f64 {
+        10f64.powi(decimals.0.into())
+    }
+
+    /////
+
+    #[derive(Debug, Encode, Decode, PartialEq, Clone, Copy)]
+    pub struct BlockHash(pub [u8; 32]);
+
+    into_h256!(BlockHash);
+
+    impl From<ChainBlockHash> for BlockHash {
+        fn from(hash: ChainBlockHash) -> Self {
+            Self(hash.0.to_be_bytes())
+        }
+    }
+
+    /////
+
+    #[derive(Debug, Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
+    pub struct Public(pub [u8; 32]);
+
+    key_slot!(Public([u8; 32]));
+
+    into_h256!(Public);
+
+    /////
+
+    #[derive(Debug, Encode, Decode)]
+    pub struct Account([u8; 32]);
+
+    impl From<CryptoPublic> for Public {
+        fn from(public: CryptoPublic) -> Self {
+            Self(public.0)
+        }
+    }
 
     impl From<Account> for AccountId32 {
         fn from(value: Account) -> Self {
@@ -645,11 +785,14 @@ mod v1 {
         }
     }
 
-    impl From<ChainBlockHash> for BlockHash {
-        fn from(hash: ChainBlockHash) -> Self {
-            Self(hash.0.to_be_bytes())
-        }
-    }
+    key_slot!(Account([u8; 32]));
+
+    /////
+
+    #[derive(Debug, Encode, Decode, PartialEq, Eq, Hash, Clone, Copy)]
+    pub struct ChainHash(pub [u8; 8]);
+
+    key_slot!(ChainHash([u8; 8]));
 
     impl From<H64> for ChainHash {
         fn from(hash: H64) -> Self {
@@ -663,32 +806,40 @@ mod v1 {
         }
     }
 
-    impl From<CryptoPublic> for Public {
-        fn from(public: CryptoPublic) -> Self {
-            Self(public.0)
-        }
-    }
-
-    macro_rules! into_h256 {
-        ($from:ty) => {
-            impl From<$from> for H256 {
-                fn from(value: $from) -> Self {
-                    H256::from_be_bytes(value.0)
-                }
-            }
-        };
-    }
-
-    into_h256!(Public);
-    into_h256!(BlockHash);
+    /////
 
     #[derive(Encode, Decode)]
     pub struct DaemonInfo {
-        pub chains: Vec<(String, ChainProperties)>,
+        pub chains: Vec<(ChainName, ChainProperties)>,
         pub public: Public,
         pub old_publics_death_timestamps: Vec<(Public, Timestamp)>,
-        pub instance: Vec<u8>,
+        pub instance: String,
     }
+
+    /////
+
+    #[derive(Encode, Decode, PartialEq, Eq, Hash)]
+    pub struct ChainName(pub String);
+
+    impl Display for ChainName {
+        fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+            Display::fmt(&self.0, f)
+        }
+    }
+
+    impl Debug for ChainName {
+        fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+            Debug::fmt(&self.0, f)
+        }
+    }
+
+    impl From<&ArgChainName> for ChainName {
+        fn from(value: &ArgChainName) -> Self {
+            Self((*value.0).to_owned())
+        }
+    }
+
+    /////
 
     impl<'de> Deserialize<'de> for Timestamp {
         fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -707,7 +858,7 @@ mod v1 {
 
     impl Decode for Timestamp {
         fn decode<I: Input>(input: &mut I) -> Result<Self, CodecError> {
-            let millis = u64::decode(input)?;
+            let millis = <Compact<u64>>::decode(input)?.0;
 
             Self::from_millis(millis).map_err(|e| {
                 const ERROR: &str = concat!("failed to decode `", stringify!(Timestamp), "`");
@@ -764,10 +915,6 @@ mod v1 {
         }
     }
 
-    fn get_system_millis() -> Result<u128, TimestampError> {
-        Ok(SystemTime::UNIX_EPOCH.elapsed()?.as_millis())
-    }
-
     impl Display for Timestamp {
         fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
             let mut string = ArrayVec::<_, { Self::MAX_STRING.len() }>::new();
@@ -780,6 +927,12 @@ mod v1 {
             f.write_str(str::from_utf8(&string).unwrap())
         }
     }
+
+    fn get_system_millis() -> Result<u128, TimestampError> {
+        Ok(SystemTime::UNIX_EPOCH.elapsed()?.as_millis())
+    }
+
+    /////
 
     #[derive(Encode, Decode)]
     pub struct ChainProperties {

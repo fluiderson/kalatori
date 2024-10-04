@@ -89,12 +89,6 @@ pub enum ConfigError {
 
     #[error("failed to parse the config")]
     Parse(#[from] TomlError),
-
-    #[error("failed to parse the chain interval {0} in the config root")]
-    ConfigRootIntervals(
-        /* ChainIntervalField */ String,
-        #[source] ChainIntervalError,
-    ),
 }
 
 #[derive(Debug, Error)]
@@ -113,7 +107,7 @@ pub enum SeedEnvError {
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum TaskError {
     #[error("chain has no endpoint in the config")]
     NoChainEndpoints,
@@ -137,7 +131,7 @@ pub enum TaskError {
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum ChainIntervalError {
     #[error("`restart-gap` isn't set neither in the config root nor for this chain")]
     RestartGap,
@@ -434,7 +428,7 @@ pub enum AccountParseError {
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
 pub enum DbError {
     #[error("failed to create/open the database")]
     Initialization(#[from] DatabaseError),
@@ -508,15 +502,34 @@ pub enum DbError {
     #[error("failed to create a timestamp")]
     Timestamp(#[from] TimestampError),
 
-    #[error("order {0:?} isn't found")]
-    OrderNotFound(String),
-
-    #[error("order {0:?} is already paid")]
-    OrderAlreadyPaid(String),
+    #[error("got an order error")]
+    Order(#[from] OrderError),
 }
 
 #[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
+#[expect(clippy::module_name_repetitions)]
+pub enum OrderError {
+    #[error("order wasn't found")]
+    NotFound,
+
+    #[error("order is already paid")]
+    Paid,
+
+    #[error("order has recorded transactions")]
+    NotEmptyTxs,
+
+    #[error("order amount is less than the existential deposit of the given currency")]
+    ExistentialDeposit(f64),
+
+    #[error("got an unknown currency")]
+    UnknownCurrency,
+
+    #[error("internal error is occurred")]
+    InternalError,
+}
+
+#[derive(Debug, Error)]
+#[expect(clippy::module_name_repetitions)]
 pub enum TimestampError {
     #[error("system clock's drifted backwards")]
     ClockDrift(#[from] SystemTimeError),
@@ -528,25 +541,6 @@ pub enum TimestampError {
         Timestamp::MAX_STRING
     )]
     Overflow,
-}
-
-#[derive(Debug, Error)]
-#[allow(clippy::module_name_repetitions)]
-pub enum OrderError {
-    #[error("invoice amount is less than the existential deposit")]
-    LessThanExistentialDeposit(f64),
-
-    #[error("unknown currency")]
-    UnknownCurrency,
-
-    #[error("order parameter is missing: {0:?}")]
-    MissingParameter(String),
-
-    #[error("order parameter invalid: {0:?}")]
-    InvalidParameter(String),
-
-    #[error("internal error is occurred")]
-    InternalError,
 }
 
 #[derive(Debug, Error)]

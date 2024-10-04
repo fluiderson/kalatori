@@ -56,7 +56,7 @@ impl ChainManager {
         // start network monitors
         for c in chain {
             if c.config.endpoints.is_empty() {
-                return Err(Error::EmptyEndpoints(c.name.to_string()));
+                return Err(Error::EmptyEndpoints(c.name.0.to_string()));
             }
             let (chain_tx, chain_rx) = mpsc::channel(1024);
             watch_chain.insert(c.name.clone(), chain_tx.clone());
@@ -100,7 +100,7 @@ impl ChainManager {
                                 } else {
                                     let _unused = request
                                         .res
-                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
+                                        .send(Err(ChainError::InvalidChain(chain.0.to_string())));
                                 }
                             } else {
                                 let _unused = request
@@ -116,7 +116,7 @@ impl ChainManager {
                                 } else {
                                     let _unused = request
                                         .res
-                                        .send(Err(ChainError::InvalidChain(chain.to_string())));
+                                        .send(Err(ChainError::InvalidChain(chain.0.to_string())));
                                 }
                             } else {
                                 let _unused = request

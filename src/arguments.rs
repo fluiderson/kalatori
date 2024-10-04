@@ -3,7 +3,7 @@
 //! Contains everything related to CLI arguments, environment variables, and the config.
 
 use crate::{
-    chain_wip::definitions::{H256, HEX_PREFIX},
+    chain_wip::definitions::{Url, H256, HEX_PREFIX},
     database::definitions::{AssetId, Timestamp},
     error::{AccountParseError, ChainIntervalError, ConfigError},
     logger,
@@ -11,9 +11,9 @@ use crate::{
     utils::PathDisplay,
 };
 use clap::{Arg, ArgAction, Parser};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
-    borrow::Cow,
+    borrow::{Borrow, Cow},
     env,
     ffi::{OsStr, OsString},
     fmt::{Debug, Display, Formatter, Result as FmtResult},
@@ -320,16 +320,37 @@ impl Config {
     }
 }
 
+#[derive(Deserialize, Clone, Hash, PartialEq, Eq, Serialize)]
+pub struct ChainName(pub Arc<str>);
+
+impl Borrow<str> for ChainName {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for ChainName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl Debug for ChainName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        Debug::fmt(&self.0, f)
+    }
+}
+
 #[derive(Deserialize, Clone)]
 pub struct Chain {
-    pub name: Arc<str>,
+    pub name: ChainName,
     #[serde(flatten)]
     pub config: ChainConfig,
 }
 
 #[derive(Deserialize, Clone)]
 pub struct ChainConfig {
-    pub endpoints: Vec<String>,
+    pub endpoints: Vec<Url>,
     #[serde(flatten)]
     pub inner: ChainConfigInner,
 }

@@ -1,6 +1,9 @@
 //! Common objects for the chain interaction system.
 
-use crate::arguments::ChainConfigInner;
+use crate::{
+    arguments::{ChainConfigInner, ChainName},
+    database::definitions::ChainHash,
+};
 use ahash::RandomState;
 use arrayvec::ArrayString;
 use const_hex::FromHexError;
@@ -20,24 +23,29 @@ use std::{
 pub const HEX_PREFIX: &str = "0x";
 
 #[derive(Debug)]
-pub struct ChainPreparator(pub Arc<str>);
+pub struct ChainPreparator(pub ChainName);
 
 impl Display for ChainPreparator {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("the ")?;
 
-        f.double(|formatter| formatter.write_str(&self.0))?;
+        f.double(|formatter| Display::fmt(&self.0, formatter))?;
 
         f.write_str(" chain preparator")
     }
 }
 
 pub struct ConnectedChain {
-    pub endpoints: (String, IndexSet<String, RandomState>),
+    pub endpoints: (Url, IndexSet<Url, RandomState>),
     pub chain_config: ChainConfigInner,
     pub genesis: BlockHash,
     pub client: WsClient,
     pub client_config: WsClientBuilder,
+}
+
+pub struct PreparedChain {
+    pub hash: ChainHash,
+    pub connected: ConnectedChain,
 }
 
 #[derive(Deserialize, Clone, Copy, Serialize)]
@@ -139,8 +147,7 @@ macro_rules! hash_impl {
                 Self($inner::from_be_bytes(bytes.into()))
             }
 
-            #[allow(clippy::wrong_self_convention)]
-            pub fn to_be_bytes(&self) -> [u8; $bytes] {
+            pub fn to_be_bytes(self) -> [u8; $bytes] {
                 self.0.to_be_bytes()
             }
         }
@@ -205,6 +212,9 @@ impl EncaseInQuotes for Formatter<'_> {
         Self::encase_in("`", self, format)
     }
 }
+
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq, Hash)]
+pub struct Url(pub Arc<str>);
 
 // #[derive(Serialize)]
 // pub struct StorageKey(pub String);

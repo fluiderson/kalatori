@@ -102,6 +102,12 @@ Environment variables:
 ```
 
 ### 🕹️📝 Examples
+Start the daemon, and create (or open existing) the config at the default path in the current directory, create (or open existing) the database at the default path in the current directory, and enable the default logging.
+```sh
+KALATORI_SEED="impulse idea people slow agent orphan color sugar siege laugh view amused property destroy ghost" \
+kalatori -r 5FuwwzpHSYp8k1Bmv9fC394vGNdwqAvPRCmqYqdv3KrXpXWi
+```
+
 Start the daemon, and create (or open existing) the config at `my_config.toml` in the current directory.
 ```sh
 KALATORI_SEED="impulse idea people slow agent orphan color sugar siege laugh view amused property destroy ghost" \

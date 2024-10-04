@@ -1,7 +1,7 @@
 use crate::{
     callback,
     chain::ChainManager,
-    database::{definitions::Timestamp, Database},
+    database::{definitions::Timestamp, Database, OrdersReadable},
     error::{Error, OrderError},
     server::definitions::api_v2::{
         CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse, OrderStatus,

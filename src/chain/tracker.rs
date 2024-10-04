@@ -43,7 +43,7 @@ pub fn start_chain_watch(
 ) {
     task_tracker
         .clone()
-        .spawn(format!("Chain {} watcher", chain.name.clone()), async move {
+        .spawn(format!("Chain {} watcher", chain.name.clone().0), async move {
             let watchdog = 120000;
             let mut watched_accounts = HashMap::new();
             let mut shutdown = false;
@@ -53,16 +53,16 @@ pub fn start_chain_watch(
                 if shutdown || cancellation_token.is_cancelled() {
                     break;
                 }
-                if let Ok(client) = WsClientBuilder::default().build(endpoint).await {
+                if let Ok(client) = WsClientBuilder::default().build(&endpoint.0).await {
                     // prepare chain
-                    let watcher = match ChainWatcher::prepare_chain(&client, chain.clone(), &mut watched_accounts, endpoint, chain_tx.clone(), state.interface(), task_tracker.clone())
+                    let watcher = match ChainWatcher::prepare_chain(&client, chain.clone(), &mut watched_accounts, &endpoint.0, chain_tx.clone(), state.interface(), task_tracker.clone())
                         .await
                     {
                         Ok(a) => a,
                         Err(e) => {
                             tracing::warn!(
                                 "Failed to connect to chain {}, due to {} switching RPC server...",
-                                chain.name,
+                                chain.name.0,
                                 e
                             );
                             continue;
@@ -82,14 +82,14 @@ pub fn start_chain_watch(
                                     Err(e) => {
                                         tracing::info!(
                                             "Failed to receive block in chain {}, due to {}; Switching RPC server...",
-                                            chain.name,
+                                            chain.name.0,
                                             e
                                         );
                                         break;
                                     },
                                 };
 
-                                tracing::debug!("Block hash {} from {}", block.0, chain.name);
+                                tracing::debug!("Block hash {} from {}", block.0, chain.name.0);
 
                                 if watcher.version != runtime_version_identifier(&client, &block).await? {
                                     tracing::info!("Different runtime version reported! Restarting connection...");
@@ -140,11 +140,11 @@ pub fn start_chain_watch(
                                         }
                                     },
                                     Err(e) => {
-                                        tracing::warn!("Events fetch error {e} at {}", chain.name);
+                                        tracing::warn!("Events fetch error {e} at {}", chain.name.0);
                                         break;
                                     },
                                     }
-                                tracing::debug!("Block {} from {} processed successfully", block.0, chain.name);
+                                tracing::debug!("Block {} from {} processed successfully", block.0, chain.name.0);
                             }
                             ChainTrackerRequest::WatchAccount(request) => {
                                 watched_accounts.insert(request.id.clone(), Invoice::from_request(request));
@@ -156,7 +156,7 @@ pub fn start_chain_watch(
                                 let watcher_for_reaper = watcher.clone();
                                 let signer_for_reaper = signer.clone();
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
-                                    let result = payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
+                                    let result = payout(rpc.0.as_ref().to_owned(), Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
                                     if let Err(er) = result {
                                         tracing::error!("{:?}", er);
                                     }
@@ -172,7 +172,7 @@ pub fn start_chain_watch(
                     }
                 }
             }
-            Ok(format!("Chain {} monitor shut down", chain.name))
+            Ok(format!("Chain {} monitor shut down", chain.name.0))
         });
 }
 
@@ -202,9 +202,9 @@ impl ChainWatcher {
         let version = runtime_version_identifier(client, &block).await?;
         let metadata = metadata(&client, &block).await?;
         let name = <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(&metadata)?.spec_name;
-        if *name != *chain.name {
+        if *name != *chain.name.0 {
             return Err(ChainError::WrongNetwork {
-                expected: chain.name.to_string(),
+                expected: chain.name.0.to_string(),
                 actual: name,
                 rpc: rpc_url.to_string(),
             });
@@ -216,7 +216,7 @@ impl ChainWatcher {
         // TODO: make this verbosity less annoying
         tracing::info!(
             "chain {} requires native token {:?} and {:?}",
-            &chain.name,
+            &chain.name.0,
             &chain.config.inner.native,
             &chain.config.inner.asset
         );
@@ -228,7 +228,7 @@ impl ChainWatcher {
             .filter_map(|(name, properties)| {
                 tracing::info!(
                     "chain {} has token {} with properties {:?}",
-                    &chain.name,
+                    &chain.name.0,
                     &name,
                     &properties
                 );
@@ -274,7 +274,7 @@ impl ChainWatcher {
         if assets.len()
             != chain.config.inner.asset.len() + usize::from(chain.config.inner.native.is_some())
         {
-            return Err(ChainError::AssetsInvalid(chain.name.to_string()));
+            return Err(ChainError::AssetsInvalid(chain.name.0.to_string()));
         }
         // this MUST assert that assets match exactly before reporting it
 

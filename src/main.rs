@@ -20,7 +20,7 @@ mod signer;
 mod state;
 mod utils;
 
-use arguments::{CliArgs, Config, Account};
+use arguments::{Account, CliArgs, Config};
 use chain::ChainManager;
 use database::Database;
 use error::{Error, PrettyCause};
@@ -119,7 +119,7 @@ async fn async_try_main(
     let (task_tracker, error_rx) = TaskTracker::new();
     let connected_chains =
         chain_wip::connect(config.chain.clone(), config.intervals.clone()).await?;
-    let (database, signer) = Database::new(
+    let (database, signer, prepared_chains) = Database::new(
         db_option_option.map_or_else(
             || {
                 Some(match config.database {
@@ -129,7 +129,7 @@ async fn async_try_main(
             },
             |path| path.map(Into::into),
         ),
-        &connected_chains,
+        connected_chains,
         key_store,
     )?;
 

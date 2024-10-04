@@ -6,19 +6,16 @@
 //! guards with the async code.
 
 use crate::{
-    arguments::OLD_SEED,
-    chain_wip::definitions::{BlockHash, ConnectedChain, H256, H64},
-    error::DbError,
+    arguments::{ChainName, OLD_SEED},
+    chain_wip::definitions::{ConnectedChain, PreparedChain, H256, H64},
+    error::{DbError, OrderError},
     signer::{KeyStore, Signer},
     utils::PathDisplay,
 };
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt, RandomState};
-use arguments::CreatedOrder;
-use codec::{Decode, Encode};
-use indexmap::{
-    map::{Entry, VacantEntry},
-    IndexMap,
-};
+use arguments::InsertOrder;
+use codec::{DecodeAll, Encode};
+use indexmap::{map::Entry, IndexMap};
 use names::{Generator, Name};
 use redb::{
     backends::{FileBackend, InMemoryBackend},
@@ -33,9 +30,9 @@ use std::{
 pub mod definitions;
 
 use definitions::{
-    ChainHash, ChainProperties, DaemonInfo, KeysTable, NonZeroU64, OrderId, OrderInfo,
-    OrdersPerChainTable, OrdersTable, PaymentStatus, Public, RootKey, RootTable, RootValue,
-    TableRead, TableTrait, TableTypes, TableWrite, Timestamp, Version,
+    ChainHash, ChainName as DbChainName, ChainProperties, DaemonInfo, KeysTable, NonZeroU64,
+    OrderId, OrderInfo, OrdersPerChainTable, OrdersTable, PaymentStatus, Public, RootKey,
+    RootTable, RootValue, TableRead, TableTrait, TableTypes, TableWrite, Timestamp, Version,
 };
 
 pub const MODULE: &str = module_path!();
@@ -47,12 +44,19 @@ pub struct Database {
 }
 
 impl Database {
-    #[expect(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, clippy::type_complexity)]
     pub fn new(
         path_option: Option<Cow<'static, OsStr>>,
-        connected_chains: &IndexMap<Arc<str>, ConnectedChain, RandomState>,
+        mut connected_chains: IndexMap<ChainName, ConnectedChain, RandomState>,
         key_store: KeyStore,
-    ) -> Result<(Arc<Self>, Arc<Signer>), DbError> {
+    ) -> Result<
+        (
+            Arc<Self>,
+            Arc<Signer>,
+            IndexMap<ChainName, PreparedChain, RandomState>,
+        ),
+        DbError,
+    > {
         let builder = Redb::builder();
 
         let (mut database, is_new) = if let Some(path) = path_option {
@@ -85,12 +89,12 @@ impl Database {
         let mut root = RootTable::open(&tx)?;
         let mut chain_hashes = HashSet::with_capacity(connected_chains.len());
         let public = key_store.public();
+        let mut prepared_chains =
+            IndexMap::with_capacity_and_hasher(connected_chains.len(), RandomState::new());
 
-        let instance;
         let daemon_info;
         let signer;
-
-        if is_new {
+        let instance = if is_new {
             signer = key_store.into_signer::<true>(HashMap::new());
 
             let mut new_db_chains = Vec::with_capacity(connected_chains.len());
@@ -98,23 +102,28 @@ impl Database {
             for (name, connected_chain) in connected_chains {
                 process_new_chain(
                     &mut chain_hashes,
-                    (name.as_ref().to_owned(), &mut new_db_chains),
-                    connected_chain.genesis,
+                    name,
+                    &mut new_db_chains,
+                    connected_chain,
+                    &mut prepared_chains,
                 );
             }
 
-            instance = Generator::with_naming(Name::Numbered).next().unwrap();
+            let instance = Generator::with_naming(Name::Numbered).next().unwrap();
+
             daemon_info = DaemonInfo {
                 chains: new_db_chains,
                 public,
                 old_publics_death_timestamps: vec![],
-                instance: instance.clone().into_bytes(),
+                instance: instance.clone(),
             };
 
             root.insert_slot(
                 RootKey::DbVersion,
                 RootValue(&Version::as_bytes(&DB_VERSION)),
             )?;
+
+            instance
         } else {
             let Some(encoded_db_version) = root.get_slot(RootKey::DbVersion)? else {
                 return Err(DbError::NoVersion);
@@ -134,8 +143,8 @@ impl Database {
                 chains: db_chains,
                 public: db_public,
                 old_publics_death_timestamps,
-                instance: db_instance,
-            } = DaemonInfo::decode(&mut encoded_daemon_info.value().0)?;
+                instance,
+            } = DaemonInfo::decode_all(&mut encoded_daemon_info.value().0)?;
 
             #[expect(clippy::arithmetic_side_effects)]
             let mut new_db_chains = IndexMap::with_capacity_and_hasher(
@@ -150,15 +159,20 @@ impl Database {
                     properties,
                     &mut chain_hashes,
                     &mut new_db_chains,
-                    connected_chains,
+                    &mut connected_chains,
                     &mut orders_per_chain,
+                    &mut prepared_chains,
                 )?;
             }
 
             for (name, connected_chain) in connected_chains {
-                if let Entry::Vacant(entry) = new_db_chains.entry(name.as_ref().to_owned()) {
-                    process_new_chain(&mut chain_hashes, entry, connected_chain.genesis);
-                }
+                process_new_chain(
+                    &mut chain_hashes,
+                    name,
+                    &mut new_db_chains,
+                    connected_chain,
+                    &mut prepared_chains,
+                );
             }
 
             let tables = Tables::get(&tx, &chain_hashes)?;
@@ -176,15 +190,15 @@ impl Database {
 
             new_db_chains_vec.extend(new_db_chains);
 
-            instance = String::from_utf8(db_instance)
-                .expect("should be a valid UTF-8 text since we encoded it as one");
             daemon_info = DaemonInfo {
                 chains: new_db_chains_vec,
                 public,
                 old_publics_death_timestamps: new_old_publics_death_timestamps,
-                instance: instance.clone().into_bytes(),
+                instance: instance.clone(),
             };
-        }
+
+            instance
+        };
 
         root.insert_slot(&RootKey::DaemonInfo, &RootValue(&daemon_info.encode()))?;
 
@@ -204,6 +218,7 @@ impl Database {
                 instance,
             }),
             Arc::new(signer),
+            prepared_chains,
         ))
     }
 
@@ -238,17 +253,21 @@ pub struct OrdersRead(
     ReadOnlyTable<<OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>,
 );
 
-impl OrdersRead {
-    pub fn read(
+pub trait OrdersReadable {
+    fn table(
+        &self,
+    ) -> &impl ReadableTable<<OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>;
+
+    fn read(
         &self,
         key: impl AsRef<str>,
     ) -> Result<Option<<OrdersTable as TableTypes>::Value>, DbError> {
-        self.0
+        self.table()
             .get_slot(OrderId(key.as_ref()))
             .map(|some| some.map(|ag| ag.value()))
     }
 
-    pub fn active(
+    fn active(
         &self,
     ) -> Result<
         impl Iterator<
@@ -262,7 +281,7 @@ impl OrdersRead {
         >,
         DbError,
     > {
-        self.0.iter().map_err(DbError::Range).map(|range| {
+        self.table().iter().map_err(DbError::Range).map(|range| {
             range.filter_map(|result| {
                 result
                     .map(|(k, v)| {
@@ -274,6 +293,24 @@ impl OrdersRead {
                     .transpose()
             })
         })
+    }
+}
+
+impl OrdersReadable for OrdersRead {
+    fn table(
+        &self,
+    ) -> &impl ReadableTable<<OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>
+    {
+        &self.0
+    }
+}
+
+impl OrdersReadable for OrdersWrite<'_> {
+    fn table(
+        &self,
+    ) -> &impl ReadableTable<<OrdersTable as TableTypes>::Key, <OrdersTable as TableTypes>::Value>
+    {
+        &self.0
     }
 }
 
@@ -296,24 +333,26 @@ impl TxWrite {
         KeysTable::open(&self.0).map(KeysWrite)
     }
 
-    pub fn create_order(
+    pub fn insert_order(
         mut orders: OrdersWrite<'_>,
         mut orders_per_chain: OrdersPerChainWrite<'_>,
         mut keys: KeysWrite<'_>,
-        chain: ChainHash,
-        key: impl AsRef<str>,
-        public: Public,
-        new_order: OrderInfo,
-    ) -> Result<CreatedOrder, DbError> {
-        let order_id = OrderId(key.as_ref());
-        let order_option = orders.0.get_slot(order_id)?.map(|ag| ag.value());
+        InsertOrder {
+            chain,
+            key,
+            public,
+            callback,
+            currency,
+            amount,
+            account_lifetime,
+            payment_account,
+        }: InsertOrder<impl AsRef<str>>,
+    ) -> Result<OrderInfo, DbError> {
+        let key_as_ref = key.as_ref();
+        let order_option = orders.read(key_as_ref)?;
 
-        Ok(if let Some(order) = order_option {
-            if order.payment_status == PaymentStatus::Pending {
-                CreatedOrder::Modified(new_order)
-            } else {
-                CreatedOrder::Unchanged(order)
-            }
+        if let Some(order) = order_option {
+            order.update(callback, chain, currency, amount, account_lifetime)
         } else {
             let increment = |option_ag: Option<AccessGuard<'_, NonZeroU64>>| {
                 NonZeroU64(option_ag.map_or(StdNonZeroU64::MIN, |ag| {
@@ -323,8 +362,16 @@ impl TxWrite {
                         .expect("database can't store more than `u64::MAX` orders")
                 }))
             };
+            let new = OrderInfo::new(
+                amount,
+                callback,
+                payment_account,
+                currency,
+                account_lifetime,
+                chain,
+            )?;
 
-            orders.0.insert_slot(order_id, &new_order)?;
+            orders.0.insert_slot(OrderId(key_as_ref), &new)?;
 
             let mut n = increment(orders_per_chain.0.get_slot(chain)?);
 
@@ -334,8 +381,8 @@ impl TxWrite {
 
             keys.0.insert_slot(public, n)?;
 
-            CreatedOrder::New(new_order)
-        })
+            Ok(new)
+        }
     }
 }
 
@@ -350,12 +397,12 @@ impl OrdersWrite<'_> {
     ) -> Result<<OrdersTable as TableTypes>::Value, DbError> {
         let key_as_ref = key.as_ref();
 
-        let Some(mut order) = self.0.get_slot(OrderId(key_as_ref))?.map(|ag| ag.value()) else {
-            return Err(DbError::OrderNotFound(key_as_ref.into()));
+        let Some(mut order) = self.read(key_as_ref)? else {
+            return Err(OrderError::NotFound.into());
         };
 
         if order.payment_status != PaymentStatus::Pending {
-            return Err(DbError::OrderAlreadyPaid(key_as_ref.into()));
+            return Err(OrderError::Paid.into());
         }
 
         order.payment_status = PaymentStatus::Paid;
@@ -391,6 +438,7 @@ impl<'a> Tables<'a> {
 
         for table in tx.list_tables().map_err(DbError::TableList)? {
             match table.name() {
+                // These tables were opened before a calling of `Tables::get()`.
                 RootTable::NAME | OrdersPerChainTable::NAME => {}
                 KeysTable::NAME => keys = Some(KeysTable::open(tx)?),
                 OrdersTable::NAME => orders = Some(OrdersTable::open(tx)?),
@@ -431,28 +479,19 @@ fn open_chain_tables(
     }
 }
 
-trait ProcessNewChainHelper {
-    fn name(&self) -> &str;
-    fn add_to_db_chains(self, properties: ChainProperties);
+trait NewDbChains {
+    fn add(self, name: DbChainName, properties: ChainProperties);
 }
 
-impl ProcessNewChainHelper for VacantEntry<'_, String, ChainProperties> {
-    fn name(&self) -> &str {
-        self.key()
-    }
-
-    fn add_to_db_chains(self, properties: ChainProperties) {
-        self.insert(properties);
+impl NewDbChains for &mut IndexMap<DbChainName, ChainProperties, RandomState> {
+    fn add(self, name: DbChainName, properties: ChainProperties) {
+        self.insert(name, properties);
     }
 }
 
-impl ProcessNewChainHelper for (String, &mut Vec<(String, ChainProperties)>) {
-    fn name(&self) -> &str {
-        &self.0
-    }
-
-    fn add_to_db_chains(self, properties: ChainProperties) {
-        self.1.push((self.0, properties));
+impl NewDbChains for &mut Vec<(DbChainName, ChainProperties)> {
+    fn add(self, name: DbChainName, properties: ChainProperties) {
+        self.push((name, properties));
     }
 }
 
@@ -461,39 +500,49 @@ fn strip_array<T, const N1: usize, const N2: usize>(array: [T; N1]) -> [T; N2] {
 
     array::from_fn(|_| {
         iterator.next().expect(
-            "number of elements in the returned array should be equal or less than in the given \
-            array",
+            "number of elements in the returned array should be equal or less than in the \
+            given array",
         )
     })
 }
 
 fn process_new_chain(
     chain_hashes: &mut HashSet<ChainHash>,
-    helper: impl ProcessNewChainHelper,
-    genesis: BlockHash,
+    name: ChainName,
+    new_db_chains: impl NewDbChains,
+    chain: ConnectedChain,
+    prepared_chains: &mut IndexMap<ChainName, PreparedChain, RandomState>,
 ) {
-    let mut chain_hash = ChainHash(strip_array(genesis.0.to_be_bytes()));
+    let mut chain_hash = ChainHash(strip_array(chain.genesis.0.to_be_bytes()));
     let mut step = 1;
 
     loop {
         if chain_hashes.insert(chain_hash) {
             tracing::debug!(
-                "The new {:?} chain is assigned to the {:#} hash.",
-                helper.name(),
+                "The new {name:?} chain is assigned to the {:#} hash.",
                 H64::from(chain_hash)
             );
 
-            helper.add_to_db_chains(ChainProperties {
-                genesis: genesis.into(),
-                hash: chain_hash,
-            });
+            new_db_chains.add(
+                (&name).into(),
+                ChainProperties {
+                    genesis: chain.genesis.into(),
+                    hash: chain_hash,
+                },
+            );
+            prepared_chains.insert(
+                name,
+                PreparedChain {
+                    hash: chain_hash,
+                    connected: chain,
+                },
+            );
 
             break;
         }
 
         tracing::debug!(
-            "Failed to assign the new {:?} chain to the {:#} hash. Probing the next slot...",
-            helper.name(),
+            "Failed to assign the new {name:?} chain to the {:#} hash. Probing the next slot...",
             H64::from(chain_hash)
         );
 
@@ -505,27 +554,28 @@ fn process_new_chain(
 }
 
 fn process_db_chain(
-    name: String,
+    db_name: DbChainName,
     properties: ChainProperties,
     chain_hashes: &mut HashSet<ChainHash>,
-    new_db_chains: &mut IndexMap<String, ChainProperties, RandomState>,
-    connected_chains: &IndexMap<Arc<str>, ConnectedChain, RandomState>,
+    new_db_chains: &mut IndexMap<DbChainName, ChainProperties, RandomState>,
+    connected_chains: &mut IndexMap<ChainName, ConnectedChain, RandomState>,
     orders_per_chain: &mut Table<
         '_,
         <OrdersPerChainTable as TableTypes>::Key,
         <OrdersPerChainTable as TableTypes>::Value,
     >,
+    prepared_chains: &mut IndexMap<ChainName, PreparedChain, RandomState>,
 ) -> Result<(), DbError> {
     if !chain_hashes.insert(properties.hash) {
         tracing::debug!(
-            "Found the {name:?} chain with the hash duplicate {:#} in the database.",
+            "Found the {db_name:?} chain with the hash duplicate {:#} in the database.",
             H64::from(properties.hash)
         );
 
         return Ok(());
     }
 
-    let entry = match new_db_chains.entry(name) {
+    let entry = match new_db_chains.entry(db_name) {
         Entry::Occupied(entry) => {
             tracing::debug!(
                 "Found 2 chains with same name ({:?}) in the database.",
@@ -537,23 +587,30 @@ fn process_db_chain(
         Entry::Vacant(entry) => entry,
     };
 
-    tracing::debug!(name = entry.key(), properties = ?properties);
+    tracing::debug!(name = ?entry.key(), properties = ?properties);
 
-    if let Some(connected_chain) = connected_chains.get(&**entry.key()) {
-        let given = connected_chain.genesis.into();
+    if let Some((name, connected)) = connected_chains.swap_remove_entry(&*entry.key().0) {
+        let given = connected.genesis.into();
 
         if given != properties.genesis {
             return Err(DbError::GenesisMismatch {
-                chain: entry.into_key(),
+                chain: entry.into_key().0,
                 expected: properties.genesis,
                 given,
             });
         }
 
         tracing::debug!(
-            "The {:?} chain stored in the database is assigned to the {:?} hash.",
-            entry.key(),
+            "The {name:?} chain stored in the database is assigned to the {:?} hash.",
             H64::from(properties.hash),
+        );
+
+        prepared_chains.insert(
+            name,
+            PreparedChain {
+                hash: properties.hash,
+                connected,
+            },
         );
     } else if orders_per_chain.get_slot(properties.hash)?.is_some() {
         tracing::warn!(
@@ -561,9 +618,9 @@ fn process_db_chain(
             entry.key(),
         );
     } else {
-        tracing::warn!(
+        tracing::info!(
             "The {:?} chain exists in the database but isn't present in the config and has no \
-            orders. It will be deleted.",
+            orders. It'll be deleted.",
             entry.key()
         );
 
@@ -654,7 +711,7 @@ fn process_keys(
             new_old_publics_death_timestamps.push((db_public, Timestamp::now()?));
         } else {
             tracing::info!(
-                "The current key has no accounts associated with it and hence will be deleted immediately."
+                "The current key has no accounts associated with it and hence will be deleted."
             );
         }
     }
@@ -666,11 +723,16 @@ fn process_keys(
 }
 
 pub mod arguments {
-    use super::definitions::OrderInfo;
+    use super::definitions::{Account, Amount, ChainHash, CurrencyInfo, Public, Timestamp, Url};
 
-    pub enum CreatedOrder {
-        New(OrderInfo),
-        Modified(OrderInfo),
-        Unchanged(OrderInfo),
+    pub struct InsertOrder<K> {
+        pub chain: ChainHash,
+        pub key: K,
+        pub public: Public,
+        pub callback: Url,
+        pub currency: CurrencyInfo,
+        pub amount: Amount,
+        pub account_lifetime: Timestamp,
+        pub payment_account: Account,
     }
 }
