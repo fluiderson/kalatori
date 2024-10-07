@@ -13,38 +13,64 @@ use axum::{
 };
 use serde::Deserialize;
 
+const EXISTENTIAL_DEPOSIT: f64 = 0.07;
 #[derive(Debug, Deserialize)]
 pub struct OrderPayload {
-    pub amount: f64,
-    pub currency: String,
+    pub amount: Option<f64>,
+    pub currency: Option<String>,
     pub callback: Option<String>,
 }
 
 pub async fn process_order(
     state: State,
     order_id: String,
-    payload: OrderPayload,
+    payload: Option<OrderPayload>,
 ) -> Result<OrderResponse, OrderError> {
-    if payload.amount < 0.07 {
-        return Err(OrderError::LessThanExistentialDeposit(0.07));
-    }
+    if let Some(payload) = payload {
+        // AMOUNT validation
+        if payload.amount.is_none() {
+            return Err(OrderError::MissingParameter(AMOUNT.to_string()));
+        } else if payload.amount.unwrap() < EXISTENTIAL_DEPOSIT {
+            return Err(OrderError::LessThanExistentialDeposit(EXISTENTIAL_DEPOSIT));
+        }
 
-    state
-        .create_order(OrderQuery {
-            order: order_id,
-            amount: payload.amount,
-            callback: payload.callback.unwrap_or_default(),
-            currency: payload.currency,
-        })
-        .await
-        .map_err(|_| OrderError::InternalError)
+        // CURRENCY validation
+        if payload.currency.is_none() {
+            return Err(OrderError::MissingParameter(CURRENCY.to_string()));
+        } else {
+            let currency = payload.currency.clone().unwrap();
+            if !state
+                .is_currency_supported(&currency)
+                .await
+                .map_err(|_| OrderError::InternalError)?
+            {
+                return Err(OrderError::UnknownCurrency);
+            }
+        }
+
+        state
+            .create_order(OrderQuery {
+                order: order_id,
+                amount: payload.amount.unwrap(),
+                callback: payload.callback.unwrap_or_default(),
+                currency: payload.currency.unwrap(),
+            })
+            .await
+            .map_err(|_| OrderError::InternalError)
+    } else {
+        return state
+            .order_status(&order_id)
+            .await
+            .map_err(|_| OrderError::InternalError);
+    }
 }
 
 pub async fn order(
     ExtractState(state): ExtractState<State>,
     Path(order_id): Path<String>,
-    Json(payload): Json<OrderPayload>,
+    payload: Option<Json<OrderPayload>>,
 ) -> Response {
+    let payload = payload.map(|p| p.0);
     match process_order(state, order_id, payload).await {
         Ok(order) => match order {
             OrderResponse::NewOrder(order_status) => (StatusCode::CREATED, Json(order_status)).into_response(),

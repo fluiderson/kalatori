@@ -143,14 +143,14 @@ async fn test_daemon_status_call() {
         assert!(!properties.chain_name.is_empty());
         assert!(matches!(
             properties.kind,
-            TokenKind::Balances | TokenKind::Asset
+            TokenKind::Native | TokenKind::Asset
         ));
         assert!(properties.decimals > 0);
         assert!(!properties.rpc_url.is_empty());
 
         if currency == "DOT" {
             assert_eq!(properties.chain_name, "statemint");
-            assert_eq!(properties.kind, TokenKind::Balances);
+            assert_eq!(properties.kind, TokenKind::Native);
             assert_eq!(properties.decimals, 10);
             assert_eq!(properties.rpc_url, "ws://localhost:8000");
             // those are wrong atm

@@ -276,7 +276,7 @@ pub async fn assets_set_at_block(
         specs.unit,
         CurrencyProperties {
             chain_name: chain_name.clone(),
-            kind: TokenKind::Balances,
+            kind: TokenKind::Native,
             decimals: specs.decimals,
             rpc_url: rpc_url.to_owned(),
             asset_id: None,
