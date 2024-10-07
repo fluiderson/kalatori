@@ -365,15 +365,18 @@ fn create_order(
     orders: &sled::Tree,
     account_lifetime: Timestamp,
 ) -> Result<OrderCreateResponse, DbError> {
-    Ok(if let Some(record) = orders.get(&order)? {
+    let order_key = order.encode();
+    Ok(if let Some(record) = orders.get(&order_key)? {
         let mut old_order_info = OrderInfo::decode(&mut &record[..])?;
         match old_order_info.payment_status {
             PaymentStatus::Pending => {
                 let death = calculate_death_ts(account_lifetime);
 
                 old_order_info.death = death;
+                old_order_info.currency = currency;
+                old_order_info.amount = query.amount;
 
-                drop(orders.insert(order.encode(), old_order_info.encode())?);
+                orders.insert(&order_key, old_order_info.encode())?;
                 OrderCreateResponse::Modified(old_order_info)
             }
             PaymentStatus::Paid => OrderCreateResponse::Collision(old_order_info),
@@ -382,13 +385,14 @@ fn create_order(
         let death = calculate_death_ts(account_lifetime);
         let order_info_new = OrderInfo::new(query, currency, payment_account, death);
 
-        orders.insert(order.encode(), order_info_new.encode())?;
+        orders.insert(&order_key, order_info_new.encode())?;
         OrderCreateResponse::New(order_info_new)
     })
 }
 
 fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, DbError> {
-    if let Some(order) = orders.get(order)? {
+    let order_key = order.encode();
+    if let Some(order) = orders.get(order_key)? {
         Ok(Some(OrderInfo::decode(&mut &order[..])?))
     } else {
         Ok(None)

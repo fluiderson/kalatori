@@ -2,7 +2,7 @@ use crate::{
     definitions::api_v2::{
         InvalidParameter, OrderQuery, OrderResponse, OrderStatus, AMOUNT, CURRENCY,
     },
-    error::{Error, ForceWithdrawalError, OrderError},
+    error::{ForceWithdrawalError, OrderError},
     state::State,
 };
 use axum::{
