@@ -1,5 +1,5 @@
 use super::shutdown;
-use crate::{callback, database, server, Error};
+use crate::{callback, database, server, error::Error};
 use tracing_subscriber::{fmt::time::UtcTime, EnvFilter};
 
 const TARGETS: &[&str] = &[

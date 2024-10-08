@@ -3,7 +3,7 @@
 //! Handles a graceful shutdown with an asynchronous runtime with respect of panics (by
 //! incorporating a custom panic handler) & unrecoverable errors from another modules.
 
-use crate::Error;
+use crate::error::Error;
 use async_lock::{RwLock, RwLockUpgradableReadGuard};
 use std::{
     fmt::{Display, Formatter, Result as FmtResult},
