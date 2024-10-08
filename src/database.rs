@@ -4,6 +4,7 @@
 //! commercial offers and contracts, hence causality is a must. Care must be taken that no threads
 //! are spawned here other than main database server thread that does everything in series.
 
+use crate::definitions::api_v2::ServerInfo;
 use crate::{
     definitions::{
         api_v2::{
@@ -15,6 +16,7 @@ use crate::{
     error::{DbError, Error},
     task_tracker::TaskTracker,
 };
+use names::Generator;
 use parity_scale_codec::{Decode, Encode};
 use std::time::SystemTime;
 use substrate_crypto_light::common::AccountId32;
@@ -51,9 +53,10 @@ const HIT_LIST: &str = "hit_list";
 // The database version must be stored in a separate slot to be used by the not implemented yet
 // database migration logic.
 const DB_VERSION_KEY: &str = "db_version";
-const DAEMON_INFO: &str = "daemon_info";
+const SERVER_INFO_ID: &str = "instance_id";
 
-const ORDERS: &[u8] = b"orders";
+const ORDERS_TABLE: &[u8] = b"orders";
+const SERVER_INFO_TABLE: &[u8] = b"server_info";
 
 // Slots
 
@@ -174,7 +177,7 @@ impl Database {
         path_option: Option<String>,
         task_tracker: TaskTracker,
         account_lifetime: Timestamp,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, DbError> {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let database = if let Some(path) = path_option {
             tracing::info!("Creating/Opening the database at {path:?}.");
@@ -188,7 +191,9 @@ impl Database {
             );*/
             sled::open("temp.db").map_err(DbError::DbStartError)?
         };
-        let orders = database.open_tree(ORDERS).map_err(DbError::DbStartError)?;
+        let orders = database
+            .open_tree(ORDERS_TABLE)
+            .map_err(DbError::DbStartError)?;
 
         task_tracker.spawn("Database server", async move {
             // No process forking beyond this point!
@@ -230,6 +235,40 @@ impl Database {
                     DbRequest::MarkStuck(request) => {
                         let _unused = request.res.send(mark_stuck(request.order, &orders));
                     }
+                    DbRequest::InitializeServerInfo(res) => {
+                        let server_info_tree = database
+                            .open_tree(SERVER_INFO_TABLE)
+                            .map_err(DbError::DbStartError);
+                        let result = server_info_tree.and_then(|tree| {
+                            if let Some(server_info_data) =
+                                tree.get(SERVER_INFO_ID).map_err(DbError::DbInternalError)?
+                            {
+                                let server_info: ServerInfo =
+                                    serde_json::from_slice(&server_info_data).map_err(|e| {
+                                        DbError::DeserializationError(e.to_string())
+                                    })?;
+                                Ok(server_info.instance_id)
+                            } else {
+                                let mut generator = Generator::default();
+                                let new_instance_id = generator
+                                    .next()
+                                    .unwrap_or_else(|| "unknown-instance".to_string());
+                                let server_info_data = ServerInfo {
+                                    version: env!("CARGO_PKG_VERSION").to_string(),
+                                    instance_id: new_instance_id.clone(),
+                                    debug: false,
+                                    kalatori_remark: None,
+                                };
+                                tree.insert(
+                                    SERVER_INFO_ID,
+                                    serde_json::to_vec(&server_info_data)
+                                        .map_err(|e| DbError::SerializationError(e.to_string()))?,
+                                )?;
+                                Ok(new_instance_id)
+                            }
+                        });
+                        let _unused = res.send(result);
+                    }
                     DbRequest::Shutdown(res) => {
                         let _ = res.send(());
                         break;
@@ -243,6 +282,12 @@ impl Database {
         });
 
         Ok(Self { tx })
+    }
+
+    pub async fn initialize_server_info(&self) -> Result<String, DbError> {
+        let (res, rx) = oneshot::channel();
+        let _unused = self.tx.send(DbRequest::InitializeServerInfo(res)).await;
+        rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
     pub async fn order_list(&self) -> Result<Vec<(String, OrderInfo)>, DbError> {
@@ -322,6 +367,7 @@ enum DbRequest {
     MarkPaid(MarkPaid),
     MarkWithdrawn(ModifyOrder),
     MarkStuck(ModifyOrder),
+    InitializeServerInfo(oneshot::Sender<Result<String, DbError>>),
     Shutdown(oneshot::Sender<()>),
 }
 
