@@ -16,18 +16,18 @@ use crate::{
     error::{ChainError, NotHexError},
     utils::unhex,
 };
+use codec::{DecodeAll, Encode};
 use frame_metadata::{
     v15::{RuntimeMetadataV15, StorageEntryMetadata, StorageEntryType},
     RuntimeMetadata,
 };
+use hashing::twox_128;
 use jsonrpsee::core::client::{ClientT, Subscription, SubscriptionClientT};
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClient;
-use codec::{DecodeAll, Encode};
 use scale_info::{form::PortableForm, PortableRegistry, TypeDef, TypeDefPrimitive};
 use serde::Deserialize;
 use serde_json::{Number, Value};
-use hashing::twox_128;
 use std::{collections::HashMap, fmt::Debug};
 use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
@@ -384,7 +384,9 @@ pub async fn assets_set_at_block(
                                                 TypeDef::Primitive(TypeDefPrimitive::U32) => {
                                                     let key_assets_metadata = format!(
                                                         "0x{}{}{}",
-                                                        const_hex::encode(twox_128("Assets".as_bytes())),
+                                                        const_hex::encode(twox_128(
+                                                            "Assets".as_bytes()
+                                                        )),
                                                         const_hex::encode(twox_128(
                                                             "Metadata".as_bytes()
                                                         )),

@@ -1,6 +1,7 @@
 use crate::{
     arguments::{OLD_SEED, SEED},
-    definitions::api_v2::OrderStatus, utils::task_tracker::TaskName,
+    definitions::api_v2::OrderStatus,
+    utils::task_tracker::TaskName,
 };
 use codec::Error as ScaleError;
 use frame_metadata::v15::RuntimeMetadataV15;

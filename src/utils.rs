@@ -1,8 +1,8 @@
 use crate::error::{NotHexError, UtilError};
 
-pub mod task_tracker;
 pub mod logger;
 pub mod shutdown;
+pub mod task_tracker;
 
 pub fn unhex(hex_data: &str, what_is_hex: NotHexError) -> Result<Vec<u8>, UtilError> {
     if let Some(stripped) = hex_data.strip_prefix("0x") {
