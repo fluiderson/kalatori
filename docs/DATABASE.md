@@ -4,7 +4,7 @@ Plan is to update the database scheme in a way that it will support the requirem
 ### Orders (`orders`)
 - order - String: order identifier provided by the frontend 
 - payment_status - Enum: (pending|paid|timed_out). 
-- withdrawal_status - Enum: (waiting|failed|completed|none). 
+- withdrawal_status - Enum: (waiting|failed|completed|forced|none). 
 - amount - Float: Order amount 
 - currency - String: Currency ticker ("DOT"|"USDC"|...). 
 - callback: String: Callback url for frontend order status update 
