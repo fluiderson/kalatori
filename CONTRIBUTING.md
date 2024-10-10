@@ -1,3 +1,13 @@
+## Preparing development environment
+
+It's possible to mimic to spawn chopsticks instances in parallel for development purposes. 
+Chopsticks Dockerfile exposes 4 ports (8000, 8500, 9000, 9500), so you can spawn 4 instances of chopsticks and each one of them will look at different RPC.
+Note that the RPCs are not real, so the changes made on one chopsticks instance will not affect the others.
+
+1. `cd chopsticks`
+2. `docker compose up`, in case you want to just 2 instances edit the docker-compose.yml file
+3. start the app with `KALATORI_CONFIG` environment variable pointing to `configs/chopsticks.toml`
+
 ## Version Bumping and Release Process
 
 When you make changes that require a new version of the project, follow these steps to bump the version:
@@ -22,7 +32,7 @@ When you make changes that require a new version of the project, follow these st
    git push origin <branch-name>
     ```
 
-4. **Tag the version**:
+4. **Tag the version at main branch**:
     ```bash
     git tag -a v2.1.2 -m "Release version 2.1.2"
     git push origin v2.1.2
