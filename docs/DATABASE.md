@@ -8,14 +8,17 @@ Plan is to update the database scheme in a way that it will support the requirem
 - amount - Float: Order amount 
 - currency - String: Currency ticker ("DOT"|"USDC"|...). 
 - callback: String: Callback url for frontend order status update 
-- payment_account: Derived address for this order. 
-- recipient: Address that will receive the payout once the order is fulfilled. 
-- death: Expiry timestamp for the order.
+- payment_account: String: Derived address for this order. 
+- recipient: String: Address that will receive the payout once the order is fulfilled. 
+- message: String|null: Optional parameter for failed orders.
+- payment_page: String|null: Optional parameter for the frontend to redirect to a payment page.
+- redirect_url: String|null: Optional parameter for the frontend to redirect once the order is repaid.
+- death: Timestamp: Expiry timestamp for the order.
 
 ### Transactions (`transactions`)
 - order - String: order id to link transaction to order
-- chain - String: identifier for the chain where transaction occured
-- block_nmber - Integer: Block number where the transaction is recorded.
+- chain - String: identifier for the chain where transaction occurred
+- block_number - Integer: Block number where the transaction is recorded.
 - position_in_block - Integer: Position of the transaction within the block. 
 - timestamp - Timestamp: Timestamp of the transaction. 
 - transaction_bytes - String: Raw transaction data. 
