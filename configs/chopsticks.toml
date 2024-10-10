@@ -1,12 +1,22 @@
 account-lifetime = 86400000 # 1 day.
 depth = 3600000 # 1 hour.
 debug = true
-in-memory-db = true
+
+[[chain]]
+name = "polkadot"
+native-token = "DOT"
+decimals = 10
+endpoints = [
+    "ws://localhost:8000",
+    "ws://localhost:8500",
+]
 
 [[chain]]
 name = "statemint"
+decimals = 6
 endpoints = [
-    "ws://localhost:8000"
+    "ws://localhost:9000",
+    "ws://localhost:9500",
 ]
 
 [[chain.asset]]
@@ -14,5 +24,5 @@ name = "USDC"
 id = 1337
 
 [[chain.asset]]
-name = "USDT"
+name = "USDt"
 id = 1984
