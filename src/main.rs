@@ -117,8 +117,6 @@ async fn async_try_main(
         Some(config.database.unwrap_or_else(|| DATABASE_DEFAULT.into()))
     };
 
-    let instance_id = String::from("TODO: add unique ID and save it in db");
-
     // Start services
 
     let (task_tracker, error_rx) = TaskTracker::new();
@@ -131,6 +129,8 @@ async fn async_try_main(
 
     let db =
         database::Database::init(database_path, task_tracker.clone(), config.account_lifetime)?;
+
+    let instance_id = db.initialize_server_info().await?;
 
     let (cm_tx, cm_rx) = oneshot::channel();
 
