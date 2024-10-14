@@ -16,8 +16,8 @@ use crate::{
     error::{DbError, Error},
     utils::task_tracker::TaskTracker,
 };
-use names::{Generator, Name};
 use codec::{Decode, Encode};
+use names::{Generator, Name};
 use std::time::SystemTime;
 use substrate_crypto_light::common::AccountId32;
 use tokio::sync::{mpsc, oneshot};
