@@ -318,6 +318,12 @@ pub enum DbError {
 
     #[error("there was already an attempt to withdraw order {0:?}")]
     WithdrawalWasAttempted(String),
+
+    #[error("wasn't able to serialize {0:?} field")]
+    SerializationError(String),
+
+    #[error("wasn't able to deserialize {0:?} table")]
+    DeserializationError(String),
 }
 
 #[derive(Debug, Error)]

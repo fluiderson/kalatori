@@ -2,7 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.1.2] - 2024-10-07
+## [0.2.2] - 2024-10-10
+
+### 🚀 Features
+
+- Docker environment for chopsticks and compose to spawn 4 chopsticks instances in parallel looking at different RPCs
+
+### 🐛 Bug Fixes
+
+- Server_status API request returns instance_id instead of placeholder
+- Mark_paid function will mark order correctly now
+
+## [0.2.1] - 2024-10-07
 
 Making the order request work according to specs in the [specs](https://alzymologist.github.io/kalatori-api/#/). 
 Using the tests from [kalatori-api-test-suite]() in order to validate.
