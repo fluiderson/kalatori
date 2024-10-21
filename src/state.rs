@@ -1,10 +1,9 @@
 use crate::{
     chain::ChainManager,
-    database::ConfigWoChains,
-    database::Database,
+    database::{ConfigWoChains, Database},
     definitions::api_v2::{
-        CurrencyProperties, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse, OrderStatus,
-        ServerHealth, ServerInfo, ServerStatus,
+        CurrencyProperties, Health, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse,
+        OrderStatus, RpcInfo, ServerHealth, ServerInfo, ServerStatus,
     },
     error::{Error, OrderError},
     signer::Signer,

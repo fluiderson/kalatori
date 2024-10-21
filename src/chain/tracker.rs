@@ -28,15 +28,6 @@ use crate::{
     state::State,
     utils::task_tracker::TaskTracker,
 };
-use frame_metadata::v15::RuntimeMetadataV15;
-use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
-use serde_json::Value;
-use substrate_parser::{AsMetadata, ShortSpecs};
-use tokio::{
-    sync::mpsc,
-    time::{timeout, Duration},
-};
-use tokio_util::sync::CancellationToken;
 
 #[allow(clippy::too_many_lines)]
 pub fn start_chain_watch(
