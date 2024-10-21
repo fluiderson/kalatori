@@ -5,15 +5,15 @@ Plan is to update the database scheme in a way that it will support the requirem
 - order - String: order identifier provided by the frontend 
 - payment_status - Enum: (pending|paid|timed_out). 
 - withdrawal_status - Enum: (waiting|failed|completed|forced|none). 
-- amount - Float: Order amount 
+- amount - u128: Order amount 
 - currency - String: Currency ticker ("DOT"|"USDC"|...). 
 - callback: String: Callback url for frontend order status update 
-- payment_account: String: Derived address for this order. 
-- recipient: String: Address that will receive the payout once the order is fulfilled. 
+- payment_account: [u8; 32]: Derived address for this order. 
+- recipient: [u8; 32]: Address that will receive the payout once the order is fulfilled. 
 - message: String|null: Optional parameter for failed orders.
 - payment_page: String|null: Optional parameter for the frontend to redirect to a payment page.
 - redirect_url: String|null: Optional parameter for the frontend to redirect once the order is repaid.
-- death: Timestamp: Expiry timestamp for the order.
+- death: u32: Expiry timestamp for the order.
 
 ### Transactions (`transactions`)
 - order - String: order id to link transaction to order
