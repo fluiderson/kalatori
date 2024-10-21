@@ -6,7 +6,7 @@ use crate::{
         tracker::ChainWatcher,
     },
     definitions::{
-        api_v2::{OrderInfo, Timestamp},
+        api_v2::{OrderInfo, RpcInfo, Timestamp},
         Balance,
     },
     error::{ChainError, NotHexError},
@@ -88,6 +88,7 @@ pub enum ChainRequest {
     WatchAccount(WatchAccount),
     Reap(WatchAccount),
     Shutdown(oneshot::Sender<()>),
+    GetConnectedRpcs(oneshot::Sender<Vec<RpcInfo>>),
 }
 
 #[derive(Debug)]
