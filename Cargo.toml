@@ -9,7 +9,7 @@ repository = "https://github.com/Alzymologist/Kalatori-backend"
 readme = true
 keywords = ["substrate", "blockchain", "finance", "service", "middleware"]
 categories = ["finance"]
-rust-version = "1.81"
+rust-version = "1.82"
 
 [dependencies]
 axum = { version = "0.7", default-features = false, features = [
