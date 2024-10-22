@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.4] - 2024-10-21
+
+### ⚡ Performance
+
+- Switched from the unmaintained `hex` crate to `const-hex`.
+
+### 🚜 Refactor
+
+- Moved all utility modules under the utils module.
+- Removed all `mod.rs` files & added a lint rule to prevent them.
+
 ## [0.2.3] - 2024-10-15
 
 ### 🚀 Features
@@ -21,7 +32,7 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2.1] - 2024-10-07
 
-Making the order request work according to specs in the [specs](https://alzymologist.github.io/kalatori-api/#/). 
+Making the order request work according to specs in the [specs](https://alzymologist.github.io/kalatori-api/#/).
 Using the tests from [kalatori-api-test-suite]() in order to validate.
 Added git cliff and configuration for it to generate CHANGELOG like this one, see [CONTRIBUTING.md](CONTRIBUTING.md)
 
@@ -37,5 +48,3 @@ Added git cliff and configuration for it to generate CHANGELOG like this one, se
 ### ⚙️ Miscellaneous Tasks
 
 - Resolve conflicts
-
-
