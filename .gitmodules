@@ -1,0 +1,3 @@
+[submodule "tests/kalatori-api-test-suite"]
+	path = tests/kalatori-api-test-suite
+	url = git@github.com:Vovke/kalatori-api-test-suite.git
