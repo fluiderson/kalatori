@@ -26,7 +26,7 @@ use crate::{
     error::ChainError,
     signer::Signer,
     state::State,
-    task_tracker::TaskTracker,
+    utils::task_tracker::TaskTracker,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -177,7 +177,7 @@ pub fn start_chain_watch(
                                 let signer_for_reaper = signer.interface();
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
                                     payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
-                                    Ok(format!("Payout attempt for order {id} terminated").into())
+                                    Ok(format!("Payout attempt for order {id} terminated"))
                                 });
                             }
                             ChainTrackerRequest::Shutdown(res) => {
@@ -195,7 +195,7 @@ pub fn start_chain_watch(
                     }).await;
                 }
             }
-            Ok(format!("Chain {} monitor shut down", chain.name).into())
+            Ok(format!("Chain {} monitor shut down", chain.name))
         });
 }
 
@@ -323,7 +323,7 @@ impl ChainWatcher {
             }
             // this should reset chain monitor on timeout;
             // but if this breaks, it means that the latter is already down either way
-            Ok(format!("Block watch at {rpc} stopped").into())
+            Ok(format!("Block watch at {rpc} stopped"))
         });
 
         Ok(chain)
