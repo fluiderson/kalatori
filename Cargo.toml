@@ -63,6 +63,7 @@ substrate_parser = { git = "https://github.com/Alzymologist/substrate-parser" }
 substrate-constructor = { git = "https://github.com/Alzymologist/substrate-constructor" }
 mnemonic-external = { git = "https://github.com/Alzymologist/mnemonic-external" }
 substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-crypto-light" }
+reqwest = "0.12.8"
 
 [build-dependencies]
 shadow-rs = { version = "0.35", default-features = false }
