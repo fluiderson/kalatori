@@ -56,7 +56,8 @@ jobs:
           nohup cargo r &
 
       - name: Wait for Rust app to start
-        run: sleep 10
+        run: sleep 120
+        # Wait for the Rust app to start and then wait for the app to connect to RPC
 
       - name: Install Node.js
         uses: actions/setup-node@v3
