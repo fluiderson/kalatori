@@ -11,7 +11,6 @@ use utils::{
 };
 
 mod arguments;
-mod callback;
 mod chain;
 mod database;
 mod definitions;
