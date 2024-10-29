@@ -8,7 +8,7 @@ describe('Order Endpoint Blackbox Tests', () => {
     throw new Error('check all environment variables are defined');
   }
   const dotOrderData = {
-    amount: 2,
+    amount: 2, // Crucial to test with more than existential amount which is 1 DOT
     currency: 'DOT',
     callback: 'https://example.com/callback'
   };

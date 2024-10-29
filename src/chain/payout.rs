@@ -78,6 +78,7 @@ pub async fn payout(
             a if (loss_tolerance..=manual_intervention_amount).contains(&a) => {
                 tracing::warn!("Overpayment, proceeding with available balance");
                 // We will transfer all the available balance
+                // TODO smarter handling and returns probably
 
                 match currency.kind {
                     TokenKind::Native => {
@@ -142,7 +143,7 @@ pub async fn payout(
 
         send_stuff(&client, &format!("0x{}", const_hex::encode(extrinsic))).await?;
 
-        state.order_withdrawn(order.id.clone()).await;
+        state.order_withdrawn(order.id).await;
         // TODO obvious
     }
     Ok(())
