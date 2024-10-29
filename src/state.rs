@@ -142,6 +142,19 @@ impl State {
                                     }
                                 }
                             }
+                            StateAccessRequest::OrderWithdrawn(id) => {
+                                // Only perform actions if the record is saved in ledger
+                                match state.db.mark_withdrawn(id.clone()).await {
+                                    Ok(order) => {
+                                        tracing::info!("Order {id} successfully marked as withdrawn");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Order was withdrawn but this could not be recorded! {e:?}"
+                                        )
+                                    }
+                                }
+                            }
                         };
                     }
                     // Orchestrate shutdown from here
@@ -261,6 +274,16 @@ impl State {
             tracing::warn!("Data race on shutdown; please restart the daemon for cleaning up");
         };
     }
+    pub async fn order_withdrawn(&self, order: String) {
+        if self
+            .tx
+            .send(StateAccessRequest::OrderWithdrawn(order))
+            .await
+            .is_err()
+        {
+            tracing::warn!("Data race on shutdown; please restart the daemon for cleaning up");
+        };
+    }
 
     #[allow(dead_code)]
     pub async fn force_withdrawal(&self, order: String) -> Result<OrderStatus, OrderStatus> {
@@ -285,6 +308,7 @@ enum StateAccessRequest {
     ServerStatus(oneshot::Sender<ServerStatus>),
     ServerHealth(oneshot::Sender<ServerHealth>),
     OrderPaid(String),
+    OrderWithdrawn(String),
 }
 
 struct GetInvoiceStatus {

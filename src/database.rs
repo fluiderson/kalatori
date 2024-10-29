@@ -461,7 +461,8 @@ fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, DbError> {
     }
 }
 fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), DbError> {
-    if let Some(order_info) = orders.get(order.clone())? {
+    let order_key = order.encode();
+    if let Some(order_info) = orders.get(order_key)? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
         if order_info.payment_status == PaymentStatus::Paid {
             if order_info.withdrawal_status == WithdrawalStatus::Waiting {

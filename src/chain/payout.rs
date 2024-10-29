@@ -126,7 +126,7 @@ pub async fn payout(
                 "{batch_transaction:?}"
             )))?;
 
-        let signature = signer.sign(order.id, sign_this).await?;
+        let signature = signer.sign(order.id.clone(), sign_this).await?;
 
         if let TypeContentToFill::Variant(ref mut multisig) = batch_transaction.signature.content {
             if let TypeContentToFill::ArrayU8(ref mut sr25519) =
@@ -136,14 +136,13 @@ pub async fn payout(
             }
         }
 
-        tracing::info!("Batch Transaction: {batch_transaction:?}");
-
         let extrinsic = batch_transaction
             .send_this_signed::<(), RuntimeMetadataV15>(&chain.metadata)?
             .ok_or(ChainError::NothingToSend)?;
 
         send_stuff(&client, &format!("0x{}", const_hex::encode(extrinsic))).await?;
 
+        state.order_withdrawn(order.id.clone()).await;
         // TODO obvious
     }
     Ok(())

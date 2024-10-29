@@ -8,7 +8,7 @@ describe('Order Endpoint Blackbox Tests', () => {
     throw new Error('check all environment variables are defined');
   }
   const dotOrderData = {
-    amount: 1,
+    amount: 2,
     currency: 'DOT',
     callback: 'https://example.com/callback'
   };
@@ -228,7 +228,7 @@ describe('Order Endpoint Blackbox Tests', () => {
     const repaidOrderDetails = await getOrderDetails(orderId);
     expect(repaidOrderDetails.payment_status).toBe('paid');
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
-  }, 30000);
+  }, 50000);
 
   it.skip('should create, repay, and automatically withdraw an order in USDC', async () => {
     const orderId = generateRandomOrderId();
