@@ -22,13 +22,13 @@ mod signer;
 mod state;
 mod utils;
 
+use crate::error::ChainError;
 use arguments::{CliArgs, Config, SeedEnvVars, DATABASE_DEFAULT};
 use chain::ChainManager;
 use database::ConfigWoChains;
 use error::{Error, PrettyCause};
 use signer::Signer;
 use state::State;
-use crate::error::ChainError;
 
 fn main() -> ExitCode {
     let shutdown_notification = ShutdownNotification::new();
