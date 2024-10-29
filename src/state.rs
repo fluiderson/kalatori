@@ -1,6 +1,6 @@
 use crate::{
     chain::ChainManager,
-    database::{ConfigWoChains, Database},
+    database::{ConfigWoChains, Database, TransactionInfoDb},
     definitions::api_v2::{
         CurrencyProperties, Health, OrderCreateResponse, OrderInfo, OrderQuery, OrderResponse,
         OrderStatus, RpcInfo, ServerHealth, ServerInfo, ServerStatus,
@@ -22,6 +22,7 @@ pub struct State {
 }
 
 impl State {
+    #[expect(clippy::too_many_lines)]
     pub fn initialise(
         signer: Signer,
         ConfigWoChains {
@@ -34,7 +35,7 @@ impl State {
         instance_id: String,
         task_tracker: TaskTracker,
         shutdown_notification: CancellationToken,
-    ) -> Result<Self, Error> {
+    ) -> Self {
         /*
             currencies: HashMap<String, CurrencyProperties>,
             recipient: AccountId,
@@ -142,6 +143,13 @@ impl State {
                                     }
                                 }
                             }
+                            StateAccessRequest::SentTransaction { order, tx } => {
+                                if let Err(e) = state.db.record_transaction(order, tx).await {
+                                    tracing::error!(
+                                        "Order was paid but this could not be recorded! {e:?}"
+                                    )
+                                }
+                            }
                         };
                     }
                     // Orchestrate shutdown from here
@@ -167,7 +175,7 @@ impl State {
             Ok("State handler is shutting down")
         });
 
-        Ok(Self { tx })
+        Self { tx }
     }
 
     fn overall_health(connected_rpcs: &Vec<RpcInfo>) -> Health {
@@ -262,6 +270,10 @@ impl State {
         };
     }
 
+    pub async fn add_transaction(&self, order: String, tx: String) {
+        todo!()
+    }
+
     #[allow(dead_code)]
     pub async fn force_withdrawal(&self, order: String) -> Result<OrderStatus, OrderStatus> {
         todo!()
@@ -271,6 +283,17 @@ impl State {
         State {
             tx: self.tx.clone(),
         }
+    }
+
+    pub async fn sent_transaction(
+        &self,
+        tx: TransactionInfoDb,
+        order: String,
+    ) -> Result<(), Error> {
+        self.tx
+            .send(StateAccessRequest::SentTransaction { order, tx })
+            .await
+            .map_err(|_| Error::Fatal)
     }
 }
 
@@ -285,6 +308,10 @@ enum StateAccessRequest {
     ServerStatus(oneshot::Sender<ServerStatus>),
     ServerHealth(oneshot::Sender<ServerHealth>),
     OrderPaid(String),
+    SentTransaction {
+        order: String,
+        tx: TransactionInfoDb,
+    },
 }
 
 struct GetInvoiceStatus {

@@ -292,6 +292,12 @@ pub enum ChainError {
 
     #[error("failed to parse JSON data from a block stream")]
     Serde(#[from] JsonError),
+
+    #[error("failed to send a constructed transaction back to the state")]
+    TransactionNotSaved,
+
+    #[error("timestamp wasn't found in the block")]
+    TimestampNotFoundForBlock,
 }
 
 #[derive(Debug, Error)]
@@ -403,6 +409,9 @@ pub enum SignerError {
 pub enum NotHexError {
     #[error("block hash string isn't a valid hexadecimal")]
     BlockHash,
+
+    #[error("encoded extrinsic string isn't a valid hexadecimal")]
+    Extrinsic,
 
     #[error("encoded metadata string isn't a valid hexadecimal")]
     Metadata,

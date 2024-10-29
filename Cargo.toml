@@ -54,6 +54,7 @@ clap = { version = "4", features = [
     "wrap_help",
     "deprecated",
 ] }
+# Don't forget to update me in `[build-dependencies]`!
 shadow-rs = { version = "0.35", default-features = false }
 ahash = "0.8"
 indoc = "2"
@@ -65,6 +66,7 @@ mnemonic-external = { git = "https://github.com/Alzymologist/mnemonic-external" 
 substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-crypto-light" }
 
 [build-dependencies]
+# Don't forget to update me in `[dependencies]`!
 shadow-rs = { version = "0.35", default-features = false }
 
 [profile.release]
@@ -89,6 +91,9 @@ shadow_same = "warn"
 shadow_unrelated = "warn"
 cargo_common_metadata = "warn"
 arithmetic_side_effects = "warn"
+# Having multiple module layout styles in a project can be confusing. Moreover, `mod.rs` files don't
+# really harmonize with Git as they can be renamed back to self-named modules and Git fundamentally
+# prone to poorly handling the file renaming that can result in their history erasure.
 mod_module_files = "warn"
 # TODO: https://github.com/rust-lang/cargo/issues/12918
 pedantic = { level = "warn", priority = -1 }

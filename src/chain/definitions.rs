@@ -6,7 +6,7 @@ use crate::{
         tracker::ChainWatcher,
     },
     definitions::{
-        api_v2::{OrderInfo, RpcInfo, Timestamp},
+        api_v2::{CurrencyInfo, Decimals, OrderInfo, RpcInfo, Timestamp},
         Balance,
     },
     error::{ChainError, NotHexError},
@@ -95,8 +95,8 @@ pub enum ChainRequest {
 pub struct WatchAccount {
     pub id: String,
     pub address: AccountId32,
-    pub currency: String,
-    pub amount: Balance,
+    pub currency: CurrencyInfo,
+    pub amount: f64,
     pub recipient: AccountId32,
     pub res: oneshot::Sender<Result<(), ChainError>>,
     pub death: Timestamp,
@@ -114,8 +114,8 @@ impl WatchAccount {
             address: AccountId32::from_base58_string(&order.payment_account)
                 .map_err(ChainError::InvoiceAccount)?
                 .0,
-            currency: order.currency.currency,
-            amount: Balance::parse(order.amount, order.currency.decimals),
+            currency: order.currency,
+            amount: order.amount,
             recipient,
             res,
             death: order.death,
@@ -134,8 +134,8 @@ pub enum ChainTrackerRequest {
 pub struct Invoice {
     pub id: String,
     pub address: AccountId32,
-    pub currency: String,
-    pub amount: Balance,
+    pub currency: CurrencyInfo,
+    pub amount: f64,
     pub recipient: AccountId32,
     pub death: Timestamp,
 }
@@ -161,8 +161,8 @@ impl Invoice {
     ) -> Result<Balance, ChainError> {
         let currency = chain_watcher
             .assets
-            .get(&self.currency)
-            .ok_or(ChainError::InvalidCurrency(self.currency.clone()))?;
+            .get(&self.currency.currency)
+            .ok_or(ChainError::InvalidCurrency(self.currency.currency.clone()))?;
         if let Some(asset_id) = currency.asset_id {
             let balance = asset_balance_at_account(
                 client,
@@ -187,6 +187,7 @@ impl Invoice {
         chain_watcher: &ChainWatcher,
         block: &BlockHash,
     ) -> Result<bool, ChainError> {
-        Ok(self.balance(client, chain_watcher, block).await? >= self.amount)
+        Ok(self.balance(client, chain_watcher, block).await?
+            >= Balance::parse(self.amount, self.currency.decimals))
     }
 }

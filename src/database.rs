@@ -4,7 +4,7 @@
 //! commercial offers and contracts, hence causality is a must. Care must be taken that no threads
 //! are spawned here other than main database server thread that does everything in series.
 
-use crate::definitions::api_v2::ServerInfo;
+use crate::definitions::api_v2::{ServerInfo, TransactionInfo, TxStatus};
 use crate::{
     definitions::{
         api_v2::{
@@ -18,6 +18,7 @@ use crate::{
 };
 use codec::{Decode, Encode};
 use names::{Generator, Name};
+use sled::Tree;
 use std::time::SystemTime;
 use substrate_crypto_light::common::AccountId32;
 use tokio::sync::{mpsc, oneshot};
@@ -173,6 +174,7 @@ pub struct Database {
 }
 
 impl Database {
+    #[expect(clippy::too_many_lines)]
     pub fn init(
         path_option: Option<String>,
         task_tracker: TaskTracker,
@@ -194,6 +196,9 @@ impl Database {
         let orders = database
             .open_tree(ORDERS_TABLE)
             .map_err(DbError::DbStartError)?;
+        let transactions = database
+            .open_tree(TRANSACTIONS)
+            .map_err(DbError::DbStartError)?;
 
         task_tracker.spawn("Database server", async move {
             // No process forking beyond this point!
@@ -202,7 +207,7 @@ impl Database {
                     DbRequest::ActiveOrderList(res) => {
                         let _unused = res.send(Ok(orders
                             .iter()
-                            .filter_map(|a| a.ok())
+                            .filter_map(|a: Result<(sled::IVec, sled::IVec), sled::Error>| a.ok())
                             .filter_map(|(a, b)| {
                                 match (String::decode(&mut &a[..]), OrderInfo::decode(&mut &b[..]))
                                 {
@@ -224,7 +229,10 @@ impl Database {
                         ));
                     }
                     DbRequest::ReadOrder(request) => {
-                        let _unused = request.res.send(read_order(request.order, &orders));
+                        let _unused =
+                            request
+                                .res
+                                .send(read_order(&request.order, &orders, &transactions));
                     }
                     DbRequest::MarkPaid(request) => {
                         let _unused = request.res.send(mark_paid(request.order, &orders));
@@ -234,6 +242,9 @@ impl Database {
                     }
                     DbRequest::MarkStuck(request) => {
                         let _unused = request.res.send(mark_stuck(request.order, &orders));
+                    }
+                    DbRequest::RecordTransaction { order, tx, res } => {
+                        let _unused = res.send(record_transaction(&transactions, order, &tx));
                     }
                     DbRequest::InitializeServerInfo(res) => {
                         let server_info_tree = database
@@ -326,6 +337,20 @@ impl Database {
         rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
+    pub async fn record_transaction(
+        &self,
+        order: String,
+        tx: TransactionInfoDb,
+    ) -> Result<(), DbError> {
+        let (res, rx) = oneshot::channel();
+        let _unused = self
+            .tx
+            .send(DbRequest::RecordTransaction { order, tx, res })
+            .await;
+
+        rx.await.map_err(|_| DbError::DbEngineDown)?
+    }
+
     pub async fn mark_paid(&self, order: String) -> Result<OrderInfo, DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
@@ -369,6 +394,11 @@ enum DbRequest {
     MarkStuck(ModifyOrder),
     InitializeServerInfo(oneshot::Sender<Result<String, DbError>>),
     Shutdown(oneshot::Sender<()>),
+    RecordTransaction {
+        order: String,
+        tx: TransactionInfoDb,
+        res: oneshot::Sender<Result<(), DbError>>,
+    },
 }
 
 pub struct CreateOrder {
@@ -408,7 +438,7 @@ fn create_order(
     query: OrderQuery,
     currency: CurrencyInfo,
     payment_account: String,
-    orders: &sled::Tree,
+    orders: &Tree,
     account_lifetime: Timestamp,
 ) -> Result<OrderCreateResponse, DbError> {
     let order_key = order.encode();
@@ -436,16 +466,54 @@ fn create_order(
     })
 }
 
-fn read_order(order: String, orders: &sled::Tree) -> Result<Option<OrderInfo>, DbError> {
-    let order_key = order.encode();
-    if let Some(order) = orders.get(order_key)? {
-        Ok(Some(OrderInfo::decode(&mut &order[..])?))
-    } else {
-        Ok(None)
-    }
+fn read_order(key: &str, orders: &Tree, tx_table: &Tree) -> Result<Option<OrderInfo>, DbError> {
+    let Some(order_encoded) = orders.get(key)? else {
+        return Ok(None);
+    };
+
+    let mut order = OrderInfo::decode(&mut &order_encoded[..])?;
+    let transactions = tx_table
+        .scan_prefix(key.encode())
+        .map(|result| {
+            result.map_err(DbError::from).and_then(|(_, v)| {
+                TransactionInfoDb::decode(&mut v.as_ref())
+                    .map(|tx| tx.inner)
+                    .map_err(Into::into)
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    order.transactions = transactions;
+
+    Ok(order.into())
 }
 
-fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, DbError> {
+fn record_transaction(
+    tx_table: &Tree,
+    order: String,
+    tx: &TransactionInfoDb,
+) -> Result<(), DbError> {
+    let (encoded_k, _) = tx_table
+        .scan_prefix(order.encode())
+        .next_back()
+        .ok_or_else(|| DbError::OrderNotFound(order.clone()))??;
+    let (_, last_tx_index) = <(String, u64)>::decode(&mut encoded_k.as_ref())?;
+
+    tx_table.insert(
+        (
+            order,
+            last_tx_index
+                .checked_add(1)
+                .expect("storing more than `u64::MAX` transactions per order isn't supported"),
+        )
+            .encode(),
+        tx.encode(),
+    )?;
+
+    Ok(())
+}
+
+fn mark_paid(order: String, orders: &Tree) -> Result<OrderInfo, DbError> {
     let order_key = order.encode();
     if let Some(order_info) = orders.get(order_key)? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
@@ -460,7 +528,7 @@ fn mark_paid(order: String, orders: &sled::Tree) -> Result<OrderInfo, DbError> {
         Err(DbError::OrderNotFound(order))
     }
 }
-fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), DbError> {
+fn mark_withdrawn(order: String, orders: &Tree) -> Result<(), DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
         if order_info.payment_status == PaymentStatus::Paid {
@@ -478,7 +546,7 @@ fn mark_withdrawn(order: String, orders: &sled::Tree) -> Result<(), DbError> {
         Err(DbError::OrderNotFound(order))
     }
 }
-fn mark_stuck(order: String, orders: &sled::Tree) -> Result<(), DbError> {
+fn mark_stuck(order: String, orders: &Tree) -> Result<(), DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
         if order_info.payment_status == PaymentStatus::Paid {
@@ -496,6 +564,19 @@ fn mark_stuck(order: String, orders: &sled::Tree) -> Result<(), DbError> {
         Err(DbError::OrderNotFound(order))
     }
 }
+
+#[derive(Encode, Decode)]
+pub struct TransactionInfoDb {
+    pub inner: TransactionInfo,
+    pub kind: TxKind,
+}
+
+#[derive(Encode, Decode)]
+pub enum TxKind {
+    Payment,
+    Withdrawal,
+}
+
 //impl StateInterface {
 /*
     Ok((

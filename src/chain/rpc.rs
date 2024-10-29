@@ -8,9 +8,8 @@ use crate::{
             system_balance_query, system_properties_to_short_specs,
         },
     },
-    definitions::api_v2::CurrencyProperties,
     definitions::{
-        api_v2::{AssetId, TokenKind},
+        api_v2::{AssetId, CurrencyProperties, ExtrinsicIndex, TokenKind},
         Balance,
     },
     error::{ChainError, NotHexError},
@@ -31,10 +30,13 @@ use serde_json::{Number, Value};
 use std::{collections::HashMap, fmt::Debug};
 use substrate_crypto_light::common::AccountId32;
 use substrate_parser::{
-    cards::{Event, ParsedData, Sequence},
+    cards::{
+        Call, Event, ExtendedData, FieldData, PalletSpecificData, ParsedData, Sequence, VariantData,
+    },
     decode_all_as_type, decode_as_storage_entry,
     special_indicators::SpecialtyUnsignedInteger,
     storage_data::{KeyData, KeyPart},
+    unchecked_extrinsic::UncheckedExtrinsic,
     AsMetadata, ResolveType, ShortSpecs,
 };
 
@@ -261,7 +263,18 @@ pub struct BlockHead {
     //state_root: String,
 }
 
+#[derive(Deserialize)]
+pub struct BlockDetails {
+    block: Block,
+}
+
+#[derive(Deserialize)]
+pub struct Block {
+    pub extrinsics: Vec<String>,
+}
+
 /// Get all sufficient assets from a chain
+#[expect(clippy::too_many_lines)]
 pub async fn assets_set_at_block(
     client: &WsClient,
     block: &BlockHash,
@@ -630,11 +643,10 @@ pub async fn transfer_events(
     client: &WsClient,
     block: &BlockHash,
     metadata_v15: &RuntimeMetadataV15,
-) -> Result<Vec<Event>, ChainError> {
-    let events_entry_metadata = events_entry_metadata(&metadata_v15)?;
-
-    events_at_block(
-        &client,
+) -> Result<Vec<(Option<Vec<u8>>, Event)>, ChainError> {
+    let events_entry_metadata = events_entry_metadata(metadata_v15)?;
+    let events = events_at_block(
+        client,
         block,
         Some(EventFilter {
             pallet: BALANCES,
@@ -643,7 +655,68 @@ pub async fn transfer_events(
         events_entry_metadata,
         &metadata_v15.types,
     )
-    .await
+    .await?;
+
+    match_extrinsics_with_events_at_block(events, client, block, metadata_v15).await
+}
+
+async fn match_extrinsics_with_events_at_block(
+    events: Vec<(Option<ExtrinsicIndex>, Event)>,
+    client: &WsClient,
+    block_hash: &BlockHash,
+    metadata_v15: &RuntimeMetadataV15,
+) -> Result<Vec<(Option<Vec<u8>>, Event)>, ChainError> {
+    let block: Block = client
+        .request("chain_getBlock", rpc_params!(block_hash.to_string()))
+        .await?;
+    let extrinsics = block
+        .extrinsics
+        .into_iter()
+        .map(|encoded| unhex(&encoded, NotHexError::Extrinsic))
+        .collect::<Result<Vec<_>, _>>()?;
+    let timestamp = extrinsics.iter().find_map(|encoded| {
+        if let UncheckedExtrinsic::Unsigned {
+            call:
+                Call(PalletSpecificData {
+                    pallet_name,
+                    variant_name,
+                    fields,
+                    ..
+                }),
+        } = substrate_parser::decode_as_unchecked_extrinsic(
+            &encoded.as_ref(),
+            &mut (),
+            metadata_v15,
+        )
+        .expect("RAM stored metadata access")
+        {
+            if pallet_name == "Timestamp" && variant_name == "set" {
+                if let Some(FieldData {
+                    data:
+                        ExtendedData {
+                            data: ParsedData::PrimitiveU64 { value, .. },
+                            ..
+                        },
+                    ..
+                }) = fields.into_iter().next()
+                {
+                    return Some(value);
+                }
+            }
+        }
+
+        None
+    }).ok_or(ChainError::TimestampNotFoundForBlock)?;
+
+    events
+        .into_iter()
+        .map(|(extrinsic, event)| {
+            let extrinsic_option = extrinsic
+                .and_then(|index| extrinsics.get::<usize>(index.try_into().unwrap()).cloned());
+
+            Ok((extrinsic_option, event))
+        })
+        .collect()
 }
 
 async fn events_at_block(
@@ -652,7 +725,7 @@ async fn events_at_block(
     optional_filter: Option<EventFilter<'_>>,
     events_entry_metadata: &StorageEntryMetadata<PortableForm>,
     types: &PortableRegistry,
-) -> Result<Vec<Event>, ChainError> {
+) -> Result<Vec<(Option<ExtrinsicIndex>, Event)>, ChainError> {
     let keys_from_storage_vec = get_keys_from_storage(client, "System", "Events", block).await?;
     let mut out = Vec::new();
     for keys_from_storage in keys_from_storage_vec {
@@ -679,32 +752,67 @@ async fn events_at_block(
                             .expect("RAM stored metadata access");
                         if let ParsedData::SequenceRaw(sequence_raw) = storage_data.value.data {
                             for sequence_element in sequence_raw.data {
+                                let (mut extrinsic_index, mut event_option) = (None, None);
+
                                 if let ParsedData::Composite(event_record) = sequence_element {
                                     for event_record_element in event_record {
-                                        if event_record_element.field_name
-                                            == Some("event".to_string())
-                                        {
-                                            if let ParsedData::Event(Event(ref event)) =
-                                                event_record_element.data.data
-                                            {
-                                                if let Some(ref filter) = optional_filter {
-                                                    if let Some(event_variant) =
-                                                        filter.optional_event_variant
-                                                    {
-                                                        if event.pallet_name == filter.pallet
-                                                            && event.variant_name == event_variant
+                                        match event_record_element.field_name.as_deref() {
+                                            Some("event") => {
+                                                if let ParsedData::Event(Event(event)) =
+                                                    event_record_element.data.data
+                                                {
+                                                    if let Some(filter) = &optional_filter {
+                                                        if let Some(event_variant) =
+                                                            filter.optional_event_variant
                                                         {
-                                                            out.push(Event(event.to_owned()));
+                                                            if event.pallet_name == filter.pallet
+                                                                && event.variant_name
+                                                                    == event_variant
+                                                            {
+                                                                event_option = Some(Event(event));
+                                                            }
+                                                        } else if event.pallet_name == filter.pallet
+                                                        {
+                                                            event_option = Some(Event(event));
                                                         }
-                                                    } else if event.pallet_name == filter.pallet {
-                                                        out.push(Event(event.to_owned()));
+                                                    } else {
+                                                        event_option = Some(Event(event));
                                                     }
-                                                } else {
-                                                    out.push(Event(event.to_owned()));
                                                 }
                                             }
+                                            Some("phase") => {
+                                                if let ParsedData::Variant(VariantData {
+                                                    variant_name,
+                                                    fields,
+                                                    ..
+                                                }) = event_record_element.data.data
+                                                {
+                                                    if variant_name == "ApplyExtrinsic" {
+                                                        if let Some(FieldData {
+                                                            data:
+                                                                ExtendedData {
+                                                                    data:
+                                                                        ParsedData::PrimitiveU32 {
+                                                                            value,
+                                                                            ..
+                                                                        },
+                                                                    ..
+                                                                },
+                                                            ..
+                                                        }) = fields.into_iter().next()
+                                                        {
+                                                            extrinsic_index = Some(value);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
                                         }
                                     }
+                                }
+
+                                if let Some(event_some) = event_option {
+                                    out.push((extrinsic_index, event_some));
                                 }
                             }
                         }
@@ -716,7 +824,8 @@ async fn events_at_block(
             }
         }
     }
-    return Ok(out);
+
+    Ok(out)
 }
 
 pub async fn current_block_number(

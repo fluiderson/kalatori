@@ -127,7 +127,7 @@ pub fn start_chain_watch(
                                         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
 
                                         for (id, invoice) in &watched_accounts {
-                                            if events.iter().any(|event| was_balance_received_at_account(&invoice.address, &event.0.fields)) {
+                                            if events.iter().any(|(extrinsic_option, event)| was_balance_received_at_account(&invoice.address, &event.0.fields)) {
                                                 match invoice.check(&client, &watcher, &block).await {
                                                     Ok(true) => {
                                                         state.order_paid(id.clone()).await;
@@ -175,6 +175,8 @@ pub fn start_chain_watch(
                                 let reap_state_handle = state.interface();
                                 let watcher_for_reaper = watcher.clone();
                                 let signer_for_reaper = signer.interface();
+                                let chain_tx_clone = chain_tx.clone();
+
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
                                     payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
                                     Ok(format!("Payout attempt for order {id} terminated"))
