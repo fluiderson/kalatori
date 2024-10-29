@@ -76,8 +76,33 @@ pub async fn payout(
                 }
             },
             a if (loss_tolerance..=manual_intervention_amount).contains(&a) => {
-                tracing::warn!("Overpayments not handled yet");
-                return Ok(()); //TODO
+                tracing::warn!("Overpayment, proceeding with available balance");
+                // We will transfer all the available balance
+
+                match currency.kind {
+                    TokenKind::Native => {
+                        let balance_transfer_constructor = BalanceTransferConstructor {
+                            amount: balance.0,
+                            to_account: &order.recipient,
+                            is_clearing: true,
+                        };
+                        vec![construct_single_balance_transfer_call(
+                            &chain.metadata,
+                            &balance_transfer_constructor,
+                        )?]
+                    }
+                    TokenKind::Asset => {
+                        let asset_transfer_constructor = AssetTransferConstructor {
+                            asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
+                            amount: balance.0,
+                            to_account: &order.recipient,
+                        };
+                        vec![construct_single_asset_transfer_call(
+                            &chain.metadata,
+                            &asset_transfer_constructor,
+                        )?]
+                    }
+                }
             }
             _ => {
                 tracing::error!("Balance is out of range: {balance:?}");
@@ -105,6 +130,8 @@ pub async fn payout(
 
         batch_transaction.signature.content =
             TypeContentToFill::SpecialType(SpecialTypeToFill::SignatureSr25519(Some(signature)));
+
+        tracing::info!("Batch Transaction: {batch_transaction:?}");
 
         let extrinsic = batch_transaction
             .send_this_signed::<(), RuntimeMetadataV15>(&chain.metadata)?

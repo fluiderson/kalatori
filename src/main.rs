@@ -28,6 +28,7 @@ use database::ConfigWoChains;
 use error::{Error, PrettyCause};
 use signer::Signer;
 use state::State;
+use crate::error::ChainError;
 
 fn main() -> ExitCode {
     let shutdown_notification = ShutdownNotification::new();
@@ -122,7 +123,7 @@ async fn async_try_main(
     let (task_tracker, error_rx) = TaskTracker::new();
 
     let recipient = AccountId32::from_base58_string(&recipient_string)
-        .map_err(Error::RecipientAccount)?
+        .map_err(|e| Error::RecipientAccount(e.to_string()))?
         .0;
 
     let signer = Signer::init(recipient, task_tracker.clone(), seed_env_vars.seed)?;
