@@ -2,11 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.5] - 2024-10-23
+## [0.2.5] - 2024-10-29
 
 ### 🚀 Features
 
-- Send callback if callback url provided
+- Callback in case callback url provided
+
+### 🐛 Bug Fixes
+
+- fix error handling as a result of dep uupgrade
+- fix order withdraw transaction
+- mark order withdrawn on successful withdraw
 
 ## [0.2.4] - 2024-10-21
 
