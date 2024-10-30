@@ -76,8 +76,34 @@ pub async fn payout(
                 }
             },
             a if (loss_tolerance..=manual_intervention_amount).contains(&a) => {
-                tracing::warn!("Overpayments not handled yet");
-                return Ok(()); //TODO
+                tracing::warn!("Overpayment, proceeding with available balance");
+                // We will transfer all the available balance
+                // TODO smarter handling and returns probably
+
+                match currency.kind {
+                    TokenKind::Native => {
+                        let balance_transfer_constructor = BalanceTransferConstructor {
+                            amount: balance.0,
+                            to_account: &order.recipient,
+                            is_clearing: true,
+                        };
+                        vec![construct_single_balance_transfer_call(
+                            &chain.metadata,
+                            &balance_transfer_constructor,
+                        )?]
+                    }
+                    TokenKind::Asset => {
+                        let asset_transfer_constructor = AssetTransferConstructor {
+                            asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
+                            amount: balance.0,
+                            to_account: &order.recipient,
+                        };
+                        vec![construct_single_asset_transfer_call(
+                            &chain.metadata,
+                            &asset_transfer_constructor,
+                        )?]
+                    }
+                }
             }
             _ => {
                 tracing::error!("Balance is out of range: {balance:?}");
@@ -101,10 +127,15 @@ pub async fn payout(
                 "{batch_transaction:?}"
             )))?;
 
-        let signature = signer.sign(order.id, sign_this).await?;
+        let signature = signer.sign(order.id.clone(), sign_this).await?;
 
-        batch_transaction.signature.content =
-            TypeContentToFill::SpecialType(SpecialTypeToFill::SignatureSr25519(Some(signature)));
+        if let TypeContentToFill::Variant(ref mut multisig) = batch_transaction.signature.content {
+            if let TypeContentToFill::ArrayU8(ref mut sr25519) =
+                multisig.selected.fields_to_fill[0].type_to_fill.content
+            {
+                sr25519.content = signature.0.to_vec();
+            }
+        }
 
         let extrinsic = batch_transaction
             .send_this_signed::<(), RuntimeMetadataV15>(&chain.metadata)?
@@ -112,6 +143,7 @@ pub async fn payout(
 
         send_stuff(&client, &format!("0x{}", const_hex::encode(extrinsic))).await?;
 
+        state.order_withdrawn(order.id).await;
         // TODO obvious
     }
     Ok(())

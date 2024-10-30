@@ -11,7 +11,6 @@ use utils::{
 };
 
 mod arguments;
-mod callback;
 mod chain;
 mod database;
 mod definitions;
@@ -22,6 +21,7 @@ mod signer;
 mod state;
 mod utils;
 
+use crate::error::ChainError;
 use arguments::{CliArgs, Config, SeedEnvVars, DATABASE_DEFAULT};
 use chain::ChainManager;
 use database::ConfigWoChains;
@@ -122,7 +122,7 @@ async fn async_try_main(
     let (task_tracker, error_rx) = TaskTracker::new();
 
     let recipient = AccountId32::from_base58_string(&recipient_string)
-        .map_err(Error::RecipientAccount)?
+        .map_err(|e| Error::RecipientAccount(e.to_string()))?
         .0;
 
     let signer = Signer::init(recipient, task_tracker.clone(), seed_env_vars.seed)?;

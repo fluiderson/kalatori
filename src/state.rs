@@ -132,12 +132,35 @@ impl State {
                                 // Only perform actions if the record is saved in ledger
                                 match state.db.mark_paid(id.clone()).await {
                                     Ok(order) => {
-                                        // TODO: callback here
+                                        if !order.callback.is_empty() {
+                                            let callback = order.callback.clone();
+                                            tokio::spawn(async move {
+                                                tracing::info!("Sending callback to: {}", callback);
+
+                                                // fire and forget
+                                                if let Err(e) = reqwest::Client::new().get(&callback).send().await {
+                                                    tracing::error!("Failed to send callback to {}: {:?}", callback, e);
+                                                }
+                                            });
+                                        }
                                         drop(state.chain_manager.reap(id, order, state.recipient).await);
                                     }
                                     Err(e) => {
                                         tracing::error!(
                                             "Order was paid but this could not be recorded! {e:?}"
+                                        )
+                                    }
+                                }
+                            }
+                            StateAccessRequest::OrderWithdrawn(id) => {
+                                // Only perform actions if the record is saved in ledger
+                                match state.db.mark_withdrawn(id.clone()).await {
+                                    Ok(order) => {
+                                        tracing::info!("Order {id} successfully marked as withdrawn");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Order was withdrawn but this could not be recorded! {e:?}"
                                         )
                                     }
                                 }
@@ -261,6 +284,16 @@ impl State {
             tracing::warn!("Data race on shutdown; please restart the daemon for cleaning up");
         };
     }
+    pub async fn order_withdrawn(&self, order: String) {
+        if self
+            .tx
+            .send(StateAccessRequest::OrderWithdrawn(order))
+            .await
+            .is_err()
+        {
+            tracing::warn!("Data race on shutdown; please restart the daemon for cleaning up");
+        };
+    }
 
     #[allow(dead_code)]
     pub async fn force_withdrawal(&self, order: String) -> Result<OrderStatus, OrderStatus> {
@@ -285,6 +318,7 @@ enum StateAccessRequest {
     ServerStatus(oneshot::Sender<ServerStatus>),
     ServerHealth(oneshot::Sender<ServerHealth>),
     OrderPaid(String),
+    OrderWithdrawn(String),
 }
 
 struct GetInvoiceStatus {

@@ -112,7 +112,7 @@ impl WatchAccount {
         Ok(WatchAccount {
             id,
             address: AccountId32::from_base58_string(&order.payment_account)
-                .map_err(ChainError::InvoiceAccount)?
+                .map_err(|e| ChainError::InvoiceAccount(e.to_string()))?
                 .0,
             currency: order.currency.currency,
             amount: Balance::parse(order.amount, order.currency.decimals),
