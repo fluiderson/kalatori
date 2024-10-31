@@ -120,11 +120,11 @@ pub async fn order(
 pub async fn process_force_withdrawal(
     state: State,
     order_id: String,
-) -> Result<OrderStatus, ForceWithdrawalError> {
+) -> Result<OrderResponse, ForceWithdrawalError> {
     state
         .force_withdrawal(order_id)
         .await
-        .map_err(|e| ForceWithdrawalError::WithdrawalError(e.into()))
+        .map_err(|e| ForceWithdrawalError::WithdrawalError(e.to_string()))
 }
 
 pub async fn force_withdrawal(

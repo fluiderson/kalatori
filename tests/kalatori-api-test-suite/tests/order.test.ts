@@ -8,7 +8,7 @@ describe('Order Endpoint Blackbox Tests', () => {
     throw new Error('check all environment variables are defined');
   }
   const dotOrderData = {
-    amount: 2, // Crucial to test with more than existential amount which is 1 DOT
+    amount: 4, // Crucial to test with more than existential amount which is 1 DOT
     currency: 'DOT',
     callback: 'https://example.com/callback'
   };
@@ -300,6 +300,28 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(repaidOrderDetails.payment_status).toBe('pending');
     expect(repaidOrderDetails.withdrawal_status).toBe('waiting');
   }, 30000);
+
+  it.skip('should be able to force withdraw partially repayed order', async () => {
+    const orderId = generateRandomOrderId();
+    await createOrder(orderId, dotOrderData);
+    const orderDetails = await getOrderDetails(orderId);
+    const paymentAccount = orderDetails.payment_account;
+    expect(paymentAccount).toBeDefined();
+
+    await transferFunds(orderDetails.currency.rpc_url, paymentAccount, dotOrderData.amount/2);
+
+    const partiallyRepaidOrderDetails = await getOrderDetails(orderId);
+    expect(partiallyRepaidOrderDetails.payment_status).toBe('pending');
+    expect(partiallyRepaidOrderDetails.withdrawal_status).toBe('waiting');
+
+    const response = await request(baseUrl)
+        .post(`/v2/order/${orderId}/forceWithdrawal`);
+    expect(response.status).toBe(201);
+
+    let forcedOrderDetails = await getOrderDetails(orderId);
+    expect(forcedOrderDetails.payment_status).toBe('pending');
+    expect(forcedOrderDetails.withdrawal_status).toBe('forced');
+  }, 50000);
 
   it.skip('should return 404 for non-existing order on force withdrawal', async () => {
     const nonExistingOrderId = 'nonExistingOrder123';

@@ -381,7 +381,7 @@ pub enum ForceWithdrawalError {
     InvalidParameter(String),
 
     #[error("withdrawal was failed: \"{0:?}\"")]
-    WithdrawalError(Box<OrderStatus>),
+    WithdrawalError(String),
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -1,3 +1,4 @@
+use crate::error::ForceWithdrawalError;
 use crate::{
     chain::ChainManager,
     database::{ConfigWoChains, Database},
@@ -153,10 +154,21 @@ impl State {
                                 }
                             }
                             StateAccessRequest::OrderWithdrawn(id) => {
-                                // Only perform actions if the record is saved in ledger
                                 match state.db.mark_withdrawn(id.clone()).await {
                                     Ok(order) => {
                                         tracing::info!("Order {id} successfully marked as withdrawn");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Order was withdrawn but this could not be recorded! {e:?}"
+                                        )
+                                    }
+                                }
+                            }
+                            StateAccessRequest::ForceWithdrawal(id) => {
+                                match state.db.mark_forced(id.clone()).await {
+                                    Ok(order) => {
+                                        tracing::info!("Order {id} successfully marked as force withdrawn");
                                     }
                                     Err(e) => {
                                         tracing::error!(
@@ -295,11 +307,19 @@ impl State {
         };
     }
 
-    #[allow(dead_code)]
-    pub async fn force_withdrawal(&self, order: String) -> Result<OrderStatus, OrderStatus> {
-        todo!()
-    }
+    pub async fn force_withdrawal(
+        &self,
+        order: String,
+    ) -> Result<OrderResponse, ForceWithdrawalError> {
+        self.tx
+            .send(StateAccessRequest::ForceWithdrawal(order.clone()))
+            .await
+            .map_err(|_| ForceWithdrawalError::InvalidParameter(order.clone()))?;
 
+        self.order_status(&order)
+            .await
+            .map_err(|_| ForceWithdrawalError::InvalidParameter(order))
+    }
     pub fn interface(&self) -> Self {
         State {
             tx: self.tx.clone(),
@@ -319,6 +339,7 @@ enum StateAccessRequest {
     ServerHealth(oneshot::Sender<ServerHealth>),
     OrderPaid(String),
     OrderWithdrawn(String),
+    ForceWithdrawal(String),
 }
 
 struct GetInvoiceStatus {
