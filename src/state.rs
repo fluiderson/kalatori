@@ -166,14 +166,29 @@ impl State {
                                 }
                             }
                             StateAccessRequest::ForceWithdrawal(id) => {
-                                match state.db.mark_forced(id.clone()).await {
-                                    Ok(order) => {
-                                        tracing::info!("Order {id} successfully marked as force withdrawn");
+                                match state.db.read_order(id.clone()).await {
+                                    Ok(Some(order_info)) => {
+                                        match state.chain_manager.reap(id.clone(), order_info.clone(), state.recipient).await {
+                                            Ok(_) => {
+                                                match state.db.mark_forced(id.clone()).await {
+                                                    Ok(_) => {
+                                                        tracing::info!("Order {id} successfully marked as force withdrawn");
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!("Failed to mark order {id} as forced: {e:?}");
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Failed to initiate forced payout for order {id}: {e:?}");
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        tracing::error!("Order {id} not found in database");
                                     }
                                     Err(e) => {
-                                        tracing::error!(
-                                            "Order was withdrawn but this could not be recorded! {e:?}"
-                                        )
+                                        tracing::error!("Error reading order {id} from database: {e:?}");
                                     }
                                 }
                             }
@@ -316,9 +331,10 @@ impl State {
             .await
             .map_err(|_| ForceWithdrawalError::InvalidParameter(order.clone()))?;
 
-        self.order_status(&order)
-            .await
-            .map_err(|_| ForceWithdrawalError::InvalidParameter(order))
+        match self.order_status(&order).await {
+            Ok(order_status) => Ok(order_status),
+            Err(_) => Ok(OrderResponse::NotFound),
+        }
     }
     pub fn interface(&self) -> Self {
         State {

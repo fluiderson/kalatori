@@ -1,4 +1,4 @@
-name: Kalatori Tests
+name: Kalatori Test
 
 on:
   pull_request:
@@ -30,52 +30,28 @@ jobs:
       - name: Verify directory structure
         run: ls -R
 
-      - name: Install Rust stable toolchain
-        uses: actions-rs/toolchain@v1.0.7
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-
-      - name: Install cargo-nextest
-        uses: baptiste0928/cargo-install@v3
-        with:
-          crate: cargo-nextest
-          version: 0.9
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2.7.5
-
-      - name: Run Rust app in background with environment variables
+      - name: Install Docker using Docker's official script
         run: |
-          export KALATORI_HOST="127.0.0.1:16726"
-          export KALATORI_SEED="bottom drive obey lake curtain smoke basket hold race lonely fit walk"
-          export KALATORI_RECIPIENT="5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
-          export KALATORI_REMARK="test"
-          cargo build
-          nohup cargo r &
+          curl -fsSL https://get.docker.com -o get-docker.sh
+          sudo sh get-docker.sh
 
-      - name: Wait for Rust app to start
-        run: sleep 120
-        # Wait for the Rust app to start and then wait for the app to connect to RPC
+      - name: Install Docker Compose
+        run: |
+          sudo curl -L "https://github.com/docker/compose/releases/download/v2.3.3/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+          docker-compose --version
 
-      - name: Install Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '20'
+      - name: Build and Start Containers
+        working-directory: ./tests
+        run: |
+          docker-compose up -d --build chopsticks-polkadot chopsticks-statemint kalatori-rust-app
 
-      - name: Install Yarn package manager
-        run: npm install --global yarn
+      - name: Wait for Dependencies to Initialize
+        run: sleep 60
 
-      - name: Install dependencies
-        working-directory: ./tests/kalatori-api-test-suite
-        run: yarn install --network-timeout 100000
-
-      - name: Run tests
-        working-directory: ./tests/kalatori-api-test-suite
-        env:
-          DAEMON_HOST: 'http://127.0.0.1:16726'
-        run: yarn test
-
-#      - name: Run Rust tests
-#        run: cargo nextest run
+      - name: Run Tests and Capture Exit Code
+        working-directory: ./tests
+        run: |
+          docker-compose run tests || exit_code=$?
+          docker-compose down
+          exit ${exit_code:-0}

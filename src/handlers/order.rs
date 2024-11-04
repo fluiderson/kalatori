@@ -121,10 +121,8 @@ pub async fn process_force_withdrawal(
     state: State,
     order_id: String,
 ) -> Result<OrderResponse, ForceWithdrawalError> {
-    state
-        .force_withdrawal(order_id)
-        .await
-        .map_err(|e| ForceWithdrawalError::WithdrawalError(e.to_string()))
+    let response = state.force_withdrawal(order_id).await?;
+    Ok(response)
 }
 
 pub async fn force_withdrawal(
@@ -132,7 +130,8 @@ pub async fn force_withdrawal(
     Path(order_id): Path<String>,
 ) -> Response {
     match process_force_withdrawal(state, order_id).await {
-        Ok(a) => (StatusCode::CREATED, Json(a)).into_response(),
+        Ok(OrderResponse::FoundOrder(order_status)) => (StatusCode::CREATED, Json(order_status)).into_response(),
+        Ok(OrderResponse::NotFound) => (StatusCode::NOT_FOUND, "Order not found").into_response(),
         Err(ForceWithdrawalError::WithdrawalError(a)) => {
             (StatusCode::BAD_REQUEST, Json(a)).into_response()
         }
@@ -150,6 +149,11 @@ pub async fn force_withdrawal(
                 parameter,
                 message: "parameter's format is invalid".into(),
             }]),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response type for force withdrawal",
         )
             .into_response(),
     }

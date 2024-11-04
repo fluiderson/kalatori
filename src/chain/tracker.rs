@@ -47,7 +47,7 @@ pub fn start_chain_watch(
             let mut watched_accounts = HashMap::new();
             let mut shutdown = false;
             // TODO: random pick instead
-            for endpoint in chain.endpoints.iter().cycle() {
+            for endpoint in chain.endpoints.clone().iter().cycle() {
                 // not restarting chain if shutdown is in progress
                 if shutdown || cancellation_token.is_cancelled() {
                     break;
@@ -138,9 +138,7 @@ pub fn start_chain_watch(
                                                         tracing::warn!("account fetch error: {0:?}", e);
                                                     }
                                                 }
-                                            }
-
-                                            if invoice.death.0 >= now {
+                                            } else if invoice.death.0 >= now {
                                                 match invoice.check(&client, &watcher, &block).await {
                                                     Ok(paid) => {
                                                         if paid {
@@ -178,6 +176,17 @@ pub fn start_chain_watch(
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
                                     payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
                                     Ok(format!("Payout attempt for order {id} terminated"))
+                                });
+                            }
+                            ChainTrackerRequest::ForceReap(request) => {
+                                let id = request.id.clone();
+                                let rpc = endpoint.clone();
+                                let reap_state_handle = state.interface();
+                                let watcher_for_reaper = watcher.clone();
+                                let signer_for_reaper = signer.interface();
+                                task_tracker.clone().spawn(format!("Initiate forced payout for order {}", id.clone()), async move {
+                                    payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
+                                    Ok(format!("Forced payout attempt for order {id} terminated"))
                                 });
                             }
                             ChainTrackerRequest::Shutdown(res) => {

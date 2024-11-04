@@ -216,7 +216,7 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(response.status).toBe(404);
   });
 
-  it.skip('should create, repay, and automatically withdraw an order in DOT', async () => {
+  it('should create, repay, and automatically withdraw an order in DOT', async () => {
     const orderId = generateRandomOrderId();
     await createOrder(orderId, dotOrderData);
     const orderDetails = await getOrderDetails(orderId);
@@ -225,10 +225,13 @@ describe('Order Endpoint Blackbox Tests', () => {
 
     await transferFunds(orderDetails.currency.rpc_url, paymentAccount, dotOrderData.amount);
 
+    // lets wait for the changes to get propagated on chain and app to catch them
+    await new Promise(resolve => setTimeout(resolve, 35000));
+
     const repaidOrderDetails = await getOrderDetails(orderId);
     expect(repaidOrderDetails.payment_status).toBe('paid');
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
-  }, 50000);
+  }, 100000);
 
   it.skip('should create, repay, and automatically withdraw an order in USDC', async () => {
     const orderId = generateRandomOrderId();
@@ -244,10 +247,13 @@ describe('Order Endpoint Blackbox Tests', () => {
       orderDetails.currency.asset_id
     );
 
+    // lets wait for the changes to get propagated on chain and app to catch them
+    await new Promise(resolve => setTimeout(resolve, 15000));
+
     const repaidOrderDetails = await getOrderDetails(orderId);
     expect(repaidOrderDetails.payment_status).toBe('paid');
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
-  }, 30000);
+  }, 50000);
 
   it.skip('should not automatically withdraw an order until fully repaid', async () => {
     const orderId = generateRandomOrderId();
@@ -265,6 +271,9 @@ describe('Order Endpoint Blackbox Tests', () => {
       halfAmount,
       orderDetails.currency.asset_id
     );
+    // lets wait for the changes to get propagated on chain and app to catch them
+    await new Promise(resolve => setTimeout(resolve, 15000));
+
     let repaidOrderDetails = await getOrderDetails(orderId);
     expect(repaidOrderDetails.payment_status).toBe('pending');
     expect(repaidOrderDetails.withdrawal_status).toBe('waiting');
@@ -276,10 +285,14 @@ describe('Order Endpoint Blackbox Tests', () => {
       halfAmount,
       orderDetails.currency.asset_id
     );
+
+    // lets wait for the changes to get propagated on chain and app to catch them
+    await new Promise(resolve => setTimeout(resolve, 15000));
+
     repaidOrderDetails = await getOrderDetails(orderId);
     expect(repaidOrderDetails.payment_status).toBe('paid');
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
-  }, 30000);
+  }, 50000);
 
   it.skip('should not update order if received payment in wrong currency', async () => {
     const orderId = generateRandomOrderId();
@@ -296,12 +309,15 @@ describe('Order Endpoint Blackbox Tests', () => {
       assetId
     );
 
+    // lets wait for the changes to get propagated on chain and app to catch them
+    await new Promise(resolve => setTimeout(resolve, 15000));
+
     const repaidOrderDetails = await getOrderDetails(orderId);
     expect(repaidOrderDetails.payment_status).toBe('pending');
     expect(repaidOrderDetails.withdrawal_status).toBe('waiting');
-  }, 30000);
+  }, 50000);
 
-  it.skip('should be able to force withdraw partially repayed order', async () => {
+  it('should be able to force withdraw partially repayed order', async () => {
     const orderId = generateRandomOrderId();
     await createOrder(orderId, dotOrderData);
     const orderDetails = await getOrderDetails(orderId);
@@ -309,6 +325,9 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(paymentAccount).toBeDefined();
 
     await transferFunds(orderDetails.currency.rpc_url, paymentAccount, dotOrderData.amount/2);
+
+    // lets wait for the changes to get propagated on chain and app to catch them
+    await new Promise(resolve => setTimeout(resolve, 15000));
 
     const partiallyRepaidOrderDetails = await getOrderDetails(orderId);
     expect(partiallyRepaidOrderDetails.payment_status).toBe('pending');
@@ -321,9 +340,9 @@ describe('Order Endpoint Blackbox Tests', () => {
     let forcedOrderDetails = await getOrderDetails(orderId);
     expect(forcedOrderDetails.payment_status).toBe('pending');
     expect(forcedOrderDetails.withdrawal_status).toBe('forced');
-  }, 50000);
+  }, 100000);
 
-  it.skip('should return 404 for non-existing order on force withdrawal', async () => {
+  it('should return 404 for non-existing order on force withdrawal', async () => {
     const nonExistingOrderId = 'nonExistingOrder123';
     const response = await request(baseUrl)
       .post(`/v2/order/${nonExistingOrderId}/forceWithdrawal`);

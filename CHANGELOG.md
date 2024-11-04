@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2.6] - 2024-11-01
 
+### 🚀 Features
+
+- Force withdrawal call implementation
+- Docker container for the app
+- Containerized test environment
+
 ### 🐛 Bug Fixes
 
 - Fixed the storage fetching.

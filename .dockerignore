@@ -1,0 +1,11 @@
+.git
+.github
+.gitignore
+.idea
+
+chopsticks
+docs
+target
+tests
+
+Dockerfile

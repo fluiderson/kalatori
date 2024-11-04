@@ -43,15 +43,18 @@ pub async fn payout(
         let block_number = current_block_number(&client, &chain.metadata, &block).await?;
         let balance = order.balance(&client, &chain, &block).await?; // TODO same
         let loss_tolerance = 10000; // TODO: replace with multiple of existential
-        let manual_intervention_amount = 1000000000000;
+                                    // let manual_intervention_amount = 1000000000000;
         let currency = chain
             .assets
             .get(&order.currency)
             .ok_or(ChainError::InvalidCurrency(order.currency))?;
 
         // Payout operation logic
-        let transactions = match balance.0 - order.amount.0 {
-            a if (0..=loss_tolerance).contains(&a) => match currency.kind {
+        let transactions = if balance.0.abs_diff(order.amount.0) <= loss_tolerance
+        // modulus(balance-order.amount) <= loss_tolerance
+        {
+            tracing::info!("Regular withdrawal");
+            match currency.kind {
                 TokenKind::Native => {
                     let balance_transfer_constructor = BalanceTransferConstructor {
                         amount: order.amount.0,
@@ -74,40 +77,35 @@ pub async fn payout(
                         &asset_transfer_constructor,
                     )?]
                 }
-            },
-            a if (loss_tolerance..=manual_intervention_amount).contains(&a) => {
-                tracing::warn!("Overpayment, proceeding with available balance");
-                // We will transfer all the available balance
-                // TODO smarter handling and returns probably
-
-                match currency.kind {
-                    TokenKind::Native => {
-                        let balance_transfer_constructor = BalanceTransferConstructor {
-                            amount: balance.0,
-                            to_account: &order.recipient,
-                            is_clearing: true,
-                        };
-                        vec![construct_single_balance_transfer_call(
-                            &chain.metadata,
-                            &balance_transfer_constructor,
-                        )?]
-                    }
-                    TokenKind::Asset => {
-                        let asset_transfer_constructor = AssetTransferConstructor {
-                            asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
-                            amount: balance.0,
-                            to_account: &order.recipient,
-                        };
-                        vec![construct_single_asset_transfer_call(
-                            &chain.metadata,
-                            &asset_transfer_constructor,
-                        )?]
-                    }
-                }
             }
-            _ => {
-                tracing::error!("Balance is out of range: {balance:?}");
-                return Ok(()); //TODO
+        } else {
+            tracing::warn!("Overpayment or forced");
+            // We will transfer all the available balance
+            // TODO smarter handling and returns probably
+
+            match currency.kind {
+                TokenKind::Native => {
+                    let balance_transfer_constructor = BalanceTransferConstructor {
+                        amount: balance.0,
+                        to_account: &order.recipient,
+                        is_clearing: true,
+                    };
+                    vec![construct_single_balance_transfer_call(
+                        &chain.metadata,
+                        &balance_transfer_constructor,
+                    )?]
+                }
+                TokenKind::Asset => {
+                    let asset_transfer_constructor = AssetTransferConstructor {
+                        asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
+                        amount: balance.0,
+                        to_account: &order.recipient,
+                    };
+                    vec![construct_single_asset_transfer_call(
+                        &chain.metadata,
+                        &asset_transfer_constructor,
+                    )?]
+                }
             }
         };
 

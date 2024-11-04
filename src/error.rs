@@ -93,6 +93,12 @@ impl From<CryptoError> for SignerError {
     }
 }
 
+impl From<Error> for ChainError {
+    fn from(err: Error) -> Self {
+        ChainError::Util(UtilError::NotHex(NotHexError::BlockHash))
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SeedEnvError {
     #[error("one of the `{OLD_SEED}*` variables has an invalid Unicode key")]
