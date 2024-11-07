@@ -130,7 +130,9 @@ pub async fn force_withdrawal(
     Path(order_id): Path<String>,
 ) -> Response {
     match process_force_withdrawal(state, order_id).await {
-        Ok(OrderResponse::FoundOrder(order_status)) => (StatusCode::CREATED, Json(order_status)).into_response(),
+        Ok(OrderResponse::FoundOrder(order_status)) => {
+            (StatusCode::CREATED, Json(order_status)).into_response()
+        }
         Ok(OrderResponse::NotFound) => (StatusCode::NOT_FOUND, "Order not found").into_response(),
         Err(ForceWithdrawalError::WithdrawalError(a)) => {
             (StatusCode::BAD_REQUEST, Json(a)).into_response()

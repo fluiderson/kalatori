@@ -123,6 +123,10 @@ pub async fn get_keys_from_storage(
         params.push(serde_json::to_value(block.to_string()).unwrap());
         if let Ok(keys) = client.request("state_getKeysPaged", params).await {
             if let Value::Array(keys_inside) = &keys {
+                if keys_inside.is_empty() {
+                    return Ok(keys_vec);
+                }
+
                 if let Some(Value::String(key_string)) = keys_inside.last() {
                     start_key.clone_from(key_string);
                 } else {
@@ -130,7 +134,7 @@ pub async fn get_keys_from_storage(
                 }
             } else {
                 return Ok(keys_vec);
-            };
+            }
 
             keys_vec.push(keys);
         } else {
