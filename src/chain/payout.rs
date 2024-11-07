@@ -79,7 +79,7 @@ pub async fn payout(
                 }
             }
         } else {
-            tracing::warn!("Overpayment or forced");
+            tracing::info!("Overpayment or forced");
             // We will transfer all the available balance
             // TODO smarter handling and returns probably
 
