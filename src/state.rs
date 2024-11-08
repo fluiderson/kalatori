@@ -143,10 +143,10 @@ impl State {
                                     }
                                 }
                             }
-                            StateAccessRequest::SentTransaction { order, tx } => {
-                                if let Err(e) = state.db.record_transaction(order, tx).await {
+                            StateAccessRequest::RecordTransaction { order, tx: new_tx } => {
+                                if let Err(e) = state.db.record_transaction(order, new_tx).await {
                                     tracing::error!(
-                                        "Order was paid but this could not be recorded! {e:?}"
+                                        "Found a transaction related to an order, but this could not be recorded! {e:?}"
                                     )
                                 }
                             }
@@ -285,13 +285,13 @@ impl State {
         }
     }
 
-    pub async fn sent_transaction(
+    pub async fn record_transaction(
         &self,
         tx: TransactionInfoDb,
         order: String,
     ) -> Result<(), Error> {
         self.tx
-            .send(StateAccessRequest::SentTransaction { order, tx })
+            .send(StateAccessRequest::RecordTransaction { order, tx })
             .await
             .map_err(|_| Error::Fatal)
     }
@@ -308,7 +308,7 @@ enum StateAccessRequest {
     ServerStatus(oneshot::Sender<ServerStatus>),
     ServerHealth(oneshot::Sender<ServerHealth>),
     OrderPaid(String),
-    SentTransaction {
+    RecordTransaction {
         order: String,
         tx: TransactionInfoDb,
     },

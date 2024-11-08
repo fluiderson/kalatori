@@ -16,7 +16,7 @@ use crate::{
             BalanceTransferConstructor,
         },
     },
-    database::{TransactionInfoDb, TxKind},
+    database::{TransactionInfoDb, TransactionInfoDbInner, TxKind},
     definitions::{
         api_v2::{Amount, TokenKind, TransactionInfo, TxStatus},
         Balance,
@@ -119,18 +119,19 @@ pub async fn payout(
         let encoded_extrinsic = const_hex::encode_prefixed(extrinsic);
 
         state
-            .sent_transaction(
+            .record_transaction(
                 TransactionInfoDb {
-                    inner: TransactionInfo {
+                    transaction_bytes: encoded_extrinsic.clone(),
+                    inner: TransactionInfoDbInner {
+                        finalized_tx_timestamp: None,
                         finalized_tx: None,
-                        transaction_bytes: encoded_extrinsic.clone(),
                         sender: signer.public(order.id.clone(), 42).await?,
                         recipient: order.recipient.to_base58_string(42),
                         amount: Amount::Exact(order.amount),
                         currency: order.currency,
                         status: TxStatus::Pending,
+                        kind: TxKind::Withdrawal,
                     },
-                    kind: TxKind::Withdrawal,
                 },
                 order.id,
             )

@@ -4,7 +4,9 @@
 //! commercial offers and contracts, hence causality is a must. Care must be taken that no threads
 //! are spawned here other than main database server thread that does everything in series.
 
-use crate::definitions::api_v2::{ServerInfo, TransactionInfo, TxStatus};
+use crate::definitions::api_v2::{
+    Amount, BlockNumber, ExtrinsicIndex, FinalizedTx, ServerInfo, TransactionInfo, TxStatus,
+};
 use crate::{
     definitions::{
         api_v2::{
@@ -39,6 +41,7 @@ const ACCOUNTS: &str = "accounts";
 //type ACCOUNTS_KEY = (Option<AssetId>, Account);
 //type ACCOUNTS_VALUE = InvoiceKey;
 
+const PENDING_TRANSACTIONS: &str = "pending_transactions";
 const TRANSACTIONS: &str = "transactions";
 
 //type TRANSACTIONS_KEY = BlockNumber;
@@ -199,6 +202,9 @@ impl Database {
         let transactions = database
             .open_tree(TRANSACTIONS)
             .map_err(DbError::DbStartError)?;
+        let pending_transactions = database
+            .open_tree(PENDING_TRANSACTIONS)
+            .map_err(DbError::DbStartError)?;
 
         task_tracker.spawn("Database server", async move {
             // No process forking beyond this point!
@@ -229,10 +235,12 @@ impl Database {
                         ));
                     }
                     DbRequest::ReadOrder(request) => {
-                        let _unused =
-                            request
-                                .res
-                                .send(read_order(&request.order, &orders, &transactions));
+                        let _unused = request.res.send(read_order(
+                            &request.order,
+                            &orders,
+                            &transactions,
+                            &pending_transactions,
+                        ));
                     }
                     DbRequest::MarkPaid(request) => {
                         let _unused = request.res.send(mark_paid(request.order, &orders));
@@ -244,7 +252,12 @@ impl Database {
                         let _unused = request.res.send(mark_stuck(request.order, &orders));
                     }
                     DbRequest::RecordTransaction { order, tx, res } => {
-                        let _unused = res.send(record_transaction(&transactions, order, &tx));
+                        let _unused = res.send(record_transaction(
+                            &transactions,
+                            &pending_transactions,
+                            order,
+                            tx,
+                        ));
                     }
                     DbRequest::InitializeServerInfo(res) => {
                         let server_info_tree = database
@@ -466,21 +479,54 @@ fn create_order(
     })
 }
 
-fn read_order(key: &str, orders: &Tree, tx_table: &Tree) -> Result<Option<OrderInfo>, DbError> {
+fn read_order(
+    key: &str,
+    orders: &Tree,
+    tx_table: &Tree,
+    pending_tx_table: &Tree,
+) -> Result<Option<OrderInfo>, DbError> {
     let Some(order_encoded) = orders.get(key)? else {
         return Ok(None);
     };
+    let encoded_key = key.encode();
 
     let mut order = OrderInfo::decode(&mut &order_encoded[..])?;
     let transactions = tx_table
-        .scan_prefix(key.encode())
+        .scan_prefix(&encoded_key)
         .map(|result| {
-            result.map_err(DbError::from).and_then(|(_, v)| {
+            result.map_err(DbError::from).and_then(|(k, v)| {
+                let (_order_key, block_number, position_in_block) =
+                    <(String, BlockNumber, ExtrinsicIndex)>::decode(&mut k.as_ref())?;
+
                 TransactionInfoDb::decode(&mut v.as_ref())
-                    .map(|tx| tx.inner)
+                    .map(|mut tx| {
+                        tx.inner.finalized_tx = Some(FinalizedTxDb {
+                            block_number,
+                            position_in_block,
+                        });
+
+                        TransactionInfo::from(tx)
+                    })
                     .map_err(Into::into)
             })
         })
+        .chain(pending_tx_table.scan_prefix(encoded_key).map(|result| {
+            result.map_err(DbError::from).and_then(|(k, v)| {
+                let (_order_key, transaction_bytes) = <(String, String)>::decode(&mut k.as_ref())?;
+
+                TransactionInfoDbInner::decode(&mut v.as_ref())
+                    .map(|tx| TransactionInfo {
+                        finalized_tx: None,
+                        transaction_bytes,
+                        sender: tx.sender,
+                        recipient: tx.recipient,
+                        amount: tx.amount,
+                        currency: tx.currency,
+                        status: tx.status,
+                    })
+                    .map_err(Into::into)
+            })
+        }))
         .collect::<Result<Vec<_>, _>>()?;
 
     order.transactions = transactions;
@@ -490,25 +536,51 @@ fn read_order(key: &str, orders: &Tree, tx_table: &Tree) -> Result<Option<OrderI
 
 fn record_transaction(
     tx_table: &Tree,
+    pending_tx_table: &Tree,
     order: String,
-    tx: &TransactionInfoDb,
+    mut tx: TransactionInfoDb,
 ) -> Result<(), DbError> {
-    let (encoded_k, _) = tx_table
-        .scan_prefix(order.encode())
-        .next_back()
-        .ok_or_else(|| DbError::OrderNotFound(order.clone()))??;
-    let (_, last_tx_index) = <(String, u64)>::decode(&mut encoded_k.as_ref())?;
+    let pending_tx_key = (order.clone(), tx.transaction_bytes.clone()).encode();
+    let finalized_info = tx
+        .inner
+        .finalized_tx
+        .take()
+        .zip(tx.inner.finalized_tx_timestamp.as_ref());
 
-    tx_table.insert(
-        (
-            order,
-            last_tx_index
-                .checked_add(1)
-                .expect("storing more than `u64::MAX` transactions per order isn't supported"),
-        )
-            .encode(),
-        tx.encode(),
-    )?;
+    // Search the given transaction among pending ones and update it or move it to finalized
+    // transactions.
+    if let Some(_encoded_tx_inner) = pending_tx_table.get(&pending_tx_key)? {
+        if let Some((finalized_tx, _finalized_tx_timestamp)) = finalized_info {
+            pending_tx_table.remove(pending_tx_key)?;
+
+            tx_table.insert(
+                (
+                    order,
+                    finalized_tx.block_number,
+                    finalized_tx.position_in_block,
+                )
+                    .encode(),
+                tx.encode(),
+            )?;
+        } else {
+            pending_tx_table.insert(pending_tx_key, tx.inner.encode())?;
+        }
+    // Save the given finalized transaction.
+    } else if let Some((finalized_tx, _finalized_tx_timestamp)) = finalized_info {
+        tx_table.insert(
+            (
+                order,
+                finalized_tx.block_number,
+                finalized_tx.position_in_block,
+            )
+                .encode(),
+            tx.encode(),
+        )?;
+
+    // Save the pending transaction.
+    } else {
+        pending_tx_table.insert(pending_tx_key, tx.inner.encode())?;
+    }
 
     Ok(())
 }
@@ -528,6 +600,7 @@ fn mark_paid(order: String, orders: &Tree) -> Result<OrderInfo, DbError> {
         Err(DbError::OrderNotFound(order))
     }
 }
+
 fn mark_withdrawn(order: String, orders: &Tree) -> Result<(), DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
@@ -546,6 +619,7 @@ fn mark_withdrawn(order: String, orders: &Tree) -> Result<(), DbError> {
         Err(DbError::OrderNotFound(order))
     }
 }
+
 fn mark_stuck(order: String, orders: &Tree) -> Result<(), DbError> {
     if let Some(order_info) = orders.get(order.clone())? {
         let mut order_info = OrderInfo::decode(&mut &order_info[..])?;
@@ -566,15 +640,58 @@ fn mark_stuck(order: String, orders: &Tree) -> Result<(), DbError> {
 }
 
 #[derive(Encode, Decode)]
-pub struct TransactionInfoDb {
-    pub inner: TransactionInfo,
+pub struct TransactionInfoDbInner {
+    pub finalized_tx: Option<FinalizedTxDb>,
+    pub finalized_tx_timestamp: Option<String>,
+    pub sender: String,
+    pub recipient: String,
+    pub amount: Amount,
+    pub currency: CurrencyInfo,
+    pub status: TxStatus,
     pub kind: TxKind,
+}
+
+#[derive(Encode, Decode)]
+pub struct TransactionInfoDb {
+    pub transaction_bytes: String,
+    pub inner: TransactionInfoDbInner,
 }
 
 #[derive(Encode, Decode)]
 pub enum TxKind {
     Payment,
     Withdrawal,
+}
+
+#[derive(Encode, Decode)]
+pub struct FinalizedTxDb {
+    pub block_number: BlockNumber,
+    pub position_in_block: ExtrinsicIndex,
+}
+
+impl From<TransactionInfoDb> for TransactionInfo {
+    fn from(value: TransactionInfoDb) -> Self {
+        let finalized_tx = value.inner.finalized_tx.and_then(|tx| {
+            value
+                .inner
+                .finalized_tx_timestamp
+                .map(|timestamp| FinalizedTx {
+                    block_number: tx.block_number,
+                    position_in_block: tx.position_in_block,
+                    timestamp,
+                })
+        });
+
+        Self {
+            finalized_tx,
+            transaction_bytes: value.transaction_bytes,
+            sender: value.inner.sender,
+            recipient: value.inner.recipient,
+            amount: value.inner.amount,
+            currency: value.inner.currency,
+            status: value.inner.status,
+        }
+    }
 }
 
 //impl StateInterface {

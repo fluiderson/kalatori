@@ -6,7 +6,7 @@ use crate::{
         tracker::ChainWatcher,
     },
     definitions::{
-        api_v2::{CurrencyInfo, Decimals, OrderInfo, RpcInfo, Timestamp},
+        api_v2::{BlockNumber, CurrencyInfo, Decimals, OrderInfo, RpcInfo, Timestamp},
         Balance,
     },
     error::{ChainError, NotHexError},
@@ -125,7 +125,7 @@ impl WatchAccount {
 
 pub enum ChainTrackerRequest {
     WatchAccount(WatchAccount),
-    NewBlock(String),
+    NewBlock(BlockNumber),
     Reap(WatchAccount),
     Shutdown(oneshot::Sender<()>),
 }

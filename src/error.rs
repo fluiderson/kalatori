@@ -298,6 +298,9 @@ pub enum ChainError {
 
     #[error("timestamp wasn't found in the block")]
     TimestampNotFoundForBlock,
+
+    #[error("transfer event has no matching extrinsic")]
+    TransferEventNoExtrinsic,
 }
 
 #[derive(Debug, Error)]

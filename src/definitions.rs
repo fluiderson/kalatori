@@ -85,7 +85,7 @@ pub mod api_v2 {
     pub const CURRENCY: &str = "currency";
     pub type AssetId = u32;
     pub type Decimals = u8;
-    pub type BlockNumber = u64;
+    pub type BlockNumber = u32;
     pub type ExtrinsicIndex = u32;
 
     #[derive(Encode, Decode, Debug, Clone, Copy, Serialize, Deserialize)]
@@ -291,9 +291,9 @@ pub mod api_v2 {
 
     #[derive(Clone, Debug, Serialize, Decode, Encode)]
     pub struct FinalizedTx {
-        block_number: BlockNumber,
-        position_in_block: ExtrinsicIndex,
-        timestamp: String,
+        pub block_number: BlockNumber,
+        pub position_in_block: ExtrinsicIndex,
+        pub timestamp: String,
     }
 
     #[derive(Clone, Debug, Decode, Encode)]

@@ -30,7 +30,7 @@ scale-info = "2"
 axum-macros = "0.4"
 primitive-types = { version = "0.12", features = ["codec"] }
 jsonrpsee = { version = "0.24", features = ["ws-client"] }
-thiserror = "1"
+thiserror = "2"
 frame-metadata = "16"
 const-hex = "1"
 codec = { package = "parity-scale-codec", version = "3", features = [
@@ -59,6 +59,7 @@ shadow-rs = { version = "0.35", default-features = false }
 ahash = "0.8"
 indoc = "2"
 async-lock = "3"
+time = "0.3"
 
 substrate_parser = { git = "https://github.com/Alzymologist/substrate-parser" }
 substrate-constructor = { git = "https://github.com/Alzymologist/substrate-constructor" }
@@ -68,6 +69,9 @@ substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-cryp
 [build-dependencies]
 # Don't forget to update me in `[dependencies]`!
 shadow-rs = { version = "0.35", default-features = false }
+
+[patch."https://github.com/Alzymologist/substrate-crypto-light"]
+substrate-crypto-light = { path = "../substrate-crypto-light" }
 
 [profile.release]
 strip = true

@@ -9,7 +9,7 @@ use crate::{
         },
     },
     definitions::{
-        api_v2::{AssetId, CurrencyProperties, ExtrinsicIndex, TokenKind},
+        api_v2::{AssetId, BlockNumber, CurrencyProperties, ExtrinsicIndex, Timestamp, TokenKind},
         Balance,
     },
     error::{ChainError, NotHexError},
@@ -165,7 +165,7 @@ pub async fn genesis_hash(client: &WsClient) -> Result<BlockHash, ChainError> {
 /// the same block
 pub async fn block_hash(
     client: &WsClient,
-    number: Option<String>,
+    number: Option<BlockNumber>,
 ) -> Result<BlockHash, ChainError> {
     let rpc_params = if let Some(a) = number {
         rpc_params![a]
@@ -238,7 +238,9 @@ pub async fn specs(
     }
 }
 
-pub async fn next_block_number(blocks: &mut Subscription<BlockHead>) -> Result<String, ChainError> {
+pub async fn next_block_number(
+    blocks: &mut Subscription<BlockHead>,
+) -> Result<BlockNumber, ChainError> {
     match blocks.next().await {
         Some(Ok(a)) => Ok(a.number),
         Some(Err(e)) => Err(e.into()),
@@ -258,7 +260,7 @@ pub async fn next_block(
 pub struct BlockHead {
     //digest: Value,
     //extrinsics_root: String,
-    pub number: String,
+    pub number: BlockNumber,
     //parent_hash: String,
     //state_root: String,
 }
@@ -643,7 +645,7 @@ pub async fn transfer_events(
     client: &WsClient,
     block: &BlockHash,
     metadata_v15: &RuntimeMetadataV15,
-) -> Result<Vec<(Option<Vec<u8>>, Event)>, ChainError> {
+) -> Result<(Timestamp, Vec<(Option<(ExtrinsicIndex, Vec<u8>)>, Event)>), ChainError> {
     let events_entry_metadata = events_entry_metadata(metadata_v15)?;
     let events = events_at_block(
         client,
@@ -665,7 +667,7 @@ async fn match_extrinsics_with_events_at_block(
     client: &WsClient,
     block_hash: &BlockHash,
     metadata_v15: &RuntimeMetadataV15,
-) -> Result<Vec<(Option<Vec<u8>>, Event)>, ChainError> {
+) -> Result<(Timestamp, Vec<(Option<(ExtrinsicIndex, Vec<u8>)>, Event)>), ChainError> {
     let block: Block = client
         .request("chain_getBlock", rpc_params!(block_hash.to_string()))
         .await?;
@@ -674,49 +676,61 @@ async fn match_extrinsics_with_events_at_block(
         .into_iter()
         .map(|encoded| unhex(&encoded, NotHexError::Extrinsic))
         .collect::<Result<Vec<_>, _>>()?;
-    let timestamp = extrinsics.iter().find_map(|encoded| {
-        if let UncheckedExtrinsic::Unsigned {
-            call:
-                Call(PalletSpecificData {
-                    pallet_name,
-                    variant_name,
-                    fields,
-                    ..
-                }),
-        } = substrate_parser::decode_as_unchecked_extrinsic(
-            &encoded.as_ref(),
-            &mut (),
-            metadata_v15,
-        )
-        .expect("RAM stored metadata access")
-        {
-            if pallet_name == "Timestamp" && variant_name == "set" {
-                if let Some(FieldData {
-                    data:
-                        ExtendedData {
-                            data: ParsedData::PrimitiveU64 { value, .. },
-                            ..
-                        },
-                    ..
-                }) = fields.into_iter().next()
-                {
-                    return Some(value);
+    let timestamp = extrinsics
+        .iter()
+        .find_map(|encoded| {
+            if let UncheckedExtrinsic::Unsigned {
+                call:
+                    Call(PalletSpecificData {
+                        pallet_name,
+                        variant_name,
+                        fields,
+                        ..
+                    }),
+            } = substrate_parser::decode_as_unchecked_extrinsic(
+                &encoded.as_ref(),
+                &mut (),
+                metadata_v15,
+            )
+            .expect("RAM stored metadata access")
+            {
+                if pallet_name == "Timestamp" && variant_name == "set" {
+                    if let Some(FieldData {
+                        data:
+                            ExtendedData {
+                                data: ParsedData::PrimitiveU64 { value, .. },
+                                ..
+                            },
+                        ..
+                    }) = fields.into_iter().next()
+                    {
+                        return Some(Timestamp(value));
+                    }
                 }
             }
-        }
 
-        None
-    }).ok_or(ChainError::TimestampNotFoundForBlock)?;
-
-    events
-        .into_iter()
-        .map(|(extrinsic, event)| {
-            let extrinsic_option = extrinsic
-                .and_then(|index| extrinsics.get::<usize>(index.try_into().unwrap()).cloned());
-
-            Ok((extrinsic_option, event))
+            None
         })
-        .collect()
+        .ok_or(ChainError::TimestampNotFoundForBlock)?;
+
+    Ok((
+        timestamp,
+        events
+            .into_iter()
+            .map(|(extrinsic, event)| {
+                let extrinsic_option = extrinsic.and_then(|index| {
+                    let index_usize = index.try_into().unwrap();
+
+                    extrinsics
+                        .get::<usize>(index_usize)
+                        .cloned()
+                        .map(|bytes| (index, bytes))
+                });
+
+                (extrinsic_option, event)
+            })
+            .collect(),
+    ))
 }
 
 async fn events_at_block(

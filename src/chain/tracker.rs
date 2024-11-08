@@ -4,14 +4,15 @@ use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use serde_json::Value;
 use std::{collections::HashMap, time::SystemTime};
+use substrate_crypto_light::common::AsBase58;
 use substrate_parser::{AsMetadata, ShortSpecs};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::{
     sync::mpsc,
     time::{timeout, Duration},
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::definitions::api_v2::{Health, RpcInfo};
 use crate::{
     chain::{
         definitions::{BlockHash, ChainTrackerRequest, Invoice},
@@ -20,13 +21,21 @@ use crate::{
             assets_set_at_block, block_hash, genesis_hash, metadata, next_block, next_block_number,
             runtime_version_identifier, specs, subscribe_blocks, transfer_events,
         },
-        utils::was_balance_received_at_account,
+        utils::parse_transfer_event,
     },
-    definitions::{api_v2::CurrencyProperties, Chain},
-    error::ChainError,
+    database::{FinalizedTxDb, TransactionInfoDb, TransactionInfoDbInner},
+    definitions::{
+        api_v2::{Amount, CurrencyProperties, TxStatus},
+        Balance, Chain,
+    },
+    error::{ChainError, Error},
     signer::Signer,
     state::State,
     utils::task_tracker::TaskTracker,
+};
+use crate::{
+    database::TxKind,
+    definitions::api_v2::{Health, RpcInfo},
 };
 
 #[allow(clippy::too_many_lines)]
@@ -95,9 +104,9 @@ pub fn start_chain_watch(
                         timeout(Duration::from_millis(watchdog), chain_rx.recv()).await
                     {
                         match request {
-                            ChainTrackerRequest::NewBlock(block) => {
+                            ChainTrackerRequest::NewBlock(block_number) => {
                                 // TODO: hide this under rpc module
-                                let block = match block_hash(&client, Some(block)).await {
+                                let block = match block_hash(&client, Some(block_number)).await {
                                     Ok(a) => a,
                                     Err(e) => {
                                         tracing::info!(
@@ -122,20 +131,73 @@ pub fn start_chain_watch(
                                     &watcher.metadata,
                                 )
                                     .await {
-                                        Ok(events) => {
+                                        Ok((timestamp, events)) => {
                                         let mut id_remove_list = Vec::new();
                                         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
 
                                         for (id, invoice) in &watched_accounts {
-                                            if events.iter().any(|(extrinsic_option, event)| was_balance_received_at_account(&invoice.address, &event.0.fields)) {
-                                                match invoice.check(&client, &watcher, &block).await {
-                                                    Ok(true) => {
-                                                        state.order_paid(id.clone()).await;
-                                                        id_remove_list.push(id.to_owned());
-                                                    }
-                                                    Ok(false) => (),
-                                                    Err(e) => {
-                                                        tracing::warn!("account fetch error: {0:?}", e);
+                                            for (extrinsic_option, event) in &events {
+                                                if let Some((tx_kind, another_account, transfer_amount)) = parse_transfer_event(&invoice.address, &event.0.fields) {
+                                                    let Some((position_in_block, extrinsic)) = extrinsic_option else {
+                                                        return Err(Error::from(ChainError::TransferEventNoExtrinsic));
+                                                    };
+
+                                                    match tx_kind {
+                                                        kind @ TxKind::Payment => {
+                                                            match invoice.check(&client, &watcher, &block).await {
+                                                                Ok(true) => {
+                                                                    state.order_paid(id.clone()).await;
+                                                                    id_remove_list.push(id.to_owned());
+                                                                }
+                                                                Ok(false) => {}
+                                                                Err(e) => {
+                                                                    tracing::warn!("account fetch error: {0:?}", e);
+                                                                }
+                                                            }
+
+                                                            state.record_transaction(
+                                                                TransactionInfoDb {
+                                                                    transaction_bytes: const_hex::encode_prefixed(extrinsic),
+                                                                    inner: TransactionInfoDbInner {
+                                                                        finalized_tx: Some(FinalizedTxDb {
+                                                                            block_number,
+                                                                            position_in_block: *position_in_block
+                                                                        }),
+                                                                        finalized_tx_timestamp: Some(
+                                                                            (OffsetDateTime::UNIX_EPOCH + Duration::from_millis(timestamp.0))
+                                                                                .format(&Rfc3339).unwrap()
+                                                                        ),
+                                                                        sender: another_account.to_base58_string(42),
+                                                                        recipient: invoice.address.to_base58_string(42),
+                                                                        amount: Amount::Exact(transfer_amount.format(invoice.currency.decimals)),
+                                                                        currency: invoice.currency.clone(),
+                                                                        status: TxStatus::Finalized,
+                                                                        kind,
+                                                                    } },
+                                                                    id.clone()).await?;
+                                                        }
+                                                        kind @ TxKind::Withdrawal => {
+                                                            state.record_transaction(
+                                                                TransactionInfoDb {
+                                                                    transaction_bytes: const_hex::encode_prefixed(extrinsic),
+                                                                    inner: TransactionInfoDbInner {
+                                                                        finalized_tx: Some(FinalizedTxDb {
+                                                                            block_number,
+                                                                            position_in_block: *position_in_block
+                                                                        }),
+                                                                        finalized_tx_timestamp: Some(
+                                                                            (OffsetDateTime::UNIX_EPOCH + Duration::from_millis(timestamp.0))
+                                                                                .format(&Rfc3339).unwrap()
+                                                                        ),
+                                                                        sender: invoice.address.to_base58_string(42),
+                                                                        recipient: another_account.to_base58_string(42),
+                                                                        amount: Amount::Exact(transfer_amount.format(invoice.currency.decimals)),
+                                                                        currency: invoice.currency.clone(),
+                                                                        status: TxStatus::Finalized,
+                                                                        kind,
+                                                                    } },
+                                                                    id.clone()).await?;
+                                                        }
                                                     }
                                                 }
                                             }
