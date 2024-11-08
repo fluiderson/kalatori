@@ -1,3 +1,4 @@
+use crate::error::ForceWithdrawalError;
 use crate::{
     chain::ChainManager,
     database::{ConfigWoChains, Database},
@@ -153,7 +154,6 @@ impl State {
                                 }
                             }
                             StateAccessRequest::OrderWithdrawn(id) => {
-                                // Only perform actions if the record is saved in ledger
                                 match state.db.mark_withdrawn(id.clone()).await {
                                     Ok(order) => {
                                         tracing::info!("Order {id} successfully marked as withdrawn");
@@ -162,6 +162,33 @@ impl State {
                                         tracing::error!(
                                             "Order was withdrawn but this could not be recorded! {e:?}"
                                         )
+                                    }
+                                }
+                            }
+                            StateAccessRequest::ForceWithdrawal(id) => {
+                                match state.db.read_order(id.clone()).await {
+                                    Ok(Some(order_info)) => {
+                                        match state.chain_manager.reap(id.clone(), order_info.clone(), state.recipient).await {
+                                            Ok(_) => {
+                                                match state.db.mark_forced(id.clone()).await {
+                                                    Ok(_) => {
+                                                        tracing::info!("Order {id} successfully marked as force withdrawn");
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!("Failed to mark order {id} as forced: {e:?}");
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Failed to initiate forced payout for order {id}: {e:?}");
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        tracing::error!("Order {id} not found in database");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Error reading order {id} from database: {e:?}");
                                     }
                                 }
                             }
@@ -295,11 +322,20 @@ impl State {
         };
     }
 
-    #[allow(dead_code)]
-    pub async fn force_withdrawal(&self, order: String) -> Result<OrderStatus, OrderStatus> {
-        todo!()
-    }
+    pub async fn force_withdrawal(
+        &self,
+        order: String,
+    ) -> Result<OrderResponse, ForceWithdrawalError> {
+        self.tx
+            .send(StateAccessRequest::ForceWithdrawal(order.clone()))
+            .await
+            .map_err(|_| ForceWithdrawalError::InvalidParameter(order.clone()))?;
 
+        match self.order_status(&order).await {
+            Ok(order_status) => Ok(order_status),
+            Err(_) => Ok(OrderResponse::NotFound),
+        }
+    }
     pub fn interface(&self) -> Self {
         State {
             tx: self.tx.clone(),
@@ -319,6 +355,7 @@ enum StateAccessRequest {
     ServerHealth(oneshot::Sender<ServerHealth>),
     OrderPaid(String),
     OrderWithdrawn(String),
+    ForceWithdrawal(String),
 }
 
 struct GetInvoiceStatus {

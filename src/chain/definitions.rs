@@ -19,7 +19,7 @@ use tokio::sync::oneshot;
 
 /// Abstraction to distinguish block hash from many other H256 things
 #[derive(Debug, Clone)]
-pub struct BlockHash(pub primitive_types::H256);
+pub struct BlockHash(pub H256);
 
 impl BlockHash {
     /// Convert block hash to RPC-friendly format
@@ -45,45 +45,7 @@ pub struct EventFilter<'a> {
     pub pallet: &'a str,
     pub optional_event_variant: Option<&'a str>,
 }
-/*
-#[derive(Debug)]
-struct ChainProperties {
-    specs: ShortSpecs,
-    metadata: RuntimeMetadataV15,
-    existential_deposit: Option<Balance>,
-    assets_pallet: Option<AssetsPallet>,
-    block_hash_count: BlockNumber,
-    account_lifetime: BlockNumber,
-    depth: Option<NonZeroU64>,
-}
 
-#[derive(Debug)]
-struct AssetsPallet {
-    multi_location: Option<PalletIndex>,
-    assets: HashMap<AssetId, AssetProperties>,
-}
-
-#[derive(Debug)]
-struct AssetProperties {
-    min_balance: Balance,
-    decimals: Decimals,
-}
-
-#[derive(Debug)]
-pub struct Currency {
-    chain: String,
-    asset: Option<AssetId>,
-}
-
-#[derive(Debug)]
-pub struct ConnectedChain {
-    rpc: String,
-    client: WsClient,
-    genesis: BlockHash,
-    properties: ChainProperties,
-}
-
-*/
 pub enum ChainRequest {
     WatchAccount(WatchAccount),
     Reap(WatchAccount),
@@ -127,6 +89,7 @@ pub enum ChainTrackerRequest {
     WatchAccount(WatchAccount),
     NewBlock(String),
     Reap(WatchAccount),
+    ForceReap(WatchAccount),
     Shutdown(oneshot::Sender<()>),
 }
 

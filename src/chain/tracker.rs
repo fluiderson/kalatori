@@ -11,7 +11,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::definitions::api_v2::{Health, RpcInfo};
+use crate::definitions::api_v2::{Health, RpcInfo, TokenKind};
 use crate::{
     chain::{
         definitions::{BlockHash, ChainTrackerRequest, Invoice},
@@ -47,7 +47,7 @@ pub fn start_chain_watch(
             let mut watched_accounts = HashMap::new();
             let mut shutdown = false;
             // TODO: random pick instead
-            for endpoint in chain.endpoints.iter().cycle() {
+            for endpoint in chain.endpoints.clone().iter().cycle() {
                 // not restarting chain if shutdown is in progress
                 if shutdown || cancellation_token.is_cancelled() {
                     break;
@@ -138,9 +138,7 @@ pub fn start_chain_watch(
                                                         tracing::warn!("account fetch error: {0:?}", e);
                                                     }
                                                 }
-                                            }
-
-                                            if invoice.death.0 >= now {
+                                            } else if invoice.death.0 >= now {
                                                 match invoice.check(&client, &watcher, &block).await {
                                                     Ok(paid) => {
                                                         if paid {
@@ -180,6 +178,17 @@ pub fn start_chain_watch(
                                     Ok(format!("Payout attempt for order {id} terminated"))
                                 });
                             }
+                            ChainTrackerRequest::ForceReap(request) => {
+                                let id = request.id.clone();
+                                let rpc = endpoint.clone();
+                                let reap_state_handle = state.interface();
+                                let watcher_for_reaper = watcher.clone();
+                                let signer_for_reaper = signer.interface();
+                                task_tracker.clone().spawn(format!("Initiate forced payout for order {}", id.clone()), async move {
+                                    payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
+                                    Ok(format!("Forced payout attempt for order {id} terminated"))
+                                });
+                            }
                             ChainTrackerRequest::Shutdown(res) => {
                                 shutdown = true;
                                 let _ = res.send(());
@@ -209,6 +218,7 @@ pub struct ChainWatcher {
 }
 
 impl ChainWatcher {
+    #[expect(clippy::too_many_lines)]
     pub async fn prepare_chain(
         client: &WsClient,
         chain: Chain,
@@ -218,11 +228,11 @@ impl ChainWatcher {
         state: State,
         task_tracker: TaskTracker,
     ) -> Result<Self, ChainError> {
-        let genesis_hash = genesis_hash(&client).await?;
-        let mut blocks = subscribe_blocks(&client).await?;
+        let genesis_hash = genesis_hash(client).await?;
+        let mut blocks = subscribe_blocks(client).await?;
         let block = next_block(client, &mut blocks).await?;
         let version = runtime_version_identifier(client, &block).await?;
-        let metadata = metadata(&client, &block).await?;
+        let metadata = metadata(client, &block).await?;
         let name = <RuntimeMetadataV15 as AsMetadata<()>>::spec_name_version(&metadata)?.spec_name;
         if name != chain.name {
             return Err(ChainError::WrongNetwork {
@@ -230,10 +240,10 @@ impl ChainWatcher {
                 actual: name,
                 rpc: rpc_url.to_string(),
             });
-        };
-        let specs = specs(&client, &metadata, &block).await?;
+        }
+        let specs = specs(client, &metadata, &block).await?;
         let mut assets =
-            assets_set_at_block(&client, &block, &metadata, rpc_url, specs.clone()).await?;
+            assets_set_at_block(client, &block, &metadata, rpc_url, specs.clone()).await?;
 
         // TODO: make this verbosity less annoying
         tracing::info!(
@@ -243,22 +253,39 @@ impl ChainWatcher {
             &chain.asset
         );
         // Remove unwanted assets
-        assets.retain(|name, properties| {
+        assets.retain(|asset_name, properties| {
             tracing::info!(
                 "chain {} has token {} with properties {:?}",
                 &chain.name,
-                &name,
-                &properties
+                asset_name,
+                properties
             );
-            if let Some(native_token) = &chain.native_token {
-                (native_token.name == *name) && (native_token.decimals == specs.decimals)
+
+            if let Some(ref native_token) = chain.native_token {
+                (native_token.name == *asset_name) && (native_token.decimals == specs.decimals)
             } else {
                 chain
                     .asset
                     .iter()
-                    .any(|a| (a.name == *name) && (Some(a.id) == properties.asset_id))
+                    .any(|a| a.name == *asset_name && Some(a.id) == properties.asset_id)
             }
         });
+
+        if let Some(ref native_token) = chain.native_token {
+            if native_token.decimals == specs.decimals {
+                assets.insert(
+                    native_token.name.clone(),
+                    CurrencyProperties {
+                        chain_name: name.clone(),
+                        kind: TokenKind::Native,
+                        decimals: specs.decimals,
+                        rpc_url: rpc_url.to_owned(),
+                        asset_id: None,
+                        ss58: 0,
+                    },
+                );
+            }
+        }
 
         // Deduplication is done on chain manager level;
         // Check that we have same number of assets as requested (we've checked that we have only
@@ -269,7 +296,7 @@ impl ChainWatcher {
         //
         // TODO: maybe check if at least one endpoint responds with proper assets and if not, shut
         // down
-        if assets.len() != chain.asset.len() + if chain.native_token.is_some() { 1 } else { 0 } {
+        if assets.len() != chain.asset.len() + usize::from(chain.native_token.is_some()) {
             return Err(ChainError::AssetsInvalid(chain.name));
         }
         // this MUST assert that assets match exactly before reporting it

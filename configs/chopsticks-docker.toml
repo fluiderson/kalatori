@@ -7,13 +7,13 @@ name = "polkadot"
 native-token = "DOT"
 decimals = 10
 endpoints = [
-    "ws://localhost:8000",
+    "ws://chopsticks-polkadot:8000",
 ]
 
 [[chain]]
 name = "statemint"
 endpoints = [
-    "ws://localhost:9000",
+    "ws://chopsticks-statemint:9000",
 ]
 
 [[chain.asset]]

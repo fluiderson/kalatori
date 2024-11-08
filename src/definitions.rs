@@ -105,7 +105,7 @@ pub mod api_v2 {
         pub currency: String,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Serialize)]
     pub enum OrderResponse {
         NewOrder(OrderStatus),
         FoundOrder(OrderStatus),

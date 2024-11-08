@@ -147,7 +147,7 @@ impl SeedEnvVars {
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
     pub account_lifetime: Timestamp,
-    #[serde(default = "default_host")]
+    #[serde(default = "get_host")]
     pub host: SocketAddr,
     pub database: Option<String>,
     pub debug: Option<bool>,
@@ -165,6 +165,7 @@ impl Config {
     }
 }
 
-fn default_host() -> SocketAddr {
-    SOCKET_DEFAULT
+fn get_host() -> SocketAddr {
+    let host = env::var("KALATORI_HOST").unwrap_or_else(|_| "127.0.0.1:16726".to_string());
+    host.parse().unwrap_or(SOCKET_DEFAULT)
 }
