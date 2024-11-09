@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] - 2024-11-01
+
+### 🚀 Features
+
+- Force withdrawal call implementation
+- Docker container for the app
+- Containerized test environment
+
+### 🐛 Bug Fixes
+
+- Fixed the storage fetching.
+- Removed redundant name checks & thereby fixed the connection to Asset Hub chains.
+
+## [0.2.5] - 2024-10-29
+
+### 🚀 Features
+
+- Callback in case callback url provided
+
+### 🐛 Bug Fixes
+
+- fix error handling as a result of dep uupgrade
+- fix order withdraw transaction
+- mark order withdrawn on successful withdraw
+
 ## [0.2.4] - 2024-10-21
 
 ### ⚡ Performance

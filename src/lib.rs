@@ -3,7 +3,6 @@
 // codebase and make changes only to this file.
 
 mod arguments;
-mod callback;
 mod chain;
 mod database;
 mod definitions;

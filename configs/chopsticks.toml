@@ -8,21 +8,18 @@ native-token = "DOT"
 decimals = 10
 endpoints = [
     "ws://localhost:8000",
-    "ws://localhost:8500",
 ]
 
-[[chain]]
-name = "statemint"
-decimals = 6
-endpoints = [
-    "ws://localhost:9000",
-    "ws://localhost:9500",
-]
+# [[chain]]
+# name = "statemint"
+# endpoints = [
+#     "ws://localhost:9000",
+# ]
 
-[[chain.asset]]
-name = "USDC"
-id = 1337
+# [[chain.asset]]
+# name = "USDC"
+# id = 1337
 
-[[chain.asset]]
-name = "USDt"
-id = 1984
+# [[chain.asset]]
+# name = "USDt"
+# id = 1984

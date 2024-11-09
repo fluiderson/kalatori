@@ -1,7 +1,7 @@
 [package]
 name = "kalatori"
 authors = ["Alzymologist Oy <contact@zymologia.fi>"]
-version = "0.2.4"
+version = "0.2.7"
 edition = "2021"
 description = "A gateway daemon for Kalatori."
 license = "GPL-3.0-or-later"
@@ -20,7 +20,6 @@ axum = { version = "0.7", default-features = false, features = [
     "matched-path",
 ] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
-ureq = { version = "2", default-features = false, features = ["json"] }
 names = { version = "0.14", default-features = false }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "time"] }
@@ -28,7 +27,7 @@ serde = { version = "1", features = ["derive", "rc"] }
 tracing = "0.1"
 scale-info = "2"
 axum-macros = "0.4"
-primitive-types = { version = "0.12", features = ["codec"] }
+primitive-types = { version = "0.12", features = ["codec", "serde"] }
 jsonrpsee = { version = "0.24", features = ["ws-client"] }
 thiserror = "2"
 frame-metadata = "16"
@@ -60,6 +59,7 @@ ahash = "0.8"
 indoc = "2"
 async-lock = "3"
 time = "0.3"
+reqwest = "0.12"
 
 substrate_parser = { git = "https://github.com/Alzymologist/substrate-parser" }
 substrate-constructor = { git = "https://github.com/Alzymologist/substrate-constructor" }
@@ -97,7 +97,7 @@ cargo_common_metadata = "warn"
 arithmetic_side_effects = "warn"
 # Having multiple module layout styles in a project can be confusing. Moreover, `mod.rs` files don't
 # really harmonize with Git as they can be renamed back to self-named modules and Git fundamentally
-# prone to poorly handling the file renaming that can result in their history erasure.
+# prone to poorly handle the file renaming that can result in their history erasure.
 mod_module_files = "warn"
 # TODO: https://github.com/rust-lang/cargo/issues/12918
 pedantic = { level = "warn", priority = -1 }

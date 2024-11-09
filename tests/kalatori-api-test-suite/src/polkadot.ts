@@ -47,5 +47,5 @@ export async function transferFunds(rpcUrl: string, paymentAccount: string, amou
   });
 
   // Wait for transaction to be included in block
-  await new Promise(resolve => setTimeout(resolve, 8000));
+  await new Promise(resolve => setTimeout(resolve, 10000));
 }

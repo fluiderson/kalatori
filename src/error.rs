@@ -65,14 +65,38 @@ pub enum Error {
     #[error("failed to complete {0}")]
     Task(TaskName, #[source] TaskError),
 
-    #[error("receiver account couldn't be parsed")]
-    RecipientAccount(#[from] CryptoError),
+    #[error("receiver account couldn't be parsed: {0}")]
+    RecipientAccount(String),
 
     #[error("fatal error is occurred")]
     Fatal,
 
     #[error("found duplicate config record for the token {0:?}")]
     DuplicateCurrency(String),
+}
+
+impl From<CryptoError> for Error {
+    fn from(err: CryptoError) -> Self {
+        Error::RecipientAccount(err.to_string())
+    }
+}
+
+impl From<CryptoError> for ChainError {
+    fn from(err: CryptoError) -> Self {
+        ChainError::InvoiceAccount(err.to_string())
+    }
+}
+
+impl From<CryptoError> for SignerError {
+    fn from(err: CryptoError) -> Self {
+        SignerError::InvalidDerivation(err.to_string())
+    }
+}
+
+impl From<Error> for ChainError {
+    fn from(err: Error) -> Self {
+        ChainError::Util(UtilError::NotHex(NotHexError::BlockHash))
+    }
 }
 
 #[derive(Debug, Error)]
@@ -216,7 +240,7 @@ pub enum ChainError {
     Util(#[from] UtilError),
 
     #[error("invoice account couldn't be parsed")]
-    InvoiceAccount(#[from] CryptoError),
+    InvoiceAccount(String),
 
     #[error("chain {0:?} isn't found")]
     InvalidChain(String),
@@ -372,7 +396,7 @@ pub enum ForceWithdrawalError {
     InvalidParameter(String),
 
     #[error("withdrawal was failed: \"{0:?}\"")]
-    WithdrawalError(Box<OrderStatus>),
+    WithdrawalError(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -405,7 +429,7 @@ pub enum SignerError {
     InvalidSeed(#[from] ErrorWordList),
 
     #[error("derivation was failed")]
-    InvalidDerivation(#[from] CryptoError),
+    InvalidDerivation(String),
 }
 
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]

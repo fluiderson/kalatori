@@ -18,7 +18,7 @@ use crate::{
     },
     database::{TransactionInfoDb, TransactionInfoDbInner, TxKind},
     definitions::{
-        api_v2::{Amount, TokenKind, TransactionInfo, TxStatus},
+        api_v2::{Amount, TokenKind, TxStatus},
         Balance,
     },
     error::ChainError,
@@ -27,13 +27,13 @@ use crate::{
 };
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::WsClientBuilder;
-use substrate_constructor::fill_prepare::{SpecialTypeToFill, TypeContentToFill};
+use substrate_constructor::fill_prepare::TypeContentToFill;
 use substrate_crypto_light::common::AsBase58;
-use tokio::sync::mpsc::Sender as MpscSender;
 
 /// Single function that should completely handle payout attmept. Just do not call anything else.
 ///
 /// TODO: make this an additional runner independent from chain monitors
+#[expect(clippy::too_many_lines)]
 pub async fn payout(
     rpc: String,
     order: Invoice,
@@ -49,7 +49,8 @@ pub async fn payout(
         let block_number = current_block_number(&client, &chain.metadata, &block).await?;
         let balance = order.balance(&client, &chain, &block).await?; // TODO same
         let loss_tolerance = 10000; // TODO: replace with multiple of existential
-        let manual_intervention_amount = 1000000000000;
+                                    // TODO: add upper limit for transactions that would require manual intervention
+                                    // just because it was found to be needed with non-crypto trade, who knows why?
         let currency = chain
             .assets
             .get(&order.currency.currency)
@@ -57,8 +58,11 @@ pub async fn payout(
         let order_amount = Balance::parse(order.amount, order.currency.decimals);
 
         // Payout operation logic
-        let transactions = match balance.0 - order_amount.0 {
-            a if (0..=loss_tolerance).contains(&a) => match currency.kind {
+        let transactions = if balance.0.abs_diff(order_amount.0) <= loss_tolerance
+        // modulus(balance-order.amount) <= loss_tolerance
+        {
+            tracing::info!("Regular withdrawal");
+            match currency.kind {
                 TokenKind::Native => {
                     let balance_transfer_constructor = BalanceTransferConstructor {
                         amount: order_amount.0,
@@ -81,14 +85,35 @@ pub async fn payout(
                         &asset_transfer_constructor,
                     )?]
                 }
-            },
-            a if (loss_tolerance..=manual_intervention_amount).contains(&a) => {
-                tracing::warn!("Overpayments not handled yet");
-                return Ok(()); //TODO
             }
-            _ => {
-                tracing::error!("Balance is out of range: {balance:?}");
-                return Ok(()); //TODO
+        } else {
+            tracing::info!("Overpayment or forced");
+            // We will transfer all the available balance
+            // TODO smarter handling and returns probably
+
+            match currency.kind {
+                TokenKind::Native => {
+                    let balance_transfer_constructor = BalanceTransferConstructor {
+                        amount: balance.0,
+                        to_account: &order.recipient,
+                        is_clearing: true,
+                    };
+                    vec![construct_single_balance_transfer_call(
+                        &chain.metadata,
+                        &balance_transfer_constructor,
+                    )?]
+                }
+                TokenKind::Asset => {
+                    let asset_transfer_constructor = AssetTransferConstructor {
+                        asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
+                        amount: balance.0,
+                        to_account: &order.recipient,
+                    };
+                    vec![construct_single_asset_transfer_call(
+                        &chain.metadata,
+                        &asset_transfer_constructor,
+                    )?]
+                }
             }
         };
 
@@ -110,8 +135,13 @@ pub async fn payout(
 
         let signature = signer.sign(order.id.clone(), sign_this).await?;
 
-        batch_transaction.signature.content =
-            TypeContentToFill::SpecialType(SpecialTypeToFill::SignatureSr25519(Some(signature)));
+        if let TypeContentToFill::Variant(ref mut multisig) = batch_transaction.signature.content {
+            if let TypeContentToFill::ArrayU8(ref mut sr25519) =
+                multisig.selected.fields_to_fill[0].type_to_fill.content
+            {
+                sr25519.content = signature.0.to_vec();
+            }
+        }
 
         let extrinsic = batch_transaction
             .send_this_signed::<(), RuntimeMetadataV15>(&chain.metadata)?
@@ -133,13 +163,14 @@ pub async fn payout(
                         kind: TxKind::Withdrawal,
                     },
                 },
-                order.id,
+                order.id.clone(),
             )
             .await
             .map_err(|_| ChainError::TransactionNotSaved)?;
 
         send_stuff(&client, &encoded_extrinsic).await?;
 
+        state.order_withdrawn(order.id).await;
         // TODO obvious
     }
     Ok(())
