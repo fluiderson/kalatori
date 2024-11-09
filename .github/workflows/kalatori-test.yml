@@ -1,0 +1,57 @@
+name: Kalatori Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - stable
+
+jobs:
+  check:
+    name: Cargo and TypeScript Tests
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.12.1
+        with:
+          access_token: ${{ github.token }}
+
+      - name: Checkout sources
+        uses: actions/checkout@v4.2.0
+        with:
+          fetch-depth: 50
+          submodules: recursive
+
+      - name: Initialize Git Submodules
+        run: git submodule update --init --recursive
+
+      - name: Verify directory structure
+        run: ls -R
+
+      - name: Install Docker using Docker's official script
+        run: |
+          curl -fsSL https://get.docker.com -o get-docker.sh
+          sudo sh get-docker.sh
+
+      - name: Install Docker Compose
+        run: |
+          sudo curl -L "https://github.com/docker/compose/releases/download/v2.3.3/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+          docker-compose --version
+
+      - name: Build and Start Containers
+        working-directory: ./tests
+        run: |
+          docker-compose up -d --build chopsticks-polkadot chopsticks-statemint kalatori-rust-app
+
+      - name: Wait for Dependencies to Initialize
+        run: sleep 60
+
+      - name: Run Tests and Capture Exit Code
+        working-directory: ./tests
+        run: |
+          docker-compose run tests || exit_code=$?
+          docker-compose down
+          exit ${exit_code:-0}

@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  chopsticks-polkadot:
+    build:
+      context: ../chopsticks
+      dockerfile: Dockerfile
+    container_name: chopsticks-polkadot
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../chopsticks/pd.yml:/app/config.yml
+    command: ["chopsticks", "-c", "/app/config.yml", "-p", "8000", "--addr", "0.0.0.0"]
+
+  chopsticks-statemint:
+    build:
+      context: ../chopsticks
+      dockerfile: Dockerfile
+    container_name: chopsticks-statemint
+    ports:
+      - "9000:9000"
+    volumes:
+      - ../chopsticks/pd-ah.yml:/app/config.yml
+    command: ["chopsticks", "-c", "/app/config.yml", "-p", "9000", "--addr", "0.0.0.0"]
+
+  kalatori-rust-app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: kalatori-daemon
+    ports:
+      - "16726:16726"
+    volumes:
+      - ../configs:/app/configs
+    depends_on:
+      - chopsticks-polkadot
+      - chopsticks-statemint
+    environment:
+      - KALATORI_HOST=0.0.0.0:16726
+      - KALATORI_CONFIG=configs/chopsticks-docker.toml
+      - KALATORI_SEED=bottom drive obey lake curtain smoke basket hold race lonely fit walk
+      - KALATORI_RECIPIENT=5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
+      - KALATORI_REMARK=test
+    command: /bin/sh -c "sleep 10 && /app/kalatori"  # 10-second sleep to ensure chopsticks is ready
+
+  tests:
+    image: node:20
+    working_dir: /app
+    volumes:
+      - ../tests/kalatori-api-test-suite:/app
+    depends_on:
+      - kalatori-rust-app
+    environment:
+      - DAEMON_HOST=http://kalatori-daemon:16726
+    command: /bin/sh -c "sleep 50 && yarn install && yarn test"
