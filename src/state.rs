@@ -154,52 +154,6 @@ impl State {
                                     }
                                 }
                             }
-                            StateAccessRequest::RecordTransaction { order, tx: new_tx } => {
-                                if let Err(e) = state.db.record_transaction(order, new_tx).await {
-                                    tracing::error!(
-                                        "Found a transaction related to an order, but this could not be recorded! {e:?}"
-                                    )
-                                }
-                            }
-                            StateAccessRequest::OrderWithdrawn(id) => {
-                                match state.db.mark_withdrawn(id.clone()).await {
-                                    Ok(order) => {
-                                        tracing::info!("Order {id} successfully marked as withdrawn");
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Order was withdrawn but this could not be recorded! {e:?}"
-                                        )
-                                    }
-                                }
-                            }
-                            StateAccessRequest::ForceWithdrawal(id) => {
-                                match state.db.read_order(id.clone()).await {
-                                    Ok(Some(order_info)) => {
-                                        match state.chain_manager.reap(id.clone(), order_info.clone(), state.recipient).await {
-                                            Ok(_) => {
-                                                match state.db.mark_forced(id.clone()).await {
-                                                    Ok(_) => {
-                                                        tracing::info!("Order {id} successfully marked as force withdrawn");
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::error!("Failed to mark order {id} as forced: {e:?}");
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::error!("Failed to initiate forced payout for order {id}: {e:?}");
-                                            }
-                                        }
-                                    }
-                                    Ok(None) => {
-                                        tracing::error!("Order {id} not found in database");
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Error reading order {id} from database: {e:?}");
-                                    }
-                                }
-                            }
                         };
                     }
                     // Orchestrate shutdown from here
@@ -373,12 +327,6 @@ enum StateAccessRequest {
     ServerStatus(oneshot::Sender<ServerStatus>),
     ServerHealth(oneshot::Sender<ServerHealth>),
     OrderPaid(String),
-    RecordTransaction {
-        order: String,
-        tx: TransactionInfoDb,
-    },
-    OrderWithdrawn(String),
-    ForceWithdrawal(String),
 }
 
 struct GetInvoiceStatus {
