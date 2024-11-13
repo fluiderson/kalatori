@@ -197,7 +197,7 @@ pub fn start_chain_watch(
                                                                     id.clone()).await?;
                                                         }
                                                     }
-                                                } else if invoice.death.0 >= now {
+                                                } else if invoice.death.0 <= now {
                                                     match state.is_order_paid(id.clone()).await {
                                                         Ok(paid_db) => {
                                                             if !paid_db {
@@ -324,30 +324,30 @@ impl ChainWatcher {
             &chain.asset
         );
         // Remove unwanted assets
-        assets.retain(|asset_name, properties| {
-            tracing::info!(
-                "chain {} has token {} with properties {:?}",
-                &chain.name,
-                asset_name,
-                properties
-            );
+        assets = assets
+            .into_iter()
+            .filter_map(|(asset_name, properties)| {
+                tracing::info!(
+                    "chain {} has token {} with properties {:?}",
+                    &chain.name,
+                    &asset_name,
+                    &properties
+                );
 
-            if let Some(ref native_token) = chain.native_token {
-                (native_token.name == *asset_name) && (native_token.decimals == specs.decimals)
-            } else {
                 chain
                     .asset
                     .iter()
-                    .any(|a| a.name == *asset_name && Some(a.id) == properties.asset_id)
-            }
-        });
+                    .find(|a| Some(a.id) == properties.asset_id)
+                    .map(|a| (a.name.clone(), properties))
+            })
+            .collect();
 
-        if let Some(ref native_token) = chain.native_token {
+        if let Some(native_token) = chain.native_token.clone() {
             if native_token.decimals == specs.decimals {
                 assets.insert(
-                    native_token.name.clone(),
+                    native_token.name,
                     CurrencyProperties {
-                        chain_name: name.clone(),
+                        chain_name: name,
                         kind: TokenKind::Native,
                         decimals: specs.decimals,
                         rpc_url: rpc_url.to_owned(),
