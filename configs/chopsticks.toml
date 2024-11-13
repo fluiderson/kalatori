@@ -10,16 +10,16 @@ endpoints = [
     "ws://localhost:8000",
 ]
 
-# [[chain]]
-# name = "statemint"
-# endpoints = [
-#     "ws://localhost:9000",
-# ]
+[[chain]]
+name = "statemint"
+endpoints = [
+    "ws://localhost:9000",
+]
 
-# [[chain.asset]]
-# name = "USDC"
-# id = 1337
+[[chain.asset]]
+name = "USDC"
+id = 1337
 
-# [[chain.asset]]
-# name = "USDt"
-# id = 1984
+[[chain.asset]]
+name = "USDt"
+id = 1984
