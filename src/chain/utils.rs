@@ -1,7 +1,9 @@
 //! Utils to process chain data without accessing the chain
 
 use crate::{
-    chain::definitions::BlockHash, database::TxKind, definitions::{api_v2::AssetId, Balance},
+    chain::definitions::BlockHash,
+    database::TxKind,
+    definitions::{api_v2::AssetId, Balance},
     error::ChainError,
 };
 use codec::Encode;

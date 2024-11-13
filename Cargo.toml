@@ -70,9 +70,6 @@ substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-cryp
 # Don't forget to update me in `[dependencies]`!
 shadow-rs = { version = "0.35", default-features = false }
 
-[patch."https://github.com/Alzymologist/substrate-crypto-light"]
-substrate-crypto-light = { path = "../substrate-crypto-light" }
-
 [profile.release]
 strip = true
 lto = true

@@ -127,18 +127,31 @@ pub fn start_chain_watch(
                                 )
                                     .await {
                                         Ok((timestamp, events)) => {
-                                            tracing::error!("{timestamp:?} {events:?}");
-                                            tracing::error!("{watched_accounts:?}");
+                                        tracing::debug!("Watched accounts: {watched_accounts:#?}");
+                                        tracing::debug!("Got a block with timestamp {timestamp:?} & events: {events:#?}");
+
                                         let mut id_remove_list = Vec::new();
                                         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
 
                                         for (id, invoice) in &watched_accounts {
                                             for (extrinsic_option, event) in &events {
                                                 if let Some((tx_kind, another_account, transfer_amount)) = parse_transfer_event(&invoice.address, &event.0.fields) {
-                                                    tracing::error!("{tx_kind:?} {another_account:?} {transfer_amount:?}");
+                                                    tracing::debug!("Found {tx_kind:?} from/to {another_account:?} with {transfer_amount:?} token(s).");
+
                                                     let Some((position_in_block, extrinsic)) = extrinsic_option else {
                                                         return Err(Error::from(ChainError::TransferEventNoExtrinsic));
                                                     };
+
+                                                    let finalized_tx_timestamp = (OffsetDateTime::UNIX_EPOCH + Duration::from_millis(timestamp.0))
+                                                        .format(&Rfc3339).unwrap().into();
+                                                    let finalized_tx = FinalizedTxDb {
+                                                            block_number,
+                                                            position_in_block: *position_in_block
+                                                        }.into();
+                                                    let amount = Amount::Exact(transfer_amount.format(invoice.currency.decimals));
+                                                    let status = TxStatus::Finalized;
+                                                    let currency = invoice.currency.clone();
+                                                    let transaction_bytes = const_hex::encode_prefixed(extrinsic);
 
                                                     match tx_kind {
                                                         kind @ TxKind::Payment => {
@@ -154,21 +167,15 @@ pub fn start_chain_watch(
 
                                                             state.record_transaction(
                                                                 TransactionInfoDb {
-                                                                    transaction_bytes: const_hex::encode_prefixed(extrinsic),
+                                                                    transaction_bytes,
                                                                     inner: TransactionInfoDbInner {
-                                                                        finalized_tx: Some(FinalizedTxDb {
-                                                                            block_number,
-                                                                            position_in_block: *position_in_block
-                                                                        }),
-                                                                        finalized_tx_timestamp: Some(
-                                                                            (OffsetDateTime::UNIX_EPOCH + Duration::from_millis(timestamp.0))
-                                                                                .format(&Rfc3339).unwrap()
-                                                                        ),
+                                                                        finalized_tx,
+                                                                        finalized_tx_timestamp,
                                                                         sender: another_account.to_base58_string(42),
                                                                         recipient: invoice.address.to_base58_string(42),
-                                                                        amount: Amount::Exact(transfer_amount.format(invoice.currency.decimals)),
-                                                                        currency: invoice.currency.clone(),
-                                                                        status: TxStatus::Finalized,
+                                                                        amount,
+                                                                        currency,
+                                                                        status,
                                                                         kind,
                                                                     } },
                                                                     id.clone()).await?;
@@ -176,37 +183,41 @@ pub fn start_chain_watch(
                                                         kind @ TxKind::Withdrawal => {
                                                             state.record_transaction(
                                                                 TransactionInfoDb {
-                                                                    transaction_bytes: const_hex::encode_prefixed(extrinsic),
+                                                                    transaction_bytes,
                                                                     inner: TransactionInfoDbInner {
-                                                                        finalized_tx: Some(FinalizedTxDb {
-                                                                            block_number,
-                                                                            position_in_block: *position_in_block
-                                                                        }),
-                                                                        finalized_tx_timestamp: Some(
-                                                                            (OffsetDateTime::UNIX_EPOCH + Duration::from_millis(timestamp.0))
-                                                                                .format(&Rfc3339).unwrap()
-                                                                        ),
+                                                                        finalized_tx,
+                                                                        finalized_tx_timestamp,
                                                                         sender: invoice.address.to_base58_string(42),
                                                                         recipient: another_account.to_base58_string(42),
-                                                                        amount: Amount::Exact(transfer_amount.format(invoice.currency.decimals)),
-                                                                        currency: invoice.currency.clone(),
-                                                                        status: TxStatus::Finalized,
+                                                                        amount,
+                                                                        currency,
+                                                                        status,
                                                                         kind,
                                                                     } },
                                                                     id.clone()).await?;
                                                         }
                                                     }
                                                 } else if invoice.death.0 >= now {
-                                                    match invoice.check(&client, &watcher, &block).await {
-                                                        Ok(paid) => {
-                                                            if paid {
-                                                                state.order_paid(id.clone()).await;
+                                                    match state.is_order_paid(id.clone()).await {
+                                                        Ok(paid_db) => {
+                                                            if !paid_db {
+                                                                match invoice.check(&client, &watcher, &block).await {
+                                                                    Ok(paid) => {
+                                                                        if paid {
+                                                                            state.order_paid(id.clone()).await;
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        tracing::warn!("account fetch error: {0:?}", e);
+                                                                    }
+                                                                }
                                                             }
 
+                                                            tracing::debug!("Removing an account {id:?} due to passing its death timestamp");
                                                             id_remove_list.push(id.to_owned());
                                                         }
                                                         Err(e) => {
-                                                            tracing::warn!("account fetch error: {0:?}", e);
+                                                            tracing::warn!("account read error: {e:?}");
                                                         }
                                                     }
                                                 }
@@ -234,7 +245,7 @@ pub fn start_chain_watch(
                                 let signer_for_reaper = signer.interface();
 
                                 task_tracker.clone().spawn(format!("Initiate payout for order {}", id.clone()), async move {
-                                    payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
+                                    drop(payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await);
                                     Ok(format!("Payout attempt for order {id} terminated"))
                                 });
                             }
@@ -245,7 +256,7 @@ pub fn start_chain_watch(
                                 let watcher_for_reaper = watcher.clone();
                                 let signer_for_reaper = signer.interface();
                                 task_tracker.clone().spawn(format!("Initiate forced payout for order {}", id.clone()), async move {
-                                    payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await;
+                                    drop(payout(rpc, Invoice::from_request(request), reap_state_handle, watcher_for_reaper, signer_for_reaper).await);
                                     Ok(format!("Forced payout attempt for order {id} terminated"))
                                 });
                             }
@@ -257,11 +268,11 @@ pub fn start_chain_watch(
                         }
                     }
                 } else {
-                    let _ = rpc_update_tx.send(RpcInfo {
+                    drop(rpc_update_tx.send(RpcInfo {
                         chain_name: chain.name.clone(),
                         rpc_url: endpoint.clone(),
                         status: Health::Critical,
-                    }).await;
+                    }).await);
                 }
             }
             Ok(format!("Chain {} monitor shut down", chain.name))

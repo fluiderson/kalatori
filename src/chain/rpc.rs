@@ -273,7 +273,7 @@ fn deserialize_block_number<'d, D: Deserializer<'d>>(d: D) -> Result<BlockNumber
     let n = U256::deserialize(d)?;
 
     n.try_into()
-        .map_err(|_| de::Error::custom("Try from failed"))
+        .map_err(|_| de::Error::custom("failed to convert `U256` to a block number"))
 }
 
 #[derive(Deserialize)]

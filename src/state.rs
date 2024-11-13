@@ -200,6 +200,18 @@ impl State {
                                     }
                                 }
                             }
+                            StateAccessRequest::IsOrderPaid(id, res) => {
+                                match state.db.is_marked_paid(id).await {
+                                    Ok(paid) => {
+                                        res.send(paid).map_err(|_| Error::Fatal)?;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to read the order state! {e:?}"
+                                        )
+                                    }
+                                }
+                            }
                         };
                     }
                     // Orchestrate shutdown from here
@@ -308,6 +320,15 @@ impl State {
         rx.await.map_err(|_| Error::Fatal)
     }
 
+    pub async fn is_order_paid(&self, order: String) -> Result<bool, Error> {
+        let (res, rx) = oneshot::channel();
+        self.tx
+            .send(StateAccessRequest::IsOrderPaid(order, res))
+            .await
+            .map_err(|_| Error::Fatal)?;
+        rx.await.map_err(|_| Error::Fatal)
+    }
+
     pub async fn order_paid(&self, order: String) {
         if self
             .tx
@@ -318,6 +339,7 @@ impl State {
             tracing::warn!("Data race on shutdown; please restart the daemon for cleaning up");
         };
     }
+
     pub async fn order_withdrawn(&self, order: String) {
         if self
             .tx
@@ -372,6 +394,7 @@ enum StateAccessRequest {
     ServerStatus(oneshot::Sender<ServerStatus>),
     ServerHealth(oneshot::Sender<ServerHealth>),
     OrderPaid(String),
+    IsOrderPaid(String, oneshot::Sender<bool>),
     RecordTransaction {
         order: String,
         tx: TransactionInfoDb,

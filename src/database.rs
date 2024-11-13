@@ -107,7 +107,7 @@ impl Database {
                     DbRequest::ActiveOrderList(res) => {
                         let _unused = res.send(Ok(orders
                             .iter()
-                            .filter_map(|a: Result<(sled::IVec, sled::IVec), sled::Error>| a.ok())
+                            .filter_map(|a| a.ok())
                             .filter_map(|(a, b)| {
                                 match (String::decode(&mut &a[..]), OrderInfo::decode(&mut &b[..]))
                                 {
@@ -138,6 +138,9 @@ impl Database {
                     }
                     DbRequest::MarkPaid(request) => {
                         let _unused = request.res.send(mark_paid(request.order, &orders));
+                    }
+                    DbRequest::IsMarkedPaid(order, res) => {
+                        let _unused = res.send(is_marked_paid(&orders, order));
                     }
                     DbRequest::MarkWithdrawn(request) => {
                         let _unused = request.res.send(mark_withdrawn(request.order, &orders));
@@ -270,6 +273,12 @@ impl Database {
         rx.await.map_err(|_| DbError::DbEngineDown)?
     }
 
+    pub async fn is_marked_paid(&self, order: String) -> Result<bool, DbError> {
+        let (res, rx) = oneshot::channel();
+        let _unused = self.tx.send(DbRequest::IsMarkedPaid(order, res)).await;
+        rx.await.map_err(|_| DbError::DbEngineDown)?
+    }
+
     pub async fn mark_withdrawn(&self, order: String) -> Result<(), DbError> {
         let (res, rx) = oneshot::channel();
         let _unused = self
@@ -310,6 +319,7 @@ enum DbRequest {
     MarkPaid(MarkPaid),
     MarkWithdrawn(ModifyOrder),
     MarkForced(ModifyOrder),
+    IsMarkedPaid(String, oneshot::Sender<Result<bool, DbError>>),
     MarkStuck(ModifyOrder),
     InitializeServerInfo(oneshot::Sender<Result<String, DbError>>),
     Shutdown(oneshot::Sender<()>),
@@ -457,7 +467,8 @@ fn record_transaction(
     // transactions.
     if let Some(_encoded_tx_inner) = pending_tx_table.get(&pending_tx_key)? {
         if let Some((finalized_tx, _finalized_tx_timestamp)) = finalized_info {
-            tracing::error!("moving pending to fin");
+            tracing::debug!("moving pending tx to finalized");
+
             pending_tx_table.remove(pending_tx_key)?;
 
             tx_table.insert(
@@ -470,12 +481,14 @@ fn record_transaction(
                 tx.encode(),
             )?;
         } else {
-            tracing::error!("updating pending");
+            tracing::debug!("updating pending tx");
+
             pending_tx_table.insert(pending_tx_key, tx.inner.encode())?;
         }
     // Save the given finalized transaction.
     } else if let Some((finalized_tx, _finalized_tx_timestamp)) = finalized_info {
-        tracing::error!("save fin");
+        tracing::error!("save finalized tx");
+
         tx_table.insert(
             (
                 order,
@@ -488,7 +501,8 @@ fn record_transaction(
 
     // Save the pending transaction.
     } else {
-        tracing::error!("adding pending");
+        tracing::error!("adding pending tx");
+
         pending_tx_table.insert(pending_tx_key, tx.inner.encode())?;
     }
 
@@ -510,6 +524,18 @@ fn mark_paid(order: String, orders: &Tree) -> Result<OrderInfo, DbError> {
         Err(DbError::OrderNotFound(order))
     }
 }
+
+fn is_marked_paid(orders: &Tree, order: String) -> Result<bool, DbError> {
+    let order_key = order.encode();
+    if let Some(order_info) = orders.get(order_key)? {
+        let order_info = OrderInfo::decode(&mut &order_info[..])?;
+
+        Ok(order_info.payment_status == PaymentStatus::Paid)
+    } else {
+        Err(DbError::OrderNotFound(order))
+    }
+}
+
 fn mark_withdrawn(order: String, orders: &Tree) -> Result<(), DbError> {
     let order_key = order.encode();
     if let Some(order_info) = orders.get(order_key)? {

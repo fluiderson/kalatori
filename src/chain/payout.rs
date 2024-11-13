@@ -4,7 +4,6 @@
 //! priority, optimized for lazy and very delayed process, and in some cases might be disabeled
 //! altogether (TODO)
 
-use super::definitions::ChainTrackerRequest;
 use crate::{
     chain::{
         definitions::Invoice,
@@ -58,63 +57,69 @@ pub async fn payout(
         let order_amount = Balance::parse(order.amount, order.currency.decimals);
 
         // Payout operation logic
-        let transactions = if balance.0.abs_diff(order_amount.0) <= loss_tolerance
+        let (transactions, final_amount) = if balance.0.abs_diff(order_amount.0) <= loss_tolerance
         // modulus(balance-order.amount) <= loss_tolerance
         {
             tracing::info!("Regular withdrawal");
-            match currency.kind {
-                TokenKind::Native => {
-                    let balance_transfer_constructor = BalanceTransferConstructor {
-                        amount: order_amount.0,
-                        to_account: &order.recipient,
-                        is_clearing: true,
-                    };
-                    vec![construct_single_balance_transfer_call(
-                        &chain.metadata,
-                        &balance_transfer_constructor,
-                    )?]
-                }
-                TokenKind::Asset => {
-                    let asset_transfer_constructor = AssetTransferConstructor {
-                        asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
-                        amount: order_amount.0,
-                        to_account: &order.recipient,
-                    };
-                    vec![construct_single_asset_transfer_call(
-                        &chain.metadata,
-                        &asset_transfer_constructor,
-                    )?]
-                }
-            }
+            (
+                match currency.kind {
+                    TokenKind::Native => {
+                        let balance_transfer_constructor = BalanceTransferConstructor {
+                            amount: order_amount.0,
+                            to_account: &order.recipient,
+                            is_clearing: true,
+                        };
+                        vec![construct_single_balance_transfer_call(
+                            &chain.metadata,
+                            &balance_transfer_constructor,
+                        )?]
+                    }
+                    TokenKind::Asset => {
+                        let asset_transfer_constructor = AssetTransferConstructor {
+                            asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
+                            amount: order_amount.0,
+                            to_account: &order.recipient,
+                        };
+                        vec![construct_single_asset_transfer_call(
+                            &chain.metadata,
+                            &asset_transfer_constructor,
+                        )?]
+                    }
+                },
+                order_amount.0,
+            )
         } else {
             tracing::info!("Overpayment or forced");
             // We will transfer all the available balance
             // TODO smarter handling and returns probably
 
-            match currency.kind {
-                TokenKind::Native => {
-                    let balance_transfer_constructor = BalanceTransferConstructor {
-                        amount: balance.0,
-                        to_account: &order.recipient,
-                        is_clearing: true,
-                    };
-                    vec![construct_single_balance_transfer_call(
-                        &chain.metadata,
-                        &balance_transfer_constructor,
-                    )?]
-                }
-                TokenKind::Asset => {
-                    let asset_transfer_constructor = AssetTransferConstructor {
-                        asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
-                        amount: balance.0,
-                        to_account: &order.recipient,
-                    };
-                    vec![construct_single_asset_transfer_call(
-                        &chain.metadata,
-                        &asset_transfer_constructor,
-                    )?]
-                }
-            }
+            (
+                match currency.kind {
+                    TokenKind::Native => {
+                        let balance_transfer_constructor = BalanceTransferConstructor {
+                            amount: balance.0,
+                            to_account: &order.recipient,
+                            is_clearing: true,
+                        };
+                        vec![construct_single_balance_transfer_call(
+                            &chain.metadata,
+                            &balance_transfer_constructor,
+                        )?]
+                    }
+                    TokenKind::Asset => {
+                        let asset_transfer_constructor = AssetTransferConstructor {
+                            asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
+                            amount: balance.0,
+                            to_account: &order.recipient,
+                        };
+                        vec![construct_single_asset_transfer_call(
+                            &chain.metadata,
+                            &asset_transfer_constructor,
+                        )?]
+                    }
+                },
+                balance.0,
+            )
         };
 
         let mut batch_transaction = construct_batch_transaction(
@@ -157,7 +162,9 @@ pub async fn payout(
                         finalized_tx: None,
                         sender: signer.public(order.id.clone(), 42).await?,
                         recipient: order.recipient.to_base58_string(42),
-                        amount: Amount::Exact(order.amount),
+                        amount: Amount::Exact(
+                            Balance(final_amount).format(order.currency.decimals),
+                        ),
                         currency: order.currency,
                         status: TxStatus::Pending,
                         kind: TxKind::Withdrawal,
