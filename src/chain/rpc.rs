@@ -662,7 +662,6 @@ pub async fn transfer_events(
         &metadata_v15.types,
     )
     .await?;
-    tracing::error!("{events:?}");
 
     match_extrinsics_with_events_at_block(events, client, block, metadata_v15).await
 }

@@ -127,8 +127,8 @@ pub fn start_chain_watch(
                                 )
                                     .await {
                                         Ok((timestamp, events)) => {
-                                        tracing::debug!("Watched accounts: {watched_accounts:#?}");
-                                        tracing::debug!("Got a block with timestamp {timestamp:?} & events: {events:#?}");
+                                        tracing::debug!("Watched accounts: {watched_accounts:?}");
+                                        tracing::debug!("Got a block with timestamp {timestamp:?} & events: {events:?}");
 
                                         let mut id_remove_list = Vec::new();
                                         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;

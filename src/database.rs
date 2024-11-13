@@ -487,7 +487,7 @@ fn record_transaction(
         }
     // Save the given finalized transaction.
     } else if let Some((finalized_tx, _finalized_tx_timestamp)) = finalized_info {
-        tracing::error!("save finalized tx");
+        tracing::debug!("save finalized tx");
 
         tx_table.insert(
             (
@@ -501,7 +501,7 @@ fn record_transaction(
 
     // Save the pending transaction.
     } else {
-        tracing::error!("adding pending tx");
+        tracing::debug!("adding pending tx");
 
         pending_tx_table.insert(pending_tx_key, tx.inner.encode())?;
     }

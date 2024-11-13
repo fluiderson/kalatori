@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.7] - 2024-11-13
+
+### 🚀 Features
+
+- Added the recording of found transactions.
+
 ## [0.2.6] - 2024-11-01
 
 ### 🚀 Features
