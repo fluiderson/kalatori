@@ -298,11 +298,7 @@ pub fn construct_batch_transaction(
     transaction_to_fill.populate_block_info(Some(block.0), Some(block_number.into()));
     transaction_to_fill.populate_nonce(nonce);
     if let Some(asset) = asset {
-        transaction_to_fill.try_default_tip_assets_in_given_asset(
-            &mut (),
-            metadata,
-            asset,
-        );
+        transaction_to_fill.try_default_tip_assets_in_given_asset(&mut (), metadata, asset);
     }
 
     for ext in transaction_to_fill.extensions.iter_mut() {
