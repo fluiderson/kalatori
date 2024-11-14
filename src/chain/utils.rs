@@ -214,6 +214,7 @@ pub fn construct_batch_transaction(
     block: BlockHash,
     block_number: u32,
     nonce: u32,
+    asset: Option<u32>,
 ) -> Result<TransactionToFill, ChainError> {
     let mut transaction_to_fill = TransactionToFill::init(&mut (), metadata, genesis_hash.0)?;
 
@@ -296,6 +297,13 @@ pub fn construct_batch_transaction(
 
     transaction_to_fill.populate_block_info(Some(block.0), Some(block_number.into()));
     transaction_to_fill.populate_nonce(nonce);
+    if let Some(asset) = asset {
+        transaction_to_fill.try_default_tip_assets_in_given_asset<E: ExternalMemory, M: AsFillMetadata<E>>(
+            &mut (),
+            &metadata,
+            asset,
+        );
+    }
 
     for ext in transaction_to_fill.extensions.iter_mut() {
         if ext.finalize().is_none() {
