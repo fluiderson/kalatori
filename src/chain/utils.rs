@@ -300,7 +300,7 @@ pub fn construct_batch_transaction(
     if let Some(asset) = asset {
         transaction_to_fill.try_default_tip_assets_in_given_asset(
             &mut (),
-            &metadata,
+            metadata,
             asset,
         );
     }
