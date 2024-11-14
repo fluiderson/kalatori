@@ -118,6 +118,7 @@ pub async fn payout(
             block,
             block_number,
             0,
+            currency.asset_id,
         )?;
 
         let sign_this = batch_transaction
