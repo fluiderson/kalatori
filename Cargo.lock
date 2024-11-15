@@ -2716,7 +2716,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "substrate-constructor"
 version = "0.1.0"
-source = "git+https://github.com/Alzymologist/substrate-constructor#901469814d0d903db8150c90a2b3d124cde8785e"
+source = "git+https://github.com/Alzymologist/substrate-constructor#4faed1fa180359b6fe41ec90c4f1ec37a982da92"
 dependencies = [
  "bitvec",
  "external-memory-tools",
@@ -3403,7 +3403,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
