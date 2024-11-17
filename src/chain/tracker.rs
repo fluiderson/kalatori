@@ -135,7 +135,7 @@ pub fn start_chain_watch(
                                             id_remove_list.push(id.to_owned());
                                         }
                                         Ok(false) => (
-                                            if invoice.death.0 >= now {
+                                            if invoice.death.0 <= now {
                                                         id_remove_list.push(id.to_owned());
                                             }
                                         ),
