@@ -2716,7 +2716,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "substrate-constructor"
 version = "0.1.0"
-source = "git+https://github.com/Alzymologist/substrate-constructor#4faed1fa180359b6fe41ec90c4f1ec37a982da92"
+source = "git+https://github.com/Alzymologist/substrate-constructor#09c877f9ef228508e9d1fbeb3f66bcb782b70bb6"
 dependencies = [
  "bitvec",
  "external-memory-tools",
