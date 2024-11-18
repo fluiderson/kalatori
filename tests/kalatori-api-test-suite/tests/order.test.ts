@@ -233,7 +233,7 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
   }, 100000);
 
-  it.skip('should create, repay, and automatically withdraw an order in USDC', async () => {
+  it('should create, repay, and automatically withdraw an order in USDC', async () => {
     const orderId = generateRandomOrderId();
     await createOrder(orderId, usdcOrderData);
     const orderDetails = await getOrderDetails(orderId);
@@ -255,7 +255,46 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
   }, 50000);
 
-  it.skip('should not automatically withdraw an order until fully repaid', async () => {
+  it('should not automatically withdraw DOT order until fully repaid', async () => {
+    const orderId = generateRandomOrderId();
+    await createOrder(orderId, dotOrderData);
+    const orderDetails = await getOrderDetails(orderId);
+    const paymentAccount = orderDetails.payment_account;
+    expect(paymentAccount).toBeDefined();
+
+    const halfAmount = orderDetails.amount/2;
+
+    // Partial repayment
+    await transferFunds(
+        orderDetails.currency.rpc_url,
+        paymentAccount,
+        halfAmount,
+        orderDetails.currency.asset_id
+    );
+    // lets wait for the changes to get propagated on chain and app to catch them
+    await new Promise(resolve => setTimeout(resolve, 15000));
+
+    let repaidOrderDetails = await getOrderDetails(orderId);
+    expect(repaidOrderDetails.payment_status).toBe('pending');
+    expect(repaidOrderDetails.withdrawal_status).toBe('waiting');
+
+    // Full repayment
+    await transferFunds(
+        orderDetails.currency.rpc_url,
+        paymentAccount,
+        halfAmount+5,
+        orderDetails.currency.asset_id
+    );
+
+    // lets wait for the changes to get propagated on chain and app to catch them
+    await new Promise(resolve => setTimeout(resolve, 15000));
+
+    repaidOrderDetails = await getOrderDetails(orderId);
+    expect(repaidOrderDetails.payment_status).toBe('paid');
+    expect(repaidOrderDetails.withdrawal_status).toBe('completed');
+  }, 100000);
+
+  it('should not automatically withdraw USDC order until fully repaid', async () => {
     const orderId = generateRandomOrderId();
     await createOrder(orderId, usdcOrderData);
     const orderDetails = await getOrderDetails(orderId);
@@ -292,9 +331,9 @@ describe('Order Endpoint Blackbox Tests', () => {
     repaidOrderDetails = await getOrderDetails(orderId);
     expect(repaidOrderDetails.payment_status).toBe('paid');
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
-  }, 50000);
+  }, 100000);
 
-  it.skip('should not update order if received payment in wrong currency', async () => {
+  it('should not update order if received payment in wrong currency', async () => {
     const orderId = generateRandomOrderId();
     await createOrder(orderId, usdcOrderData);
     const orderDetails = await getOrderDetails(orderId);
@@ -317,7 +356,7 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(repaidOrderDetails.withdrawal_status).toBe('waiting');
   }, 50000);
 
-  it('should be able to force withdraw partially repayed order', async () => {
+  it('should be able to force withdraw partially repayed DOT order', async () => {
     const orderId = generateRandomOrderId();
     await createOrder(orderId, dotOrderData);
     const orderDetails = await getOrderDetails(orderId);
@@ -325,6 +364,31 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(paymentAccount).toBeDefined();
 
     await transferFunds(orderDetails.currency.rpc_url, paymentAccount, dotOrderData.amount/2);
+
+    // lets wait for the changes to get propagated on chain and app to catch them
+    await new Promise(resolve => setTimeout(resolve, 15000));
+
+    const partiallyRepaidOrderDetails = await getOrderDetails(orderId);
+    expect(partiallyRepaidOrderDetails.payment_status).toBe('pending');
+    expect(partiallyRepaidOrderDetails.withdrawal_status).toBe('waiting');
+
+    const response = await request(baseUrl)
+        .post(`/v2/order/${orderId}/forceWithdrawal`);
+    expect(response.status).toBe(201);
+
+    let forcedOrderDetails = await getOrderDetails(orderId);
+    expect(forcedOrderDetails.payment_status).toBe('pending');
+    expect(forcedOrderDetails.withdrawal_status).toBe('forced');
+  }, 100000);
+
+  it('should be able to force withdraw partially repayed USDC order', async () => {
+    const orderId = generateRandomOrderId();
+    await createOrder(orderId, usdcOrderData);
+    const orderDetails = await getOrderDetails(orderId);
+    const paymentAccount = orderDetails.payment_account;
+    expect(paymentAccount).toBeDefined();
+
+    await transferFunds(orderDetails.currency.rpc_url, paymentAccount, usdcOrderData.amount/2);
 
     // lets wait for the changes to get propagated on chain and app to catch them
     await new Promise(resolve => setTimeout(resolve, 15000));
