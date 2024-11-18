@@ -144,7 +144,7 @@ pub fn start_chain_watch(
                                         }
                                     }
                                 }
-                                    
+
                                 for id in id_remove_list {
                                     watched_accounts.remove(&id);
                                 };
