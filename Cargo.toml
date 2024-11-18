@@ -1,7 +1,7 @@
 [package]
 name = "kalatori"
 authors = ["Alzymologist Oy <contact@zymologia.fi>"]
-version = "0.2.6"
+version = "0.2.7"
 edition = "2021"
 description = "A gateway daemon for Kalatori."
 license = "GPL-3.0-or-later"
@@ -27,10 +27,10 @@ serde = { version = "1", features = ["derive", "rc"] }
 tracing = "0.1"
 scale-info = "2"
 axum-macros = "0.4"
-primitive-types = { version = "0.12", features = ["codec"] }
+primitive-types = { version = "0.13", features = ["codec"] }
 jsonrpsee = { version = "0.24", features = ["ws-client"] }
 thiserror = "1"
-frame-metadata = "16"
+frame-metadata = "17"
 const-hex = "1"
 codec = { package = "parity-scale-codec", version = "3", features = [
     "chain-error",

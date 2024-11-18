@@ -116,52 +116,39 @@ pub fn start_chain_watch(
                                     break;
                                 }
 
-                                match transfer_events(
-                                    &client,
-                                    &block,
-                                    &watcher.metadata,
-                                )
-                                    .await {
-                                        Ok(events) => {
-                                        let mut id_remove_list = Vec::new();
-                                        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
+                                let mut id_remove_list = Vec::new();
+                                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
 
-                                        for (id, invoice) in &watched_accounts {
-                                            if events.iter().any(|event| was_balance_received_at_account(&invoice.address, &event.0.fields)) {
-                                                match invoice.check(&client, &watcher, &block).await {
-                                                    Ok(true) => {
-                                                        state.order_paid(id.clone()).await;
-                                                        id_remove_list.push(id.to_owned());
-                                                    }
-                                                    Ok(false) => (),
-                                                    Err(e) => {
-                                                        tracing::warn!("account fetch error: {0:?}", e);
-                                                    }
-                                                }
-                                            } else if invoice.death.0 >= now {
-                                                match invoice.check(&client, &watcher, &block).await {
-                                                    Ok(paid) => {
-                                                        if paid {
-                                                            state.order_paid(id.clone()).await;
-                                                        }
-
-                                                        id_remove_list.push(id.to_owned());
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!("account fetch error: {0:?}", e);
-                                                    }
-                                                }
+                                // Important! There used to be a significant oprimisation that
+                                // watched events and checked only accounts that have tranfers into
+                                // them in given block; this was found to be unreliable: there are
+                                // ways to transfer funds without emitting a transfer event (one
+                                // notable example is through asset exchange procedure directed
+                                // straight into invoice account), and probably even without any
+                                // reliably expected event (through XCM). Thus we just scan all
+                                // accounts, every time. Please submit a PR or an issue if you
+                                // figure out a reliable optimization for this.
+                                for (id, invoice) in &watched_accounts {
+                                    match invoice.check(&client, &watcher, &block).await {
+                                        Ok(true) => {
+                                            state.order_paid(id.clone()).await;
+                                            id_remove_list.push(id.to_owned());
+                                        },
+                                        Ok(false) => {
+                                            if invoice.death.0 <= now {
+                                                id_remove_list.push(id.to_owned());
                                             }
+                                        },
+                                        Err(e) => {
+                                            tracing::warn!("account fetch error: {0:?}", e);
                                         }
-                                        for id in id_remove_list {
-                                            watched_accounts.remove(&id);
-                                        }
-                                    },
-                                    Err(e) => {
-                                        tracing::warn!("Events fetch error {e} at {}", chain.name);
-                                        break;
-                                    },
                                     }
+                                }
+
+                                for id in id_remove_list {
+                                    watched_accounts.remove(&id);
+                                };
+
                                 tracing::debug!("Block {} from {} processed successfully", block.to_string(), chain.name);
                             }
                             ChainTrackerRequest::WatchAccount(request) => {
