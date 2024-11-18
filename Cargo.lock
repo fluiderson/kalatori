@@ -902,9 +902,9 @@ dependencies = [
 
 [[package]]
 name = "frame-metadata"
-version = "16.0.0"
+version = "17.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87cf1549fba25a6fcac22785b61698317d958e96cac72a59102ea45b9ae64692"
+checksum = "701bac17e9b55e0f95067c428ebcb46496587f08e8cf4ccc0fe5903bea10dbb8"
 dependencies = [
  "cfg-if",
  "parity-scale-codec",
@@ -1275,9 +1275,9 @@ dependencies = [
 
 [[package]]
 name = "impl-codec"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba6a270039626615617f3f36d15fc827041df3b78c439da2cadfa47455a77f2f"
+checksum = "b67aa010c1e3da95bf151bd8b4c059b2ed7e75387cdb969b4f8f2723a43f9941"
 dependencies = [
  "parity-scale-codec",
 ]
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "kalatori"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "ahash",
  "async-lock",
@@ -1975,9 +1975,9 @@ dependencies = [
 
 [[package]]
 name = "primitive-types"
-version = "0.12.2"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b34d9fd68ae0b74a41b21c03c2f62847aa0ffea044eee893b4c140b37e244e2"
+checksum = "d15600a7d856470b7d278b3fe0e311fe28c2526348549f8ef2ff7db3299c87f5"
 dependencies = [
  "fixed-hash",
  "impl-codec",
@@ -2716,7 +2716,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "substrate-constructor"
 version = "0.1.0"
-source = "git+https://github.com/Alzymologist/substrate-constructor#540559207e640bfa158358cdbf736eb488c57100"
+source = "git+https://github.com/Alzymologist/substrate-constructor#09c877f9ef228508e9d1fbeb3f66bcb782b70bb6"
 dependencies = [
  "bitvec",
  "external-memory-tools",
@@ -2730,13 +2730,12 @@ dependencies = [
  "sp-crypto-hashing",
  "substrate-crypto-light",
  "substrate_parser",
- "thiserror",
 ]
 
 [[package]]
 name = "substrate-crypto-light"
 version = "0.1.0"
-source = "git+https://github.com/Alzymologist/substrate-crypto-light#8b5d43144a622f4fdbd8f4147a302e6ff4af894c"
+source = "git+https://github.com/Alzymologist/substrate-crypto-light#e1c07e19ccb19862accc2771d3b7ec0f86c80a36"
 dependencies = [
  "base58",
  "blake2b_simd",
@@ -2756,7 +2755,7 @@ dependencies = [
 [[package]]
 name = "substrate_parser"
 version = "0.6.1"
-source = "git+https://github.com/Alzymologist/substrate-parser#09f98462f5179bf3c5b6c323c53f7438caf03f06"
+source = "git+https://github.com/Alzymologist/substrate-parser#ed388d969b803b4713622378bb716b2032b2c7fe"
 dependencies = [
  "bitvec",
  "external-memory-tools",
@@ -3187,9 +3186,9 @@ checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
 
 [[package]]
 name = "uint"
-version = "0.9.5"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76f64bba2c53b04fcab63c01a7d7427eadc821e3bc48c34dc9ba29c501164b52"
+checksum = "909988d098b2f738727b161a106cfc7cab00c539c2687a8836f8e565976fb53e"
 dependencies = [
  "byteorder",
  "crunchy",
