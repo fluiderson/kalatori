@@ -133,12 +133,12 @@ pub fn start_chain_watch(
                                         Ok(true) => {
                                             state.order_paid(id.clone()).await;
                                             id_remove_list.push(id.to_owned());
-                                        }
-                                        Ok(false) => (
+                                        },
+                                        Ok(false) => {
                                             if invoice.death.0 <= now {
-                                                        id_remove_list.push(id.to_owned());
+                                                id_remove_list.push(id.to_owned());
                                             }
-                                        ),
+                                        },
                                         Err(e) => {
                                             tracing::warn!("account fetch error: {0:?}", e);
                                         }

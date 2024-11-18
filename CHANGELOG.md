@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.7] - 2024-11-18
+
+### 🚀 Features
+
+- Asset Hub transactions with fee currency
+  - Autofill tip with asset
+  - Pass asset id into transaction constructor to properly select fee currency
+
+### 🧪 Testing
+
+- Test cases to cover partial withdrawal and Asset Gub transfers
+
 ## [0.2.6] - 2024-11-01
 
 ### 🚀 Features
