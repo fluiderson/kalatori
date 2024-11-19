@@ -41,17 +41,18 @@ jobs:
           sudo chmod +x /usr/local/bin/docker-compose
           docker-compose --version
 
-      - name: Build and Start Containers
+      - name: Build Containers
         working-directory: ./tests
         run: |
-          docker-compose up -d --build chopsticks-polkadot chopsticks-statemint kalatori-rust-app
+          docker-compose build
 
-      - name: Wait for Dependencies to Initialize
-        run: sleep 60
-
-      - name: Run Tests and Capture Exit Code
+      - name: Run Tests
         working-directory: ./tests
         run: |
-          docker-compose run tests || exit_code=$?
+          docker-compose up --exit-code-from tests --abort-on-container-exit tests
+
+      - name: Tear Down Containers
+        working-directory: ./tests
+        if: always()
+        run: |
           docker-compose down
-          exit ${exit_code:-0}
