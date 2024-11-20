@@ -23,7 +23,7 @@ use crate::{
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use serde_json::Value;
-use std::{collections::HashMap, time::SystemTime};
+use std::{collections::{HashMap, HashSet}, time::SystemTime};
 use substrate_crypto_light::common::AsBase58;
 use substrate_parser::{AsMetadata, ShortSpecs};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -120,6 +120,13 @@ pub fn start_chain_watch(
                                     break;
                                 }
 
+                                tracing::debug!("Watched accounts: {watched_accounts:?}");
+
+                                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
+
+                                let mut checked_accounts = HashSet::new();
+                                let mut id_remove_list = Vec::new();
+
                                 match transfer_events(
                                     &client,
                                     &block,
@@ -127,11 +134,7 @@ pub fn start_chain_watch(
                                 )
                                     .await {
                                         Ok((timestamp, events)) => {
-                                        tracing::debug!("Watched accounts: {watched_accounts:?}");
                                         tracing::debug!("Got a block with timestamp {timestamp:?} & events: {events:?}");
-
-                                        let mut id_remove_list = Vec::new();
-                                        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
 
                                         for (id, invoice) in &watched_accounts {
                                             for (extrinsic_option, event) in &events {
@@ -164,6 +167,8 @@ pub fn start_chain_watch(
                                                                     tracing::warn!("account fetch error: {0:?}", e);
                                                                 }
                                                             }
+
+                                                            checked_accounts.insert(id);
 
                                                             state.record_transaction(
                                                                 TransactionInfoDb {
@@ -211,6 +216,8 @@ pub fn start_chain_watch(
                                                                         tracing::warn!("account fetch error: {0:?}", e);
                                                                     }
                                                                 }
+
+                                                                checked_accounts.insert(id);
                                                             }
 
                                                             tracing::debug!("Removing an account {id:?} due to passing its death timestamp");
@@ -223,15 +230,38 @@ pub fn start_chain_watch(
                                                 }
                                             }
                                         }
-                                        for id in id_remove_list {
-                                            watched_accounts.remove(&id);
-                                        }
-                                    },
-                                    Err(e) => {
-                                        tracing::warn!("Events fetch error {e} at {}", chain.name);
-                                        break;
-                                    },
                                     }
+                                    Err(e) => {
+                                        tracing::warn!("events fetch error: {0:?}", e);
+                                    }
+                                }
+
+                                // Important! There used to be a significant oprimisation that
+                                // watched events and checked only accounts that have tranfers into
+                                // them in given block; this was found to be unreliable: there are
+                                // ways to transfer funds without emitting a transfer event (one
+                                // notable example is through asset exchange procedure directed
+                                // straight into invoice account), and probably even without any
+                                // reliably expected event (through XCM). Thus we just scan almost
+                                // all accounts, every time. Please submit a PR or an issue if you
+                                // figure out a reliable optimization for this.
+                                for (id, invoice) in watched_accounts.iter().filter(|(id, _)| checked_accounts.contains(id)) {
+                                    match invoice.check(&client, &watcher, &block).await {
+                                        Ok(true) => {
+                                            state.order_paid(id.clone()).await;
+                                            id_remove_list.push(id.to_owned());
+                                        },
+                                        Err(e) => {
+                                            tracing::warn!("account fetch error: {0:?}", e);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                for id in id_remove_list {
+                                    watched_accounts.remove(&id);
+                                };
+
                                 tracing::debug!("Block {} from {} processed successfully", block.to_string(), chain.name);
                             }
                             ChainTrackerRequest::WatchAccount(request) => {

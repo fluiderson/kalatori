@@ -1,7 +1,7 @@
 [package]
 name = "kalatori"
 authors = ["Alzymologist Oy <contact@zymologia.fi>"]
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 description = "A gateway daemon for Kalatori."
 license = "GPL-3.0-or-later"
@@ -27,10 +27,10 @@ serde = { version = "1", features = ["derive", "rc"] }
 tracing = "0.1"
 scale-info = "2"
 axum-macros = "0.4"
-primitive-types = { version = "0.12", features = ["codec", "serde"] }
+primitive-types = { version = "0.13", features = ["codec", "serde"] }
 jsonrpsee = { version = "0.24", features = ["ws-client"] }
 thiserror = "2"
-frame-metadata = "16"
+frame-metadata = "17"
 const-hex = "1"
 codec = { package = "parity-scale-codec", version = "3", features = [
     "chain-error",
@@ -54,7 +54,7 @@ clap = { version = "4", features = [
     "deprecated",
 ] }
 # Don't forget to update me in `[build-dependencies]`!
-shadow-rs = { version = "0.35", default-features = false }
+shadow-rs = { version = "0.36", default-features = false }
 ahash = "0.8"
 indoc = "2"
 async-lock = "3"
@@ -68,7 +68,7 @@ substrate-crypto-light = { git = "https://github.com/Alzymologist/substrate-cryp
 
 [build-dependencies]
 # Don't forget to update me in `[dependencies]`!
-shadow-rs = { version = "0.35", default-features = false }
+shadow-rs = { version = "0.36", default-features = false }
 
 [profile.release]
 strip = true
