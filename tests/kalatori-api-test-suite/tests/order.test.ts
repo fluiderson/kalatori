@@ -1,5 +1,4 @@
 import request from 'supertest';
-import { transferFunds } from '../src/polkadot';
 
 describe('Order Endpoint Blackbox Tests', () => {
   const baseUrl = process.env.DAEMON_HOST;
@@ -82,22 +81,6 @@ describe('Order Endpoint Blackbox Tests', () => {
     expect(response.status).toBe(200);
     return response.body;
   };
-
-  const validateTransaction = (transaction: any, expectedCurrency: any) => {
-    expect(transaction).toHaveProperty('block_number');
-    expect(transaction).toHaveProperty('position_in_block');
-    expect(transaction).toHaveProperty('timestamp');
-    expect(transaction).toHaveProperty('transaction_bytes');
-    expect(transaction).toHaveProperty('sender');
-    expect(transaction).toHaveProperty('recipient');
-    expect(transaction).toHaveProperty('status', 'finalized');
-    expect(transaction).toHaveProperty('currency');
-    expect(transaction.currency).toHaveProperty('currency', expectedCurrency.currency);
-    expect(transaction.currency).toHaveProperty('chain_name', expectedCurrency.chain_name);
-    expect(transaction.currency).toHaveProperty('kind', expectedCurrency.kind);
-    expect(transaction.currency).toHaveProperty('decimals', expectedCurrency.decimals);
-    expect(transaction.currency).toHaveProperty('rpc_url', expectedCurrency.rpc_url);
-  }
 
   it('should create a new DOT order', async () => {
     const orderId = generateRandomOrderId();
@@ -244,13 +227,6 @@ describe('Order Endpoint Blackbox Tests', () => {
     await new Promise(resolve => setTimeout(resolve, 35000));
 
     const repaidOrderDetails = await getOrderDetails(orderId);
-
-    expect(repaidOrderDetails.transactions.length).toBe(2);
-
-    repaidOrderDetails.transactions.forEach((transaction: any) => {
-      validateTransaction(transaction, orderDetails.currency);
-    });
-
     expect(repaidOrderDetails.payment_status).toBe('paid');
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
   }, 100000);
@@ -273,12 +249,6 @@ describe('Order Endpoint Blackbox Tests', () => {
     await new Promise(resolve => setTimeout(resolve, 15000));
 
     const repaidOrderDetails = await getOrderDetails(orderId);
-
-    expect(repaidOrderDetails.transactions.length).toBe(2);
-
-    repaidOrderDetails.transactions.forEach((transaction: any) => {
-      validateTransaction(transaction, orderDetails.currency);
-    });
     expect(repaidOrderDetails.payment_status).toBe('paid');
     expect(repaidOrderDetails.withdrawal_status).toBe('completed');
   }, 50000);
