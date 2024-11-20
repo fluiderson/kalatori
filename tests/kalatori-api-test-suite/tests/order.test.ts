@@ -1,4 +1,6 @@
 import request from 'supertest';
+import { connectPolkadot, transferFunds } from '../src/polkadot';
+import { ApiPromise } from '@polkadot/api';
 
 describe('Order Endpoint Blackbox Tests', () => {
   const baseUrl = process.env.DAEMON_HOST;
