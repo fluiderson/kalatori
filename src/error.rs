@@ -6,7 +6,7 @@ use crate::{
 use codec::Error as ScaleError;
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::core::ClientError;
-use mnemonic_external::error::ErrorWordList;
+use mnemonic_external::error::ErrorMnemonic;
 use serde_json::Error as JsonError;
 use serde_json::Value;
 use sled::Error as DatabaseError;
@@ -426,7 +426,7 @@ pub enum SignerError {
     SignerDown,
 
     #[error("seed phrase is invalid")]
-    InvalidSeed(#[from] ErrorWordList),
+    InvalidSeed(#[from] ErrorMnemonic),
 
     #[error("derivation was failed")]
     InvalidDerivation(String),

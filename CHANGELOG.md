@@ -13,8 +13,8 @@ All notable changes to this project will be documented in this file.
 ### 🚀 Features
 
 - Asset Hub transactions with fee currency
-  - Autofill tip with asset
-  - Pass asset id into transaction constructor to properly select fee currency
+- Autofill tip with asset
+- Pass asset id into transaction constructor to properly select fee currency
 
 ### 🧪 Testing
 

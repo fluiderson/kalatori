@@ -23,7 +23,10 @@ use crate::{
 use frame_metadata::v15::RuntimeMetadataV15;
 use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use serde_json::Value;
-use std::{collections::{HashMap, HashSet}, time::SystemTime};
+use std::{
+    collections::{HashMap, HashSet},
+    time::SystemTime,
+};
 use substrate_crypto_light::common::AsBase58;
 use substrate_parser::{AsMetadata, ShortSpecs};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -245,7 +248,7 @@ pub fn start_chain_watch(
                                 // reliably expected event (through XCM). Thus we just scan almost
                                 // all accounts, every time. Please submit a PR or an issue if you
                                 // figure out a reliable optimization for this.
-                                for (id, invoice) in watched_accounts.iter().filter(|(id, _)| checked_accounts.contains(id)) {
+                                for (id, invoice) in watched_accounts.iter().filter(|(id, _)| !checked_accounts.contains(id)) {
                                     match invoice.check(&client, &watcher, &block).await {
                                         Ok(true) => {
                                             state.order_paid(id.clone()).await;
