@@ -52,4 +52,4 @@ services:
       - kalatori-rust-app
     environment:
       - DAEMON_HOST=http://kalatori-daemon:16726
-    command: /bin/sh -c "sleep 50 && yarn install && yarn test"
+    command: /bin/sh -c "sleep 180 && yarn install && yarn test"

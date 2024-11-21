@@ -301,6 +301,7 @@ describe('Order Endpoint Blackbox Tests', () => {
         halfAmount,
         orderDetails.currency.asset_id
     );
+
     // lets wait for the changes to get propagated on chain and app to catch them
     await new Promise(resolve => setTimeout(resolve, 15000));
 
@@ -340,6 +341,7 @@ describe('Order Endpoint Blackbox Tests', () => {
       halfAmount,
       orderDetails.currency.asset_id
     );
+
     // lets wait for the changes to get propagated on chain and app to catch them
     await new Promise(resolve => setTimeout(resolve, 15000));
 
