@@ -21,9 +21,4 @@ COPY --from=builder /usr/src/kalatori/target/release/kalatori /app/kalatori
 
 EXPOSE 16726
 
-ENV KALATORI_HOST="0.0.0.0:16726"
-ENV KALATORI_SEED="bottom drive obey lake curtain smoke basket hold race lonely fit walk"
-ENV KALATORI_RECIPIENT="5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
-ENV KALATORI_REMARK="test"
-
 CMD ["/app/kalatori"]
