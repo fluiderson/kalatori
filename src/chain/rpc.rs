@@ -657,7 +657,23 @@ pub async fn transfer_events(
         events_entry_metadata,
         &metadata_v15.types,
     )
-    .await?;
+    .await?
+    .into_iter()
+    .chain(
+        events_at_block(
+            client,
+            block,
+            Some(EventFilter {
+                pallet: "Assets",
+                optional_event_variant: Some("Transferred"),
+            }),
+            events_entry_metadata,
+            &metadata_v15.types,
+        )
+        .await?
+        .into_iter(),
+    )
+    .collect();
 
     match_extrinsics_with_events_at_block(events, client, block, metadata_v15).await
 }

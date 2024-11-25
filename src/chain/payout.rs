@@ -77,7 +77,7 @@ pub async fn payout(
                     TokenKind::Asset => {
                         let asset_transfer_constructor = AssetTransferConstructor {
                             asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
-                            amount: order_amount.0,
+                            amount: order_amount.0 - loss_tolerance,
                             to_account: &order.recipient,
                         };
                         vec![construct_single_asset_transfer_call(
@@ -109,7 +109,7 @@ pub async fn payout(
                     TokenKind::Asset => {
                         let asset_transfer_constructor = AssetTransferConstructor {
                             asset_id: currency.asset_id.ok_or(ChainError::AssetId)?,
-                            amount: balance.0,
+                            amount: balance.0 - loss_tolerance,
                             to_account: &order.recipient,
                         };
                         vec![construct_single_asset_transfer_call(
