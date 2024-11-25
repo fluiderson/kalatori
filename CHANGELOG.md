@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### 🚀 Features
 
-- Added the recording of found transactions.
+- Order transaction storage implementation.
 
 ## [0.2.7] - 2024-11-18
 
