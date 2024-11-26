@@ -245,8 +245,8 @@ pub fn start_chain_watch(
                                 // ways to transfer funds without emitting a transfer event (one
                                 // notable example is through asset exchange procedure directed
                                 // straight into invoice account), and probably even without any
-                                // reliably expected event (through XCM). Thus we just scan almost
-                                // all accounts, every time. Please submit a PR or an issue if you
+                                // reliably expected event (through XCM). Thus we just scan all
+                                // accounts, every time. Please submit a PR or an issue if you
                                 // figure out a reliable optimization for this.
                                 for (id, invoice) in watched_accounts.iter().filter(|(id, _)| !checked_accounts.contains(id)) {
                                     match invoice.check(&client, &watcher, &block).await {
