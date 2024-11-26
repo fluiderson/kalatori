@@ -245,8 +245,8 @@ pub fn start_chain_watch(
                                 // ways to transfer funds without emitting a transfer event (one
                                 // notable example is through asset exchange procedure directed
                                 // straight into invoice account), and probably even without any
-                                // reliably expected event (through XCM). Thus we just scan all
-                                // accounts, every time. Please submit a PR or an issue if you
+                                // reliably expected event (through XCM). Thus we just scan almost
+                                // all accounts, every time. Please submit a PR or an issue if you
                                 // figure out a reliable optimization for this.
                                 for (id, invoice) in watched_accounts.iter().filter(|(id, _)| !checked_accounts.contains(id)) {
                                     match invoice.check(&client, &watcher, &block).await {
@@ -375,12 +375,12 @@ impl ChainWatcher {
             })
             .collect();
 
-        if let Some(native_token) = chain.native_token.clone() {
+        if let Some(ref native_token) = chain.native_token {
             if native_token.decimals == specs.decimals {
                 assets.insert(
-                    native_token.name,
+                    native_token.name.clone(),
                     CurrencyProperties {
-                        chain_name: name,
+                        chain_name: name.clone(),
                         kind: TokenKind::Native,
                         decimals: specs.decimals,
                         rpc_url: rpc_url.to_owned(),
