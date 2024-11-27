@@ -160,16 +160,6 @@ pub fn start_chain_watch(
 
                                                     match tx_kind {
                                                         kind @ TxKind::Payment => {
-                                                            match invoice.check(&client, &watcher, &block).await {
-                                                                Ok(true) => {
-                                                                    state.order_paid(id.clone()).await;
-                                                                }
-                                                                Ok(false) => {}
-                                                                Err(e) => {
-                                                                    tracing::warn!("account fetch error: {0:?}", e);
-                                                                }
-                                                            }
-
                                                             state.record_transaction(
                                                                 TransactionInfoDb {
                                                                     transaction_bytes,
