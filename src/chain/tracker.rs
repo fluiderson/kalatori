@@ -127,7 +127,6 @@ pub fn start_chain_watch(
 
                                 let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
 
-                                let mut checked_accounts = HashSet::new();
                                 let mut id_remove_list = Vec::new();
 
                                 match transfer_events(
@@ -170,8 +169,6 @@ pub fn start_chain_watch(
                                                                     tracing::warn!("account fetch error: {0:?}", e);
                                                                 }
                                                             }
-
-                                                            checked_accounts.insert(id);
 
                                                             state.record_transaction(
                                                                 TransactionInfoDb {
@@ -219,8 +216,6 @@ pub fn start_chain_watch(
                                                                         tracing::warn!("account fetch error: {0:?}", e);
                                                                     }
                                                                 }
-
-                                                                checked_accounts.insert(id);
                                                             }
 
                                                             tracing::debug!("Removing an account {id:?} due to passing its death timestamp");
@@ -245,10 +240,10 @@ pub fn start_chain_watch(
                                 // ways to transfer funds without emitting a transfer event (one
                                 // notable example is through asset exchange procedure directed
                                 // straight into invoice account), and probably even without any
-                                // reliably expected event (through XCM). Thus we just scan almost
-                                // all accounts, every time. Please submit a PR or an issue if you
+                                // reliably expected event (through XCM). Thus we just scan all
+                                // accounts, every time. Please submit a PR or an issue if you
                                 // figure out a reliable optimization for this.
-                                for (id, invoice) in watched_accounts.iter().filter(|(id, _)| !checked_accounts.contains(id)) {
+                                for (id, invoice) in &watched_accounts {
                                     match invoice.check(&client, &watcher, &block).await {
                                         Ok(true) => {
                                             state.order_paid(id.clone()).await;
