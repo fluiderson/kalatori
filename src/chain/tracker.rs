@@ -192,29 +192,6 @@ pub fn start_chain_watch(
                                                                     id.clone()).await?;
                                                         }
                                                     }
-                                                } else if invoice.death.0 <= now {
-                                                    match state.is_order_paid(id.clone()).await {
-                                                        Ok(paid_db) => {
-                                                            if !paid_db {
-                                                                match invoice.check(&client, &watcher, &block).await {
-                                                                    Ok(paid) => {
-                                                                        if paid {
-                                                                            state.order_paid(id.clone()).await;
-                                                                        }
-                                                                    }
-                                                                    Err(e) => {
-                                                                        tracing::warn!("account fetch error: {0:?}", e);
-                                                                    }
-                                                                }
-                                                            }
-
-                                                            tracing::debug!("Removing an account {id:?} due to passing its death timestamp");
-                                                            id_remove_list.push(id.to_owned());
-                                                        }
-                                                        Err(e) => {
-                                                            tracing::warn!("account read error: {e:?}");
-                                                        }
-                                                    }
                                                 }
                                             }
                                         }
@@ -237,12 +214,36 @@ pub fn start_chain_watch(
                                     match invoice.check(&client, &watcher, &block).await {
                                         Ok(true) => {
                                             state.order_paid(id.clone()).await;
-                                            id_remove_list.push(id.to_owned());
                                         },
                                         Err(e) => {
                                             tracing::warn!("account fetch error: {0:?}", e);
                                         }
                                         _ => {}
+                                    }
+
+                                    if invoice.death.0 <= now {
+                                        match state.is_order_paid(id.clone()).await {
+                                            Ok(paid_db) => {
+                                                if !paid_db {
+                                                    match invoice.check(&client, &watcher, &block).await {
+                                                        Ok(paid) => {
+                                                            if paid {
+                                                                state.order_paid(id.clone()).await;
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            tracing::warn!("account fetch error: {0:?}", e);
+                                                        }
+                                                    }
+                                                }
+
+                                                tracing::debug!("Removing an account {id:?} due to passing its death timestamp");
+                                                id_remove_list.push(id.to_owned());
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("account read error: {e:?}");
+                                            }
+                                        }
                                     }
                                 }
 
